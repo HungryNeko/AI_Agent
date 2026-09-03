@@ -8,7 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-
 RagMode = Literal["off", "on", "auto"]
 WebSearchMode = Literal["off", "auto"]
 CurlMode = Literal["off", "auto"]
@@ -16,6 +15,8 @@ PythonMode = Literal["off", "auto"]
 FileEditorMode = Literal["off", "auto"]
 FileEditorApproval = Literal["readOnly", "manual", "auto"]
 McpMode = Literal["off", "auto"]
+HistoryMode = Literal["off", "auto"]
+AutomationMode = Literal["off", "auto"]
 WebSearchProvider = Literal["duckduckgo", "searxng", "tavily"]
 
 
@@ -23,6 +24,7 @@ WebSearchProvider = Literal["duckduckgo", "searxng", "tavily"]
 class WebSearchSettings:
     mode: WebSearchMode = "auto"
     provider: WebSearchProvider = "duckduckgo"
+    auto_switch: bool = False
     api_key_env: str = "TAVILY_API_KEY"
     base_url: str = ""
     max_results: int = 5
@@ -39,14 +41,22 @@ class WebSearchSettings:
 @dataclass(frozen=True)
 class RagSettings:
     mode: RagMode = "auto"
-    min_similarity: float = 0.75
+    min_similarity: float = 0.05
     max_results: int = 5
     auto_include: bool = False
+    include_knowledge: bool = True
+    include_memory: bool = True
+    include_skills: bool = True
     knowledge_root: str = "data/knowledge"
     memory_root: str = "data/memory"
     skills_root: str = "data/skills"
+    user_knowledge_root: str = "backend/runtime/user_data/knowledge"
+    user_memory_root: str = "backend/runtime/user_data/memory"
+    user_skills_root: str = "backend/runtime/user_data/skills"
     max_file_bytes: int = 200_000
     max_chunk_chars: int = 2_000
+    chunk_overlap_chars: int = 200
+    index_path: str = "backend/runtime/rag_index/index.pkl"
 
     @property
     def can_model_call(self) -> bool:
@@ -110,6 +120,25 @@ class McpSettings:
 
 
 @dataclass(frozen=True)
+class HistorySettings:
+    mode: HistoryMode = "off"
+
+    @property
+    def can_model_call(self) -> bool:
+        return self.mode == "auto"
+
+
+@dataclass(frozen=True)
+class AutomationSettings:
+    mode: AutomationMode = "off"
+    root: str = "backend/runtime/automations"
+
+    @property
+    def can_model_call(self) -> bool:
+        return self.mode == "auto"
+
+
+@dataclass(frozen=True)
 class ToolSettings:
     web_search: WebSearchSettings = WebSearchSettings()
     rag: RagSettings = RagSettings()
@@ -117,6 +146,8 @@ class ToolSettings:
     python: PythonSettings = PythonSettings()
     file_editor: FileEditorSettings = FileEditorSettings()
     mcp: McpSettings = McpSettings()
+    history: HistorySettings = HistorySettings()
+    automation: AutomationSettings = AutomationSettings()
 
     def model_view(self) -> dict[str, list[str]]:
         """Return only what the model needs to know."""
@@ -134,6 +165,11 @@ class ToolSettings:
             available.append("fileEditor")
         if self.mcp.can_model_call:
             available.append("mcp")
+        if self.history.can_model_call:
+            available.append("history")
+        if self.automation.can_model_call:
+            available.append("automation")
+            available.append("settings")
         return {"available": available}
 
 
@@ -151,20 +187,33 @@ def make_tool_settings(
     file_editor_approval: str = "auto",
     mcp: bool | None = None,
     mcp_mode: str = "auto",
+    history: bool | None = None,
+    history_mode: str = "off",
+    automation: bool | None = None,
+    automation_mode: str = "off",
     web_search_provider: WebSearchProvider = "duckduckgo",
+    web_search_auto_switch: bool = False,
     web_search_base_url: str | None = None,
     web_search_max_results: int = 5,
     web_search_timeout_seconds: float = 10.0,
     web_search_depth: str = "basic",
     web_search_topic: str = "general",
     web_search_include_answer: bool = False,
-    rag_min_similarity: float = 0.75,
+    rag_min_similarity: float = 0.05,
     rag_max_results: int = 5,
+    rag_include_knowledge: bool = True,
+    rag_include_memory: bool = True,
+    rag_include_skills: bool = True,
     rag_knowledge_root: str = "data/knowledge",
     rag_memory_root: str = "data/memory",
     rag_skills_root: str = "data/skills",
+    rag_user_knowledge_root: str = "backend/runtime/user_data/knowledge",
+    rag_user_memory_root: str = "backend/runtime/user_data/memory",
+    rag_user_skills_root: str = "backend/runtime/user_data/skills",
     rag_max_file_bytes: int = 200_000,
     rag_max_chunk_chars: int = 2_000,
+    rag_chunk_overlap_chars: int = 200,
+    rag_index_path: str = "backend/runtime/rag_index/index.pkl",
     curl_timeout_seconds: float = 20.0,
     curl_max_bytes: int = 20_000,
     python_timeout_seconds: float = 10.0,
@@ -180,6 +229,7 @@ def make_tool_settings(
     mcp_config_path: str = "data/mcp/servers.json",
     mcp_timeout_seconds: float = 20.0,
     mcp_max_output_chars: int = 20_000,
+    automation_root: str = "backend/runtime/automations",
 ) -> ToolSettings:
     if web_search is not None:
         web_search_mode = "auto" if web_search else "off"
@@ -191,12 +241,17 @@ def make_tool_settings(
         file_editor_mode = "auto" if file_editor else "off"
     if mcp is not None:
         mcp_mode = "auto" if mcp else "off"
+    if history is not None:
+        history_mode = "auto" if history else "off"
+    if automation is not None:
+        automation_mode = "auto" if automation else "off"
 
     provider = normalize_web_search_provider(web_search_provider)
     return ToolSettings(
         web_search=WebSearchSettings(
             mode=normalize_web_search_mode(web_search_mode),
             provider=provider,
+            auto_switch=bool(web_search_auto_switch),
             base_url=default_web_search_base_url(provider, web_search_base_url),
             max_results=web_search_max_results,
             timeout_seconds=web_search_timeout_seconds,
@@ -208,11 +263,19 @@ def make_tool_settings(
             mode=normalize_rag_mode(rag_mode),
             min_similarity=rag_min_similarity,
             max_results=rag_max_results,
+            include_knowledge=rag_include_knowledge,
+            include_memory=rag_include_memory,
+            include_skills=rag_include_skills,
             knowledge_root=rag_knowledge_root,
             memory_root=rag_memory_root,
             skills_root=rag_skills_root,
+            user_knowledge_root=rag_user_knowledge_root,
+            user_memory_root=rag_user_memory_root,
+            user_skills_root=rag_user_skills_root,
             max_file_bytes=max(1_000, int(rag_max_file_bytes)),
             max_chunk_chars=max(500, int(rag_max_chunk_chars)),
+            chunk_overlap_chars=max(0, int(rag_chunk_overlap_chars)),
+            index_path=rag_index_path,
         ),
         curl=CurlSettings(
             mode=normalize_curl_mode(curl_mode),
@@ -241,6 +304,11 @@ def make_tool_settings(
             config_path=mcp_config_path,
             timeout_seconds=mcp_timeout_seconds,
             max_output_chars=max(1_000, int(mcp_max_output_chars)),
+        ),
+        history=HistorySettings(mode=normalize_history_mode(history_mode)),
+        automation=AutomationSettings(
+            mode=normalize_automation_mode(automation_mode),
+            root=automation_root,
         ),
     )
 
@@ -291,6 +359,20 @@ def normalize_mcp_mode(mcp_mode: str) -> McpMode:
     mode = mcp_mode.strip().lower()
     if mode not in {"off", "auto"}:
         raise ValueError("mcp_mode must be one of: off, auto.")
+    return mode
+
+
+def normalize_history_mode(history_mode: str) -> HistoryMode:
+    mode = history_mode.strip().lower()
+    if mode not in {"off", "auto"}:
+        raise ValueError("history_mode must be one of: off, auto.")
+    return mode
+
+
+def normalize_automation_mode(automation_mode: str) -> AutomationMode:
+    mode = automation_mode.strip().lower()
+    if mode not in {"off", "auto"}:
+        raise ValueError("automation_mode must be one of: off, auto.")
     return mode
 
 

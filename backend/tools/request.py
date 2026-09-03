@@ -6,11 +6,14 @@ import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from tools.automation import AutomationRequest
+from tools.appSettings import SettingsRequest
 from tools.fileEditor import FileEditRequest
+from tools.history import HistoryRequest
 from tools.mcp import McpRequest
 from tools.settings import ToolSettings
 
-ToolName = Literal["webSearch", "rag", "curl", "python", "fileEditor", "mcp"]
+ToolName = Literal["webSearch", "rag", "curl", "python", "fileEditor", "mcp", "history", "automation", "settings"]
 
 
 @dataclass(frozen=True)
@@ -22,6 +25,9 @@ class ToolRequest:
     code: str = ""
     file_edit: FileEditRequest | None = None
     mcp_request: McpRequest | None = None
+    history_request: HistoryRequest | None = None
+    automation_request: AutomationRequest | None = None
+    settings_request: SettingsRequest | None = None
 
 
 def build_openai_tools(settings: ToolSettings) -> list[dict[str, Any]]:
@@ -50,6 +56,11 @@ def build_openai_tools(settings: ToolSettings) -> list[dict[str, Any]]:
         tools.append(file_editor_tool())
     if settings.mcp.can_model_call:
         tools.append(mcp_tool())
+    if settings.history.can_model_call:
+        tools.append(history_tool())
+    if settings.automation.can_model_call:
+        tools.append(automation_tool())
+        tools.append(settings_tool())
     return tools
 
 
@@ -78,7 +89,7 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
         raise ValueError("tool_call.function is required.")
 
     name = function.get("name")
-    if name not in {"webSearch", "rag", "curl", "python", "fileEditor", "mcp"}:
+    if name not in {"webSearch", "rag", "curl", "python", "fileEditor", "mcp", "history", "automation", "settings"}:
         raise ValueError(f"Unknown tool: {name}")
 
     arguments = function.get("arguments") or "{}"
@@ -104,6 +115,12 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
         return ToolRequest(id=call_id, name="fileEditor", file_edit=parse_file_edit(parsed_arguments))
     if name == "mcp":
         return ToolRequest(id=call_id, name="mcp", mcp_request=parse_mcp_request(parsed_arguments))
+    if name == "history":
+        return ToolRequest(id=call_id, name="history", history_request=parse_history_request(parsed_arguments))
+    if name == "automation":
+        return ToolRequest(id=call_id, name="automation", automation_request=parse_automation_request(parsed_arguments))
+    if name == "settings":
+        return ToolRequest(id=call_id, name="settings", settings_request=parse_settings_request(parsed_arguments))
 
     query = require_string(parsed_arguments, "query", "tool")
     return ToolRequest(id=call_id, name=name, query=query)
@@ -146,6 +163,62 @@ def parse_mcp_request(arguments: dict[str, Any]) -> McpRequest:
     )
 
 
+def parse_history_request(arguments: dict[str, Any]) -> HistoryRequest:
+    action = require_string(arguments, "action", "history")
+    if action not in {"list", "read", "search"}:
+        raise ValueError("history action must be one of: list, read, search.")
+    limit = optional_int(arguments.get("limit")) or 10
+    return HistoryRequest(
+        action=action,
+        conversation_id=optional_string(arguments.get("conversationId")),
+        query=optional_string(arguments.get("query")),
+        limit=max(1, min(50, limit)),
+    )
+
+
+def parse_automation_request(arguments: dict[str, Any]) -> AutomationRequest:
+    action = require_string(arguments, "action", "automation")
+    if action not in {"script", "mcp", "configureMcp", "reminder", "llm"}:
+        raise ValueError("automation action must be one of: script, mcp, configureMcp, reminder, llm.")
+    raw_mcp_arguments = arguments.get("mcpArguments", {})
+    if raw_mcp_arguments is None:
+        raw_mcp_arguments = {}
+    raw_mcp_config = arguments.get("mcpConfig", {})
+    if raw_mcp_config is None:
+        raw_mcp_config = {}
+    raw_schedule = arguments.get("schedule", {})
+    if raw_schedule is None:
+        raw_schedule = {}
+    if not isinstance(raw_mcp_arguments, dict) or not isinstance(raw_mcp_config, dict) or not isinstance(raw_schedule, dict):
+        raise ValueError("automation mcpArguments, mcpConfig, and schedule must be objects.")
+    return AutomationRequest(
+        action=action,
+        title=optional_string(arguments.get("title")),
+        prompt=optional_string(arguments.get("prompt")),
+        code=optional_string(arguments.get("code")),
+        mcp_server=optional_string(arguments.get("mcpServer")),
+        mcp_tool=optional_string(arguments.get("mcpTool")),
+        mcp_arguments=raw_mcp_arguments,
+        mcp_config=raw_mcp_config,
+        schedule=raw_schedule,
+    )
+
+
+def parse_settings_request(arguments: dict[str, Any]) -> SettingsRequest:
+    action = require_string(arguments, "action", "settings")
+    if action not in {"read", "update", "replace"}:
+        raise ValueError("settings action must be one of: read, update, replace.")
+    raw_patch = arguments.get("patch", {})
+    raw_settings = arguments.get("settings", {})
+    if raw_patch is None:
+        raw_patch = {}
+    if raw_settings is None:
+        raw_settings = {}
+    if not isinstance(raw_patch, dict) or not isinstance(raw_settings, dict):
+        raise ValueError("settings patch and settings must be objects.")
+    return SettingsRequest(action=action, patch=raw_patch, settings=raw_settings)
+
+
 def require_string(arguments: dict[str, Any], key: str, tool_name: str) -> str:
     value = arguments.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -182,6 +255,12 @@ def validate_tool_allowed(name: str, settings: ToolSettings) -> None:
         raise ValueError("fileEditor can only be called when file_editor_mode is auto.")
     if name == "mcp" and not settings.mcp.can_model_call:
         raise ValueError("mcp can only be called when mcp_mode is auto.")
+    if name == "history" and not settings.history.can_model_call:
+        raise ValueError("history can only be called when history_mode is auto.")
+    if name == "automation" and not settings.automation.can_model_call:
+        raise ValueError("automation can only be called when automation_mode is auto.")
+    if name == "settings" and not settings.automation.can_model_call:
+        raise ValueError("settings can only be called when automation_mode is auto.")
 
 
 def query_tool(*, name: Literal["webSearch", "rag"], description: str) -> dict[str, Any]:
@@ -263,6 +342,73 @@ def mcp_tool() -> dict[str, Any]:
             "server": {"type": "string", "description": "Configured MCP server name."},
             "tool": {"type": "string", "description": "MCP tool name for callTool."},
             "arguments": {"type": "object", "description": "Arguments object passed to the MCP tool."},
+        },
+        required=["action"],
+    )
+
+
+def history_tool() -> dict[str, Any]:
+    return function_tool(
+        name="history",
+        description="List, search, or read saved conversation JSON history when exact previous conversation details are needed, especially after the active context was compressed.",
+        properties={
+            "action": {
+                "type": "string",
+                "enum": ["list", "read", "search"],
+            },
+            "conversationId": {"type": "string", "description": "Conversation id for read."},
+            "query": {"type": "string", "description": "Text to search in saved conversations."},
+            "limit": {"type": "integer", "description": "Maximum conversations to return for list/search."},
+        },
+        required=["action"],
+    )
+
+
+def automation_tool() -> dict[str, Any]:
+    return function_tool(
+        name="automation",
+        description="Create or run small automations. Use script for simple Python work, mcp to call an already configured MCP tool, configureMcp to save a new MCP server from conversation details, reminder to save one-time or repeating reminders, and llm to store a prompt for a later model step. For complex schedules such as Fibonacci intervals, save the previous and current run time in schedule so the next reminder can be computed later.",
+        properties={
+            "action": {
+                "type": "string",
+                "enum": ["script", "mcp", "configureMcp", "reminder", "llm"],
+            },
+            "title": {"type": "string", "description": "Human-readable automation or reminder title."},
+            "prompt": {"type": "string", "description": "Prompt to use for reminders or future model work."},
+            "code": {"type": "string", "description": "Python code for action=script."},
+            "mcpServer": {"type": "string", "description": "Configured MCP server name for action=mcp."},
+            "mcpTool": {"type": "string", "description": "MCP tool name for action=mcp."},
+            "mcpArguments": {"type": "object", "description": "Arguments passed to the MCP tool."},
+            "mcpConfig": {
+                "type": "object",
+                "description": "MCP server config for action=configureMcp. Include name, enabled, transport, url/headers or command/args/env.",
+            },
+            "schedule": {
+                "type": "object",
+                "description": "Reminder schedule. Supports kind=once/interval/cron/custom, nextRunAt, intervalSeconds, cron, timezone, previousRunAt, currentRunAt.",
+            },
+        },
+        required=["action"],
+    )
+
+
+def settings_tool() -> dict[str, Any]:
+    return function_tool(
+        name="settings",
+        description="Read or update the persistent app JSON config in data/settings.json. Use this when the user asks to remember UI or chat defaults such as theme, language, model, tool modes, search fallback, RAG toggles, approval mode, automation mode, or max tool rounds.",
+        properties={
+            "action": {
+                "type": "string",
+                "enum": ["read", "update", "replace"],
+            },
+            "patch": {
+                "type": "object",
+                "description": "Partial settings JSON for action=update, for example {\"ui\":{\"theme\":\"dark\"},\"chat\":{\"max_tool_rounds\":-1}}.",
+            },
+            "settings": {
+                "type": "object",
+                "description": "Complete settings JSON for action=replace.",
+            },
         },
         required=["action"],
     )

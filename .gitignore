@@ -23,6 +23,11 @@ env/
 # Backend runtime artifacts
 backend/runtime/
 
+# Local user knowledge/memory/skills kept outside tracked system docs
+data/memory/user*.md
+data/skills/local/
+data/skills/Rent/
+
 # Node / frontend
 node_modules/
 frontend/node_modules/

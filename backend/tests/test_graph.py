@@ -121,6 +121,25 @@ def test_run_turn_keeps_previous_messages(monkeypatch):
         "assistant",
     ]
 
+
+def test_instruction_is_only_in_initial_system_prompt(monkeypatch):
+    payloads = []
+
+    def fake_complete_chat_once(messages, *, model=None, tools=None):
+        payloads.append(messages)
+        return {"role": "assistant", "content": "ok"}
+
+    monkeypatch.setattr(graph, "complete_chat_once", fake_complete_chat_once)
+    monkeypatch.setattr(graph, "load_instruction", lambda: "Use short answers.")
+
+    state = graph.new_chat_state()
+    state = graph.run_turn(state, "first")
+    graph.run_turn(state, "second")
+
+    assert "instruction:\nUse short answers." in payloads[0][0]["content"]
+    assert "instruction:\nUse short answers." not in payloads[0][-1]["content"]
+    assert "instruction:\nUse short answers." not in payloads[1][-1]["content"]
+
 def test_stream_turn_emits_tool_call_before_final_answer(monkeypatch):
     calls = []
 
@@ -157,6 +176,38 @@ def test_stream_turn_emits_tool_call_before_final_answer(monkeypatch):
     assert events[-1]["type"] == "assistant"
     assert events[-1]["text"] == "final answer"
     assert events[-1]["state"]["response"] == "final answer"
+
+
+def test_stream_turn_emits_settings_changed_event(monkeypatch):
+    calls = []
+
+    def fake_complete_chat_once(messages, *, model=None, tools=None):
+        calls.append(messages)
+        if len(calls) == 1:
+            return {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "settings",
+                            "arguments": '{"action":"update","patch":{"ui":{"theme":"dark"}}}',
+                        },
+                    }
+                ],
+            }
+        return {"role": "assistant", "content": "settings updated"}
+
+    monkeypatch.setattr(graph, "complete_chat_once", fake_complete_chat_once)
+    monkeypatch.setattr(graph, "execute_tool", lambda request, settings: 'settingsResult:\n{"status":"saved"}')
+
+    events = list(graph.stream_turn(graph.new_chat_state(automation_mode="auto"), "dark theme"))
+
+    assert {"type": "settings_changed", "tool": "settings", "text": 'settingsResult:\n{"status":"saved"}'} in events
+    assert events[-1]["text"] == "settings updated"
+
 
 def test_stream_turn_emits_assistant_progress_before_tool_call(monkeypatch):
     calls = []
@@ -294,7 +345,7 @@ def test_stream_turn_emits_executor_tool_error_event_and_allows_model_retry(monk
     assert events[-1]["text"] == "The weather API request failed, so I cannot provide live weather."
 
 
-def test_repeated_tool_call_is_blocked_after_two_attempts(monkeypatch):
+def test_repeated_tool_call_is_not_blocked_by_backend(monkeypatch):
     calls = []
     executed = []
 
@@ -329,8 +380,9 @@ def test_repeated_tool_call_is_blocked_after_two_attempts(monkeypatch):
     assert executed == [
         "https://api.open-meteo.com/v1/forecast",
         "https://api.open-meteo.com/v1/forecast",
+        "https://api.open-meteo.com/v1/forecast",
     ]
-    assert any("repeated tool call blocked" in event.get("text", "") for event in events)
+    assert not any("repeated tool call blocked" in event.get("text", "") for event in events)
     assert events[-1]["text"] == "Stopped retrying the same request."
 
 def test_max_tool_rounds_forces_final_answer_without_tools(monkeypatch):

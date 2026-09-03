@@ -16,11 +16,32 @@ from tools.settings import WebSearchSettings
 def search(query: str, settings: WebSearchSettings) -> list[dict[str, str]]:
     """Search the web using the configured provider."""
 
-    if settings.provider == "duckduckgo":
+    errors: list[str] = []
+    for provider in provider_order(settings):
+        try:
+            return search_with_provider(query, settings, provider)
+        except (RuntimeError, ValueError, httpx.HTTPError) as exc:
+            errors.append(f"{provider}: {exc}")
+            if not settings.auto_switch:
+                raise
+    if errors:
+        raise RuntimeError("All web search providers failed. " + " | ".join(errors))
+    raise ValueError(f"Unsupported web search provider: {settings.provider}")
+
+
+def provider_order(settings: WebSearchSettings) -> list[str]:
+    providers = [settings.provider]
+    if settings.auto_switch:
+        providers.extend(provider for provider in ["duckduckgo", "searxng", "tavily"] if provider not in providers)
+    return providers
+
+
+def search_with_provider(query: str, settings: WebSearchSettings, provider: str) -> list[dict[str, str]]:
+    if provider == "duckduckgo":
         return duckduckgo_search(query, settings)
-    if settings.provider == "searxng":
+    if provider == "searxng":
         return searxng_search(query, settings)
-    if settings.provider == "tavily":
+    if provider == "tavily":
         return tavily_search(query, settings)
     raise ValueError(f"Unsupported web search provider: {settings.provider}")
 

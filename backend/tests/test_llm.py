@@ -89,7 +89,9 @@ def test_chat_can_include_context_summary(monkeypatch):
 
     assert result == "done"
     system_prompt = payloads[0]["messages"][0]["content"]
-    assert 'conversationSummary: "Earlier turns were summarized."' in system_prompt
+    user_prompt = payloads[0]["messages"][-1]["content"]
+    assert 'conversationSummary: "Earlier turns were summarized."' not in system_prompt
+    assert 'conversationSummary: "Earlier turns were summarized."' in user_prompt
     assert "Context rules:" in system_prompt
 
 

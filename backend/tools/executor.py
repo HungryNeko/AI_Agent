@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from tools import WebSearch, curl, fileEditor, mcp, rag
+from agent.debug_log import log_event, log_exception
+from tools import WebSearch, appSettings, automation, curl, fileEditor, history, mcp, rag
 from tools import python as python_tool
 from tools.request import ToolRequest
 from tools.settings import ToolSettings
@@ -20,34 +21,62 @@ IMAGE_URL_RE = re.compile(
 def execute_tool(request: ToolRequest, settings: ToolSettings) -> str:
     """Run one tool call and return content for a `role=tool` message."""
 
+    log_event("tool.request", tool=request.name, request=request)
     try:
-        if request.name == "webSearch":
-            results = WebSearch.search(request.query, settings.web_search)
-            return format_web_search_results(results)
-        if request.name == "rag":
-            results = rag.search(request.query, settings.rag)
-            return format_rag_results(results)
-        if request.name == "curl":
-            result = curl.get(request.url, settings.curl)
-            return format_curl_result(result)
-        if request.name == "python":
-            result = python_tool.run(request.code, settings.python)
-            return format_python_result(result)
-        if request.name == "fileEditor":
-            if request.file_edit is None:
-                return 'toolError: "fileEditor request is missing file_edit."'
-            result = fileEditor.execute(request.file_edit, settings.file_editor)
-            return format_file_editor_result(result)
-        if request.name == "mcp":
-            if request.mcp_request is None:
-                return 'toolError: "mcp request is missing mcp_request."'
-            result = mcp.execute(request.mcp_request, settings.mcp)
-            return format_mcp_result(result)
+        result_text = execute_tool_uncaught(request, settings)
     except NotImplementedError as exc:
-        return f'toolError: "{exc}"'
+        result_text = f'toolError: "{exc}"'
+        log_exception("tool.error", exc, tool=request.name, request=request, result=result_text)
     except Exception as exc:
-        return f'toolError: "{request.name} failed: {exc}"'
+        result_text = f'toolError: "{request.name} failed: {exc}"'
+        log_exception("tool.error", exc, tool=request.name, request=request, result=result_text)
 
+    log_event(
+        "tool.response",
+        tool=request.name,
+        request=request,
+        is_error=result_text.startswith("toolError:"),
+        result=result_text,
+    )
+    return result_text
+
+
+def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
+    if request.name == "webSearch":
+        results = WebSearch.search(request.query, settings.web_search)
+        return format_web_search_results(results)
+    if request.name == "rag":
+        results = rag.search(request.query, settings.rag)
+        return format_rag_results(results)
+    if request.name == "curl":
+        result = curl.get(request.url, settings.curl)
+        return format_curl_result(result)
+    if request.name == "python":
+        result = python_tool.run(request.code, settings.python)
+        return format_python_result(result)
+    if request.name == "fileEditor":
+        if request.file_edit is None:
+            return 'toolError: "fileEditor request is missing file_edit."'
+        result = fileEditor.execute(request.file_edit, settings.file_editor)
+        return format_file_editor_result(result)
+    if request.name == "mcp":
+        if request.mcp_request is None:
+            return 'toolError: "mcp request is missing mcp_request."'
+        result = mcp.execute(request.mcp_request, settings.mcp)
+        return format_mcp_result(result)
+    if request.name == "history":
+        if request.history_request is None:
+            return 'toolError: "history request is missing history_request."'
+        return history.execute(request.history_request)
+    if request.name == "automation":
+        if request.automation_request is None:
+            return 'toolError: "automation request is missing automation_request."'
+        result = automation.execute(request.automation_request, settings)
+        return format_automation_result(result)
+    if request.name == "settings":
+        if request.settings_request is None:
+            return 'toolError: "settings request is missing settings_request."'
+        return "settingsResult:\n" + appSettings.execute(request.settings_request)
     return f'toolError: "unknown tool: {request.name}"'
 
 
@@ -223,3 +252,24 @@ def format_mcp_result(result: dict[str, Any]) -> str:
             continue
         lines.append(f"{key}: {value}")
     return "\n".join(lines)
+
+
+def format_automation_result(result: dict[str, Any]) -> str:
+    lines = ["automationResult:"]
+    for key, value in result.items():
+        if key == "result" and isinstance(value, dict):
+            lines.append("result:")
+            lines.append(json_dumps(value))
+            continue
+        if isinstance(value, (dict, list)):
+            lines.append(f"{key}:")
+            lines.append(json_dumps(value))
+            continue
+        lines.append(f"{key}: {value}")
+    return "\n".join(lines)
+
+
+def json_dumps(value: Any) -> str:
+    import json
+
+    return json.dumps(value, ensure_ascii=False, indent=2, default=str)

@@ -119,10 +119,11 @@ python backend\scripts\simple_chat.py --web-search-mode auto --curl-mode auto "S
 If Python `httpx` times out, the tool falls back to system `curl.exe`/`curl`
 with a 20 second default timeout. If a tool execution fails, the raw error is
 sent to the model. The model may decide whether a retry, official-doc lookup,
-changed endpoint, changed parameters, or different source makes sense; the
-backend only blocks the exact same tool input after two attempts in one user
-turn. If `max_tool_rounds` is reached, the backend makes one final model call
-without tools so the user gets a final explanation instead of a hard graph error.
+changed endpoint, changed parameters, or different source makes sense. The
+frontend-selected `max_tool_rounds` controls the loop: `0` disables tools for
+the turn, and `-1` allows unlimited rounds. If a non-negative limit is reached,
+the backend makes one final model call without tools so the user gets a final
+explanation instead of a hard graph error.
 
 Python mode lets the model run Python for math, statistics, data analysis,
 plotting, and local scripting. The Python current working directory is the
@@ -216,9 +217,29 @@ model-written JSON in normal text.
 Backend-only settings such as max results, timeout, and similarity threshold
 stay in `backend/tools/settings.py`.
 
-The first system prompt includes the fixed rules at the top for better prompt
-cache reuse. Later turns reuse conversation history and only add small dynamic
-context lines.
+## Debug Logs
+
+The backend writes append-only JSONL debug logs under
+`backend/runtime/logs/agent-YYYYMMDD.jsonl`. These logs include chat stream
+starts, LLM requests and responses, tool calls and results, MCP calls, and
+exception tracebacks. Sensitive fields such as authorization headers, API keys,
+tokens, secrets, and large base64/body payloads are redacted or omitted.
+
+Set `AI_AGENT_LOG_DIR` to write logs somewhere else:
+
+```powershell
+$env:AI_AGENT_LOG_DIR = "D:\tmp\ai-agent-logs"
+```
+
+The first system prompt includes fixed rules plus `data/instruction.md`.
+Later turns refresh current time, available tools, RAG context, and optional
+compressed summary, but they do not re-inject the instruction file. Conversation JSON is saved under
+`backend/runtime/conversations`; compression shortens active model context but
+does not delete the full saved history, which the `history` tool can read.
+RAG builds a local TF-IDF vector index at `backend/runtime/rag_index/index.pkl`
+and searches chunks with cosine similarity. The `/api/rag/reindex` endpoint
+rebuilds that vector index after instruction, memory, skill, or knowledge files
+change.
 
 Current chain:
 

@@ -1,10 +1,15 @@
-"""Small file-backed RAG over knowledge, memory, and skills."""
+"""Local vector RAG over knowledge, memory, and skills."""
 
 from __future__ import annotations
 
-import re
+import hashlib
+import pickle
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 from tools import memory, skills
 from tools.settings import RagSettings
@@ -20,11 +25,33 @@ class RagDocument:
 
 
 @dataclass(frozen=True)
+class RagChunk:
+    source_type: str
+    path: str
+    chunk_index: int
+    text: str
+
+
+@dataclass(frozen=True)
 class ScoredChunk:
     source_type: str
     path: str
+    chunk_index: int
     score: float
     text: str
+
+
+@dataclass(frozen=True)
+class VectorIndex:
+    version: int
+    built_at: str
+    signature: str
+    chunks: list[RagChunk]
+    vectorizer: Any
+    matrix: Any
+
+
+INDEX_VERSION = 1
 
 
 def auto_context(user_message: str, settings: RagSettings) -> str | None:
@@ -39,7 +66,7 @@ def auto_context(user_message: str, settings: RagSettings) -> str | None:
 
 
 def search(query: str, settings: RagSettings) -> list[str]:
-    """Search local knowledge, memory, and skill documents."""
+    """Search the persisted vector index."""
 
     if not settings.can_model_call:
         raise ValueError("rag search is disabled for the model.")
@@ -48,39 +75,162 @@ def search(query: str, settings: RagSettings) -> list[str]:
 
 
 def search_chunks(query: str, settings: RagSettings) -> list[ScoredChunk]:
-    terms = tokenize(query)
-    if not terms:
+    clean_query = query.strip()
+    if not clean_query:
         return []
 
-    scored: list[ScoredChunk] = []
-    for document in iter_documents(settings):
-        score = score_document(query, terms, document)
-        if score <= 0:
+    index = load_or_rebuild_index(settings)
+    if not index.chunks or index.matrix is None or index.vectorizer is None:
+        return []
+
+    query_vector = index.vectorizer.transform([clean_query])
+    scores = (index.matrix @ query_vector.T).toarray().ravel()
+    min_score = max(0.0, float(settings.min_similarity))
+    ranked: list[ScoredChunk] = []
+    for position, score in enumerate(scores):
+        if score < min_score:
             continue
-        scored.append(
+        chunk = index.chunks[position]
+        ranked.append(
             ScoredChunk(
-                source_type=document.source_type,
-                path=relative_path(document.path),
-                score=score,
-                text=best_excerpt(document.text, terms, settings.max_chunk_chars),
+                source_type=chunk.source_type,
+                path=chunk.path,
+                chunk_index=chunk.chunk_index,
+                score=float(score),
+                text=chunk.text,
             )
         )
-    scored.sort(key=lambda item: (-item.score, item.path))
-    return scored[: settings.max_results]
+    ranked.sort(key=lambda item: (-item.score, item.path, item.chunk_index))
+    return ranked[: settings.max_results]
+
+
+def rebuild_index(settings: RagSettings) -> VectorIndex:
+    documents = iter_documents(settings)
+    chunks = chunk_documents(documents, settings)
+    signature = documents_signature(documents, settings)
+    vectorizer = None
+    matrix = None
+    if chunks:
+        vectorizer = TfidfVectorizer(
+            analyzer="char_wb",
+            ngram_range=(2, 5),
+            lowercase=True,
+            sublinear_tf=True,
+            norm="l2",
+        )
+        matrix = vectorizer.fit_transform(vector_text(chunk) for chunk in chunks)
+    index = VectorIndex(
+        version=INDEX_VERSION,
+        built_at=utc_now(),
+        signature=signature,
+        chunks=chunks,
+        vectorizer=vectorizer,
+        matrix=matrix,
+    )
+    save_index(index, settings)
+    return index
+
+
+def load_or_rebuild_index(settings: RagSettings) -> VectorIndex:
+    documents = iter_documents(settings)
+    signature = documents_signature(documents, settings)
+    index = load_index(settings)
+    if (
+        index is None
+        or index.version != INDEX_VERSION
+        or index.signature != signature
+    ):
+        return rebuild_index(settings)
+    return index
+
+
+def load_index(settings: RagSettings) -> VectorIndex | None:
+    path = resolve_project_path(settings.index_path, allow_missing=True)
+    if not path.is_file():
+        return None
+    with path.open("rb") as file:
+        index = pickle.load(file)
+    if not isinstance(index, VectorIndex):
+        return None
+    return index
+
+
+def save_index(index: VectorIndex, settings: RagSettings) -> None:
+    path = resolve_project_path(settings.index_path, allow_missing=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as file:
+        pickle.dump(index, file)
+
+
+def index_status(settings: RagSettings) -> dict[str, object]:
+    index = load_or_rebuild_index(settings)
+    counts = {"knowledge": 0, "memory": 0, "skill": 0}
+    for chunk in index.chunks:
+        counts[chunk.source_type] = counts.get(chunk.source_type, 0) + 1
+    return {
+        "status": "ready",
+        "index": "local-vector",
+        "embedding": "tfidf-char-ngram",
+        "document_count": len(iter_documents(settings)),
+        "chunk_count": len(index.chunks),
+        "sources": counts,
+        "built_at": index.built_at,
+        "path": relative_path(resolve_project_path(settings.index_path, allow_missing=True)),
+    }
 
 
 def iter_documents(settings: RagSettings) -> list[RagDocument]:
     documents: list[RagDocument] = []
-    documents.extend(load_documents("knowledge", resolve_project_path(settings.knowledge_root), settings))
-    documents.extend(
-        RagDocument("memory", path, memory.read_text_file(path, max_bytes=settings.max_file_bytes))
-        for path in memory.iter_memory_files(settings.memory_root)
-    )
-    documents.extend(
-        RagDocument("skill", path, skills.read_text_file(path, max_bytes=settings.max_file_bytes))
-        for path in skills.iter_skill_files(settings.skills_root)
-    )
+    if settings.include_knowledge:
+        documents.extend(load_documents_from_roots("knowledge", [settings.knowledge_root, settings.user_knowledge_root], settings))
+    if settings.include_memory:
+        documents.extend(
+            RagDocument("memory", path, memory.read_text_file(path, max_bytes=settings.max_file_bytes))
+            for path in iter_memory_roots([settings.memory_root, settings.user_memory_root])
+        )
+    if settings.include_skills:
+        documents.extend(
+            RagDocument("skill", path, skills.read_text_file(path, max_bytes=settings.max_file_bytes))
+            for path in iter_skill_roots([settings.skills_root, settings.user_skills_root])
+        )
     return documents
+
+
+def load_documents_from_roots(source_type: str, roots: list[str], settings: RagSettings) -> list[RagDocument]:
+    documents: list[RagDocument] = []
+    seen: set[Path] = set()
+    for root_text in roots:
+        root = resolve_project_path(root_text, allow_missing=True)
+        for document in load_documents(source_type, root, settings):
+            if document.path in seen:
+                continue
+            seen.add(document.path)
+            documents.append(document)
+    return documents
+
+
+def iter_memory_roots(roots: list[str]) -> list[Path]:
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        for path in memory.iter_memory_files(root):
+            if path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def iter_skill_roots(roots: list[str]) -> list[Path]:
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        for path in skills.iter_skill_files(root):
+            if path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
+    return paths
 
 
 def load_documents(source_type: str, root: Path, settings: RagSettings) -> list[RagDocument]:
@@ -93,58 +243,59 @@ def load_documents(source_type: str, root: Path, settings: RagSettings) -> list[
     ]
 
 
-def score_document(query: str, terms: list[str], document: RagDocument) -> float:
-    text = document.text.lower()
-    path = relative_path(document.path).lower()
-    lowered_query = query.strip().lower()
-    score = 0.0
-    if lowered_query and lowered_query in text:
-        score += 8.0
-    if lowered_query and lowered_query in path:
-        score += 4.0
-    for term in terms:
-        score += text.count(term)
-        if term in path:
-            score += 3.0
-    if document.source_type == "skill" and document.path.name.upper() == "SKILL.MD":
-        score += 0.5
-    return score
+def chunk_documents(documents: list[RagDocument], settings: RagSettings) -> list[RagChunk]:
+    chunks: list[RagChunk] = []
+    max_chars = max(500, int(settings.max_chunk_chars))
+    overlap = min(max(0, int(settings.chunk_overlap_chars)), max_chars // 2)
+    step = max_chars - overlap
+    for document in documents:
+        text = document.text.strip()
+        if not text:
+            continue
+        path = relative_path(document.path)
+        for index, start in enumerate(range(0, len(text), step)):
+            chunk_text = text[start : start + max_chars].strip()
+            if chunk_text:
+                chunks.append(
+                    RagChunk(
+                        source_type=document.source_type,
+                        path=path,
+                        chunk_index=index,
+                        text=chunk_text,
+                    )
+                )
+            if start + max_chars >= len(text):
+                break
+    return chunks
 
 
-def best_excerpt(text: str, terms: list[str], max_chars: int) -> str:
-    clean = text.strip()
-    if len(clean) <= max_chars:
-        return clean
-    lowered = clean.lower()
-    positions = [lowered.find(term) for term in terms if lowered.find(term) >= 0]
-    start = max(0, min(positions) - max_chars // 4) if positions else 0
-    end = min(len(clean), start + max_chars)
-    excerpt = clean[start:end].strip()
-    if start > 0:
-        excerpt = "..." + excerpt
-    if end < len(clean):
-        excerpt += "..."
-    return excerpt
+def documents_signature(documents: list[RagDocument], settings: RagSettings) -> str:
+    digest = hashlib.sha256()
+    digest.update(str(INDEX_VERSION).encode("utf-8"))
+    digest.update(str(settings.include_knowledge).encode("utf-8"))
+    digest.update(str(settings.include_memory).encode("utf-8"))
+    digest.update(str(settings.include_skills).encode("utf-8"))
+    digest.update(str(settings.max_chunk_chars).encode("utf-8"))
+    digest.update(str(settings.chunk_overlap_chars).encode("utf-8"))
+    for document in documents:
+        stat = document.path.stat()
+        digest.update(document.source_type.encode("utf-8"))
+        digest.update(relative_path(document.path).encode("utf-8"))
+        digest.update(str(stat.st_mtime_ns).encode("utf-8"))
+        digest.update(str(stat.st_size).encode("utf-8"))
+    return digest.hexdigest()
 
 
-def tokenize(text: str) -> list[str]:
-    lowered = text.lower()
-    ascii_terms = re.findall(r"[a-z0-9_\-]{2,}", lowered)
-    cjk_terms = re.findall(r"[\u4e00-\u9fff]", lowered)
-    seen: set[str] = set()
-    terms: list[str] = []
-    for term in ascii_terms + cjk_terms:
-        if term not in seen:
-            terms.append(term)
-            seen.add(term)
-    return terms
+def vector_text(chunk: RagChunk) -> str:
+    return f"{chunk.source_type}\n{chunk.path}\n{chunk.text}"
 
 
 def format_chunk(chunk: ScoredChunk) -> str:
     return (
         f"sourceType: {chunk.source_type}\n"
         f"path: {chunk.path}\n"
-        f"score: {chunk.score:.2f}\n"
+        f"chunk: {chunk.chunk_index}\n"
+        f"score: {chunk.score:.4f}\n"
         f"content: {chunk.text}"
     )
 
@@ -155,13 +306,13 @@ def read_text_file(path: Path, *, max_bytes: int) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
-def resolve_project_path(path_text: str) -> Path:
+def resolve_project_path(path_text: str, *, allow_missing: bool = False) -> Path:
     path = Path(path_text)
     if not path.is_absolute():
         path = project_root() / path
-    root = project_root()
-    resolved = path.resolve()
-    resolved.relative_to(root)
+    resolved = path.resolve() if path.exists() else path.parent.resolve() / path.name
+    if not allow_missing and not resolved.exists():
+        raise ValueError(f"path does not exist: {path_text}")
     return resolved
 
 
@@ -174,3 +325,7 @@ def relative_path(path: Path) -> str:
         return str(path.resolve().relative_to(project_root())).replace("\\", "/")
     except ValueError:
         return str(path)
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")

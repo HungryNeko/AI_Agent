@@ -35,6 +35,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--web-search-base-url", default=None)
     parser.add_argument("--rag-mode", choices=["off", "on", "auto"], default="auto")
+    parser.add_argument("--rag-knowledge", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--rag-memory", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--rag-skills", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--curl", action="store_true", help="Alias for --curl-mode auto.")
     parser.add_argument("--curl-mode", choices=["off", "auto"], default="auto")
     parser.add_argument("--python", action="store_true", help="Alias for --python-mode auto.")
@@ -44,6 +47,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--file-editor-approval", choices=["readOnly", "manual", "auto"], default="auto")
     parser.add_argument("--mcp", action="store_true", help="Alias for --mcp-mode auto.")
     parser.add_argument("--mcp-mode", choices=["off", "auto"], default="auto")
+    parser.add_argument("--history", action="store_true", help="Alias for --history-mode auto.")
+    parser.add_argument("--history-mode", choices=["off", "auto"], default="off")
     parser.add_argument("--rag-context", default=None)
     parser.add_argument("--web-search-result", action="append", default=None)
     parser.add_argument("--rag-result", action="append", default=None)
@@ -82,6 +87,9 @@ def make_state(args: argparse.Namespace) -> ChatState:
         web_search_provider=args.web_search_provider,
         web_search_base_url=args.web_search_base_url,
         rag_mode=args.rag_mode,
+        rag_include_knowledge=args.rag_knowledge,
+        rag_include_memory=args.rag_memory,
+        rag_include_skills=args.rag_skills,
         curl=args.curl,
         curl_mode=args.curl_mode,
         python=args.python,
@@ -91,6 +99,8 @@ def make_state(args: argparse.Namespace) -> ChatState:
         file_editor_approval=args.file_editor_approval,
         mcp=args.mcp,
         mcp_mode=args.mcp_mode,
+        history=args.history,
+        history_mode=args.history_mode,
         rag_context=args.rag_context,
         web_search_results=args.web_search_result,
         rag_results=args.rag_result,

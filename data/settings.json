@@ -1,0 +1,25 @@
+{
+  "ui": {
+    "theme": "system",
+    "language": "zh"
+  },
+  "chat": {
+    "model": "",
+    "system_prompt": "",
+    "web_search_mode": "auto",
+    "web_search_provider": "duckduckgo",
+    "web_search_auto_switch": true,
+    "rag_mode": "auto",
+    "rag_include_knowledge": true,
+    "rag_include_memory": true,
+    "rag_include_skills": true,
+    "curl_mode": "auto",
+    "python_mode": "auto",
+    "file_editor_mode": "auto",
+    "file_editor_approval": "auto",
+    "mcp_mode": "auto",
+    "history_mode": "auto",
+    "automation_mode": "auto",
+    "max_tool_rounds": 20
+  }
+}
