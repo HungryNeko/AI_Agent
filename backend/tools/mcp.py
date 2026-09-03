@@ -7,6 +7,7 @@ import binascii
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ IMAGE_EXTENSIONS_BY_CONTENT_TYPE = {
     "image/webp": ".webp",
     "image/svg+xml": ".svg",
 }
+ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 @dataclass(frozen=True)
@@ -112,9 +114,12 @@ def call_tool(server_name: str, tool_name: str, arguments: dict[str, Any], setti
 
 def load_config(settings: McpSettings) -> dict[str, dict[str, Any]]:
     path = resolve_project_path(settings.config_path)
-    if not path.exists():
-        return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data: dict[str, Any] = {"servers": {}}
+    if path.exists():
+        data = json.loads(path.read_text(encoding="utf-8"))
+    local_path = path.with_name(f"{path.stem}.local{path.suffix}")
+    if local_path.exists():
+        data = merge_mcp_config(data, json.loads(local_path.read_text(encoding="utf-8")))
     servers = data.get("servers") if isinstance(data, dict) else None
     if not isinstance(servers, dict):
         raise ValueError("mcp config must contain an object field `servers`.")
@@ -123,6 +128,14 @@ def load_config(settings: McpSettings) -> dict[str, dict[str, Any]]:
         if isinstance(name, str) and isinstance(server, dict):
             clean[name] = server
     return clean
+
+
+def merge_mcp_config(base: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    base_servers = base.get("servers") if isinstance(base.get("servers"), dict) else {}
+    local_servers = local.get("servers") if isinstance(local.get("servers"), dict) else {}
+    merged["servers"] = {**base_servers, **local_servers}
+    return merged
 
 
 def require_server(name: str, settings: McpSettings) -> dict[str, Any]:
@@ -291,7 +304,7 @@ def build_http_headers(server: dict[str, Any], *, session_id: str = "") -> dict[
             raise ValueError("mcp server headers must be an object.")
         for key, value in configured.items():
             if isinstance(key, str) and isinstance(value, str) and key.strip():
-                headers[key.strip()] = value
+                headers[key.strip()] = expand_env_placeholders(value)
     if session_id:
         headers["Mcp-Session-Id"] = session_id
     return headers
@@ -375,8 +388,12 @@ def build_env(server: dict[str, Any]) -> dict[str, str]:
         raise ValueError("mcp server env must be an object.")
     for key, value in configured.items():
         if isinstance(key, str) and isinstance(value, str):
-            env[key] = value
+            env[key] = expand_env_placeholders(value)
     return env
+
+
+def expand_env_placeholders(value: str) -> str:
+    return ENV_PLACEHOLDER_RE.sub(lambda match: os.getenv(match.group(1), ""), value)
 
 
 def send_message(process: subprocess.Popen[str], message: dict[str, Any]) -> None:

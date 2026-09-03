@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = PROJECT_ROOT / "backend"
 CONFIG_PATH = PROJECT_ROOT / "data" / "api_configs.json"
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     provider: str
@@ -37,11 +39,44 @@ def load_environment() -> None:
 
 def load_config() -> dict[str, Any]:
     load_environment()
-    with CONFIG_PATH.open("r", encoding="utf-8") as file:
-        data = json.load(file)
+    data = read_json_object(CONFIG_PATH, "data/api_configs.json")
+    local_path = local_config_path()
+    if local_path.exists():
+        data = deep_merge(data, read_json_object(local_path, "data/api_configs.local.json"))
     if not isinstance(data, dict):
         raise ValueError("data/api_configs.json must be a JSON object.")
     return data
+
+
+def save_config(data: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("model config must be a JSON object.")
+    target = path or local_config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return load_config()
+
+
+def local_config_path() -> Path:
+    return CONFIG_PATH.with_name("api_configs.local.json")
+
+
+def read_json_object(path: Path, label: str) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+    if not isinstance(data, dict):
+        raise ValueError(f"{label} must be a JSON object.")
+    return data
+
+
+def deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def get_model_config(model: str | None = None) -> ModelConfig:

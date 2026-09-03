@@ -52,6 +52,7 @@ const TEXT = {
   config: ["模型", "Models"],
   mcp: ["MCP", "MCP"],
   settings: ["设置", "Settings"],
+  automation: ["自动化", "Automation"],
   history: ["历史", "History"],
   newChat: ["新对话", "New Chat"],
   compress: ["压缩", "Compress"],
@@ -60,6 +61,7 @@ const TEXT = {
   uploadFile: ["上传文件", "Upload file"],
   uploadImage: ["上传图片", "Upload image"],
   autoApproval: ["自动批准", "Auto approval"],
+  system: ["系统", "System"],
 };
 
 function App() {
@@ -71,6 +73,7 @@ function App() {
   const pendingSettingsPatchRef = useRef({});
   const settingsSaveTimerRef = useRef(null);
   const label = useLabel(language);
+  const text = useText(language);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -143,8 +146,9 @@ function App() {
           <TabButton active={tab === "chat"} onClick={() => setTab("chat")} icon={<Send size={16} />} label={label("chat")} />
           <TabButton active={tab === "data"} onClick={() => setTab("data")} icon={<Database size={16} />} label={label("data")} />
           <TabButton active={tab === "config"} onClick={() => setTab("config")} icon={<Settings size={16} />} label={label("config")} />
+          <TabButton active={tab === "automation"} onClick={() => setTab("automation")} icon={<RefreshCw size={16} />} label={label("automation")} />
           <TabButton active={tab === "mcp"} onClick={() => setTab("mcp")} icon={<Plug size={16} />} label={label("mcp")} />
-          <TabButton active={tab === "system"} onClick={() => setTab("system")} icon={<Sun size={16} />} label="系统" />
+          <TabButton active={tab === "system"} onClick={() => setTab("system")} icon={<Sun size={16} />} label={label("system")} />
         </nav>
       </header>
 
@@ -154,15 +158,17 @@ function App() {
           options={options}
           setOptions={setOptions}
           label={label}
+          text={text}
           onSettingsChanged={reloadSettings}
         />
       )}
-      {tab === "data" && <DataView />}
+      {tab === "data" && <DataView text={text} />}
       {tab === "config" && (
-        <ConfigView onSaved={() => fetchJson("/api/models").then((data) => setModels(data.models || [])).catch(() => {})} />
+        <ConfigView text={text} onSaved={() => fetchJson("/api/models").then((data) => setModels(data.models || [])).catch(() => {})} />
       )}
-      {tab === "mcp" && <McpView />}
-      {tab === "system" && <SystemView theme={theme} setTheme={setTheme} language={language} setLanguage={setLanguage} />}
+      {tab === "automation" && <AutomationView options={options} setOptions={setOptions} text={text} />}
+      {tab === "mcp" && <McpView text={text} />}
+      {tab === "system" && <SystemView theme={theme} setTheme={setTheme} language={language} setLanguage={setLanguage} text={text} />}
     </main>
   );
 }
@@ -176,7 +182,7 @@ function TabButton({ active, onClick, icon, label }) {
   );
 }
 
-function ChatView({ models, options, setOptions, label, onSettingsChanged }) {
+function ChatView({ models, options, setOptions, label, text, onSettingsChanged }) {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [events, setEvents] = useState([]);
@@ -213,7 +219,7 @@ function ChatView({ models, options, setOptions, label, onSettingsChanged }) {
     try {
       const data = await fetchJson("/api/conversations");
       setConversations(data.conversations || []);
-      setMentionOptions((current) => mergeMentionOptions(current, conversationMentionOptions(data.conversations || [])));
+      setMentionOptions((current) => mergeMentionOptions(current, conversationMentionOptions(data.conversations || [], text)));
     } catch (error) {
       setHistoryStatus(`历史加载失败: ${String(error.message || error)}`);
     }
@@ -305,7 +311,7 @@ function ChatView({ models, options, setOptions, label, onSettingsChanged }) {
   }
 
   async function loadMentionOptions() {
-    const base = toolMentionOptions();
+    const base = toolMentionOptions(text);
     try {
       const [history, memory, skills, knowledge] = await Promise.all([
         fetchJson("/api/conversations").catch(() => ({ conversations: [] })),
@@ -315,10 +321,10 @@ function ChatView({ models, options, setOptions, label, onSettingsChanged }) {
       ]);
       setMentionOptions([
         ...base,
-        ...conversationMentionOptions(history.conversations || []),
-        ...fileMentionOptions("memory", memory.items || memory.files || []),
-        ...fileMentionOptions("skill", skills.items || skills.files || []),
-        ...fileMentionOptions("knowledge", knowledge.items || knowledge.files || []),
+        ...conversationMentionOptions(history.conversations || [], text),
+        ...fileMentionOptions("memory", memory.items || memory.files || [], text),
+        ...fileMentionOptions("skill", skills.items || skills.files || [], text),
+        ...fileMentionOptions("knowledge", knowledge.items || knowledge.files || [], text),
       ]);
     } catch {
       setMentionOptions(base);
@@ -408,6 +414,7 @@ function ChatView({ models, options, setOptions, label, onSettingsChanged }) {
             models={models}
             options={options}
             setOptions={setOptions}
+            text={text}
             clearState={newConversation}
           />
         ) : (
@@ -501,51 +508,51 @@ function ChatView({ models, options, setOptions, label, onSettingsChanged }) {
   );
 }
 
-function SettingsPanel({ models, options, setOptions, clearState }) {
+function SettingsPanel({ models, options, setOptions, clearState, text }) {
   const update = (key, value) => setOptions((current) => ({ ...current, [key]: value }));
   return (
     <div className="settingsPane embeddedSettings">
       <div className="paneHeader">
-        <h2>设置 SETTINGS</h2>
+        <h2>{text("设置", "SETTINGS")}</h2>
         <Settings size={17} />
       </div>
       <label>
-        <span>模型 Model</span>
+        <span>{text("模型", "Model")}</span>
         <select value={options.model} onChange={(event) => update("model", event.target.value)}>
-          <option value="">默认 Default</option>
+          <option value="">{text("默认", "Default")}</option>
           {models.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
         </select>
       </label>
       <label>
-        <span>额外提示 Extra Prompt</span>
-        <textarea className="smallTextArea" value={options.system_prompt} onChange={(event) => update("system_prompt", event.target.value)} placeholder="仅当前对话追加到首个 system prompt" />
+        <span>{text("额外提示", "Extra Prompt")}</span>
+        <textarea className="smallTextArea" value={options.system_prompt} onChange={(event) => update("system_prompt", event.target.value)} placeholder={text("仅当前对话追加到首个 system prompt", "Append only to the first system prompt in this chat")} />
       </label>
       <div className="settingGrid">
-        <SelectField label="联网 Web" value={options.web_search_mode} onChange={(value) => update("web_search_mode", value)} values={["off", "auto"]} />
-        <SelectField label="搜索 Search" value={options.web_search_provider} onChange={(value) => update("web_search_provider", value)} values={["duckduckgo", "searxng", "tavily"]} />
-        <SelectField label="自动切换 Search Fallback" value={String(options.web_search_auto_switch)} onChange={(value) => update("web_search_auto_switch", value === "true")} values={["true", "false"]} />
+        <SelectField label={text("联网", "Web")} value={options.web_search_mode} onChange={(value) => update("web_search_mode", value)} values={["off", "auto"]} />
+        <SelectField label={text("搜索", "Search")} value={options.web_search_provider} onChange={(value) => update("web_search_provider", value)} values={["duckduckgo", "searxng", "tavily"]} />
+        <SelectField label={text("自动切换", "Search Fallback")} value={String(options.web_search_auto_switch)} onChange={(value) => update("web_search_auto_switch", value === "true")} values={["true", "false"]} />
         <SelectField label="RAG" value={options.rag_mode} onChange={(value) => update("rag_mode", value)} values={["off", "on", "auto"]} />
         <SelectField label="HTTP" value={options.curl_mode} onChange={(value) => update("curl_mode", value)} values={["off", "auto"]} />
         <SelectField label="Python" value={options.python_mode} onChange={(value) => update("python_mode", value)} values={["off", "auto"]} />
-        <SelectField label="文件 File" value={options.file_editor_mode} onChange={(value) => update("file_editor_mode", value)} values={["off", "auto"]} />
-        <SelectField label="批准 Approval" value={options.file_editor_approval} onChange={(value) => update("file_editor_approval", value)} values={["manual", "auto", "readOnly"]} />
+        <SelectField label={text("文件", "File")} value={options.file_editor_mode} onChange={(value) => update("file_editor_mode", value)} values={["off", "auto"]} />
+        <SelectField label={text("批准", "Approval")} value={options.file_editor_approval} onChange={(value) => update("file_editor_approval", value)} values={["manual", "auto", "aiReview", "readOnly"]} />
         <SelectField label="MCP" value={options.mcp_mode} onChange={(value) => update("mcp_mode", value)} values={["off", "auto"]} />
-        <SelectField label="历史 History" value={options.history_mode} onChange={(value) => update("history_mode", value)} values={["off", "auto"]} />
-        <SelectField label="自动化 Automation" value={options.automation_mode} onChange={(value) => update("automation_mode", value)} values={["off", "auto"]} />
+        <SelectField label={text("历史", "History")} value={options.history_mode} onChange={(value) => update("history_mode", value)} values={["off", "auto"]} />
+        <SelectField label={text("自动化", "Automation")} value={options.automation_mode} onChange={(value) => update("automation_mode", value)} values={["off", "auto"]} />
       </div>
       <div className="checkGrid">
-        <label className="checkLine"><input type="checkbox" checked={options.rag_include_memory} onChange={(event) => update("rag_include_memory", event.target.checked)} /><span>RAG 记忆 MEMORY</span></label>
-        <label className="checkLine"><input type="checkbox" checked={options.rag_include_skills} onChange={(event) => update("rag_include_skills", event.target.checked)} /><span>RAG 技能 SKILL</span></label>
-        <label className="checkLine"><input type="checkbox" checked={options.rag_include_knowledge} onChange={(event) => update("rag_include_knowledge", event.target.checked)} /><span>RAG 知识 KNOWLEDGE</span></label>
+        <label className="checkLine"><input type="checkbox" checked={options.rag_include_memory} onChange={(event) => update("rag_include_memory", event.target.checked)} /><span>{text("RAG 记忆", "RAG Memory")}</span></label>
+        <label className="checkLine"><input type="checkbox" checked={options.rag_include_skills} onChange={(event) => update("rag_include_skills", event.target.checked)} /><span>{text("RAG 技能", "RAG Skill")}</span></label>
+        <label className="checkLine"><input type="checkbox" checked={options.rag_include_knowledge} onChange={(event) => update("rag_include_knowledge", event.target.checked)} /><span>{text("RAG 知识", "RAG Knowledge")}</span></label>
       </div>
       <label>
-        <span>工具轮次 Tool Rounds</span>
+        <span>{text("工具轮次", "Tool Rounds")}</span>
         <input type="number" min="-1" value={options.max_tool_rounds} onChange={(event) => update("max_tool_rounds", Number(event.target.value))} />
-        <small>-1 = 无限制，0 = 禁用工具</small>
+        <small>{text("-1 = 无限制，0 = 禁用工具", "-1 = unlimited, 0 = tools disabled")}</small>
       </label>
-      <button className="secondaryButton" type="button" onClick={clearState} title="Clear conversation">
+      <button className="secondaryButton" type="button" onClick={clearState} title={text("重置对话", "Clear conversation")}>
         <RefreshCw size={16} />
-        <span>重置对话 Reset</span>
+        <span>{text("重置对话", "Reset")}</span>
       </button>
     </div>
   );
@@ -668,7 +675,7 @@ function ImageStrip({ images }) {
   );
 }
 
-function DataView() {
+function DataView({ text }) {
   const [kind, setKind] = useState("instruction");
   const [files, setFiles] = useState([]);
   const [selected, setSelected] = useState("");
@@ -732,7 +739,7 @@ function DataView() {
 
   async function renameSelected() {
     if (!selected || !selectedMeta.writable || !selected.toLowerCase().endsWith(".md")) return;
-    const nextName = window.prompt("重命名 Markdown 文件", selected.split("/").pop() || "");
+    const nextName = window.prompt(text("重命名 Markdown 文件", "Rename Markdown file"), selected.split("/").pop() || "");
     if (!nextName) return;
     const data = await fetchJson("/api/data/file/rename", { method: "POST", body: { path: selected, new_name: nextName } });
     await refreshListOnly();
@@ -768,10 +775,10 @@ function DataView() {
   }
 
   const resourceTabs = [
-    ["instruction", "INSTRUCTION 指令"],
-    ["memory", "MEMORY 记忆"],
-    ["skills", "SKILL 技能"],
-    ["knowledge", "KNOWLEDGE 知识"],
+    ["instruction", text("指令", "INSTRUCTION")],
+    ["memory", text("记忆", "MEMORY")],
+    ["skills", text("技能", "SKILL")],
+    ["knowledge", text("知识", "KNOWLEDGE")],
   ];
   const isMarkdown = selected.toLowerCase().endsWith(".md");
 
@@ -783,7 +790,7 @@ function DataView() {
             <button key={value} className={kind === value ? "active" : ""} onClick={() => setKind(value)} type="button">{tabLabel}</button>
           ))}
         </div>
-        <button className="secondaryButton full" onClick={reindexRag} type="button"><RefreshCw size={16} /><span>刷新 RAG</span></button>
+        <button className="secondaryButton full" onClick={reindexRag} type="button"><RefreshCw size={16} /><span>{text("刷新 RAG", "Refresh RAG")}</span></button>
         <div className="fileList">
           {files.map((file) => (
             <button key={file.path} className={selected === file.path ? "fileItem active" : "fileItem"} onClick={() => openFile(file)} type="button">
@@ -798,32 +805,35 @@ function DataView() {
         <div className="editorHeader">
           <div>
             <h2>{selected || "资源文件"}</h2>
-            <span>{selectedMeta.writable ? "可编辑用户文件" : "系统级文件只读"}。指令是短规则，记忆是事实，技能是流程，知识是参考文档。</span>
+            <span>{text(
+              `${selectedMeta.writable ? "可编辑用户文件" : "系统级文件只读"}。指令是短规则，记忆是事实，技能是流程，知识是参考文档。`,
+              `${selectedMeta.writable ? "Editable user file" : "System file is read-only"}. Instructions are short rules, memory is facts, skills are workflows, and knowledge is reference material.`
+            )}</span>
           </div>
           <div className="rowActions">
-            <button className="secondaryButton" onClick={() => setPreview((value) => !value)} disabled={!isMarkdown} type="button"><FileText size={16} /><span>{preview ? "编辑" : "显示 MD"}</span></button>
-            <button className="secondaryButton" onClick={renameSelected} disabled={!selectedMeta.writable || !isMarkdown} type="button"><AtSign size={16} /><span>重命名</span></button>
-            <button className="primaryButton" onClick={saveFile} disabled={!selected || !selectedMeta.writable} type="button"><Save size={16} /><span>保存</span></button>
+            <button className="secondaryButton" onClick={() => setPreview((value) => !value)} disabled={!isMarkdown} type="button"><FileText size={16} /><span>{preview ? text("编辑", "Edit") : text("显示 MD", "Show MD")}</span></button>
+            <button className="secondaryButton" onClick={renameSelected} disabled={!selectedMeta.writable || !isMarkdown} type="button"><AtSign size={16} /><span>{text("重命名", "Rename")}</span></button>
+            <button className="primaryButton" onClick={saveFile} disabled={!selected || !selectedMeta.writable} type="button"><Save size={16} /><span>{text("保存", "Save")}</span></button>
           </div>
         </div>
         {preview ? (
           <div className="markdownPreview"><MarkdownText text={content} /></div>
         ) : (
-          <textarea className="codeEditor" value={content} onChange={(event) => setContent(event.target.value)} readOnly={!selectedMeta.writable} placeholder="选择并编辑指令、记忆、技能或知识文件。" />
+          <textarea className="codeEditor" value={content} onChange={(event) => setContent(event.target.value)} readOnly={!selectedMeta.writable} placeholder={text("选择并编辑指令、记忆、技能或知识文件。", "Choose and edit an instruction, memory, skill, or knowledge file.")} />
         )}
         {status && <p className="statusLine"><Check size={15} />{status}</p>}
       </div>
       <form className="importPane" onSubmit={importResource}>
-        <h2>导入 IMPORT</h2>
-        <label><span>名称 Name</span><input value={importName} onChange={(event) => setImportName(event.target.value)} placeholder={kind === "skills" ? "my-skill" : "notes.md"} /></label>
-        <label><span>内容 Content</span><textarea value={importContent} onChange={(event) => setImportContent(event.target.value)} /></label>
-        <button className="primaryButton" type="submit"><Plus size={16} /><span>导入到当前分类</span></button>
+        <h2>{text("导入", "IMPORT")}</h2>
+        <label><span>{text("名称", "Name")}</span><input value={importName} onChange={(event) => setImportName(event.target.value)} placeholder={kind === "skills" ? "my-skill" : "notes.md"} /></label>
+        <label><span>{text("内容", "Content")}</span><textarea value={importContent} onChange={(event) => setImportContent(event.target.value)} /></label>
+        <button className="primaryButton" type="submit"><Plus size={16} /><span>{text("导入到当前分类", "Import to current category")}</span></button>
       </form>
     </section>
   );
 }
 
-function ConfigView({ onSaved }) {
+function ConfigView({ onSaved, text }) {
   const [config, setConfig] = useState({ providers: {} });
   const [selectedProvider, setSelectedProvider] = useState("");
   const [status, setStatus] = useState("");
@@ -916,42 +926,42 @@ function ConfigView({ onSaved }) {
     <section className="configLayout">
       <aside className="providerPane">
         <div className="editorHeader">
-          <h2>供应商 PROVIDER</h2>
-          <button className="iconButton neutral" onClick={addProvider} type="button" title="新增"><Plus size={16} /></button>
+          <h2>{text("供应商", "PROVIDER")}</h2>
+          <button className="iconButton neutral" onClick={addProvider} type="button" title={text("新增", "Add")}><Plus size={16} /></button>
         </div>
         {Object.keys(providers).map((name) => (
           <button key={name} className={selectedProvider === name ? "providerItem active" : "providerItem"} onClick={() => setSelectedProvider(name)} type="button">
             <span><Key size={15} />{name}</span>
-            {config.default_provider === name && <small>DEFAULT</small>}
+            {config.default_provider === name && <small>{text("默认", "DEFAULT")}</small>}
           </button>
         ))}
       </aside>
       <div className="modelEditor">
         <div className="editorHeader">
           <div>
-            <h2>模型 API 配置 / MODEL API CONFIG</h2>
-            <span>选择左侧供应商后填写 Base URL、API Key 或环境变量，以及模型列表。</span>
+            <h2>{text("模型 API 配置", "MODEL API CONFIG")}</h2>
+            <span>{text("选择左侧供应商后填写 Base URL、API Key 或环境变量，以及模型列表。", "Choose a provider, then fill in Base URL, API Key or env var, and model list.")}</span>
           </div>
           <div className="rowActions">
-            <button className="secondaryButton" onClick={setDefaultProvider} disabled={!selectedProvider} type="button"><Check size={16} /><span>设为默认</span></button>
-            <button className="secondaryButton" onClick={renameProvider} disabled={!selectedProvider} type="button"><AtSign size={16} /><span>重命名</span></button>
-            <button className="dangerButton" onClick={deleteProvider} disabled={!selectedProvider} type="button"><Trash2 size={16} /><span>删除</span></button>
-            <button className="secondaryButton" onClick={refreshConfig} type="button"><RefreshCw size={16} /><span>刷新</span></button>
-            <button className="primaryButton" onClick={saveConfig} type="button"><Save size={16} /><span>保存</span></button>
+            <button className="secondaryButton" onClick={setDefaultProvider} disabled={!selectedProvider} type="button"><Check size={16} /><span>{text("设为默认", "Set Default")}</span></button>
+            <button className="secondaryButton" onClick={renameProvider} disabled={!selectedProvider} type="button"><AtSign size={16} /><span>{text("重命名", "Rename")}</span></button>
+            <button className="dangerButton" onClick={deleteProvider} disabled={!selectedProvider} type="button"><Trash2 size={16} /><span>{text("删除", "Delete")}</span></button>
+            <button className="secondaryButton" onClick={refreshConfig} type="button"><RefreshCw size={16} /><span>{text("刷新", "Refresh")}</span></button>
+            <button className="primaryButton" onClick={saveConfig} type="button"><Save size={16} /><span>{text("保存", "Save")}</span></button>
           </div>
         </div>
         {selectedProvider ? (
           <div className="modelForm">
-            <label><span>当前供应商 Current Provider</span><input value={selectedProvider} readOnly /></label>
-            <label><span>默认模型 Default Model</span><input value={config.default_model || ""} onChange={(event) => updateConfig((draft) => ({ ...draft, default_model: event.target.value }))} placeholder={`${selectedProvider}:deepseek-chat`} /></label>
+            <label><span>{text("当前供应商", "Current Provider")}</span><input value={selectedProvider} readOnly /></label>
+            <label><span>{text("默认模型", "Default Model")}</span><input value={config.default_model || ""} onChange={(event) => updateConfig((draft) => ({ ...draft, default_model: event.target.value }))} placeholder={`${selectedProvider}:deepseek-chat`} /></label>
             <label><span>Base URL</span><input value={provider.base_url || ""} onChange={(event) => updateProvider("base_url", event.target.value)} placeholder="https://api.deepseek.com/v1" /></label>
             <label><span>API Key</span><input value={provider.api_key || ""} onChange={(event) => updateProvider("api_key", event.target.value)} placeholder="直接保存 API Key" /></label>
             <label><span>API Key Env</span><input value={provider.api_key_env || ""} onChange={(event) => updateProvider("api_key_env", event.target.value)} placeholder="DEEPSEEK_API_KEY" /></label>
-            <label><span>默认供应商 Default Provider</span><input value={config.default_provider || ""} readOnly /></label>
-            <label className="fullWidth"><span>模型列表 Models，每行一个</span><textarea value={modelLines} onChange={(event) => updateProvider("models", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} placeholder={"deepseek-chat\ndeepseek-reasoner"} /></label>
+            <label><span>{text("默认供应商", "Default Provider")}</span><input value={config.default_provider || ""} readOnly /></label>
+            <label className="fullWidth"><span>{text("模型列表，每行一个", "Models, one per line")}</span><textarea value={modelLines} onChange={(event) => updateProvider("models", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} placeholder={"deepseek-chat\ndeepseek-reasoner"} /></label>
           </div>
         ) : (
-          <div className="emptyState">左侧新增或选择一个 Provider。</div>
+          <div className="emptyState">{text("左侧新增或选择一个 Provider。", "Add or choose a provider on the left.")}</div>
         )}
         {status && <p className="statusLine"><Check size={15} />{status}</p>}
       </div>
@@ -959,26 +969,212 @@ function ConfigView({ onSaved }) {
   );
 }
 
-function SystemView({ theme, setTheme, language, setLanguage }) {
+function SystemView({ theme, setTheme, language, setLanguage, text }) {
   return (
     <section className="systemLayout">
       <div className="systemPanel">
         <div className="editorHeader">
           <div>
-            <h2>系统设置 / SYSTEM SETTINGS</h2>
-            <span>这些设置只影响界面，不会混入当前对话提示词。</span>
+            <h2>{text("系统设置", "SYSTEM SETTINGS")}</h2>
+            <span>{text("这些设置只影响界面，不会混入当前对话提示词。", "These settings only affect the UI and are not injected into chat prompts.")}</span>
           </div>
         </div>
         <div className="modelForm">
-          <SelectField label="主题 Theme" value={theme} onChange={setTheme} values={["system", "light", "dark"]} icon={<Sun size={14} />} />
-          <SelectField label="语言 Language" value={language} onChange={setLanguage} values={["zh", "en", "both"]} icon={<Languages size={14} />} />
+          <SelectField label={text("主题", "Theme")} value={theme} onChange={setTheme} values={["system", "light", "dark"]} icon={<Sun size={14} />} />
+          <SelectField label={text("语言", "Language")} value={language} onChange={setLanguage} values={["zh", "en", "both"]} icon={<Languages size={14} />} />
         </div>
       </div>
     </section>
   );
 }
 
-function McpView() {
+function AutomationView({ options, setOptions, text }) {
+  const emptyForm = {
+    title: "",
+    action: "reminder",
+    enabled: true,
+    prompt: "",
+    code: "",
+    mcp_server: "",
+    mcp_tool: "",
+    scheduleText: '{\n  "kind": "once",\n  "nextRunAt": ""\n}',
+    mcpArgumentsText: "{}",
+    mcpConfigText: "{}",
+  };
+  const [items, setItems] = useState([]);
+  const [selected, setSelected] = useState("");
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [form, setForm] = useState(emptyForm);
+  const [runs, setRuns] = useState([]);
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    refreshAutomations();
+  }, []);
+
+  async function refreshAutomations() {
+    try {
+      const data = await fetchJson("/api/automations");
+      setItems(data.items || []);
+      if (selected) {
+        const detail = await fetchJson(`/api/automations/${encodeURIComponent(selected)}`).catch(() => null);
+        if (detail) setRuns(detail.runs || []);
+      }
+    } catch (error) {
+      setStatus(`${text("加载失败", "Load failed")}: ${String(error.message || error)}`);
+    }
+  }
+
+  async function openAutomation(id) {
+    const data = await fetchJson(`/api/automations/${encodeURIComponent(id)}`);
+    const content = data.content || {};
+    setSelected(id);
+    setSelectedItem(data.item || null);
+    setRuns(data.runs || []);
+    setForm({
+      title: content.title || "",
+      action: content.action || "reminder",
+      enabled: content.enabled ?? true,
+      prompt: content.prompt || "",
+      code: content.code || "",
+      mcp_server: content.mcp_server || "",
+      mcp_tool: content.mcp_tool || "",
+      scheduleText: JSON.stringify(content.schedule || {}, null, 2),
+      mcpArgumentsText: JSON.stringify(content.mcp_arguments || {}, null, 2),
+      mcpConfigText: JSON.stringify(content.mcp_config || {}, null, 2),
+    });
+    setStatus("");
+  }
+
+  function newAutomation() {
+    setSelected("");
+    setSelectedItem(null);
+    setForm(emptyForm);
+    setRuns([]);
+    setStatus("");
+  }
+
+  async function saveAutomation(event) {
+    event.preventDefault();
+    let payload;
+    try {
+      payload = automationPayloadFromForm(form);
+    } catch (error) {
+      setStatus(`${text("JSON 格式错误", "Invalid JSON")}: ${String(error.message || error)}`);
+      return;
+    }
+    const url = selected ? `/api/automations/${encodeURIComponent(selected)}` : "/api/automations";
+    const method = selected ? "PUT" : "POST";
+    try {
+      const data = await fetchJson(url, { method, body: payload });
+      setSelected(data.item?.id || selected);
+      setSelectedItem(data.item || null);
+      setRuns(data.item?.recent_runs || []);
+      await refreshAutomations();
+      setStatus(text("已保存自动化", "Automation saved"));
+    } catch (error) {
+      setStatus(`${text("保存失败", "Save failed")}: ${String(error.message || error)}`);
+    }
+  }
+
+  async function deleteAutomation() {
+    if (!selected || !window.confirm(text("删除这个自动化？", "Delete this automation?"))) return;
+    await fetchJson(`/api/automations/${encodeURIComponent(selected)}`, { method: "DELETE" });
+    newAutomation();
+    await refreshAutomations();
+    setStatus(text("已删除自动化", "Automation deleted"));
+  }
+
+  return (
+    <section className="configLayout">
+      <aside className="providerPane">
+        <div className="editorHeader">
+          <h2>{text("自动化", "AUTOMATION")}</h2>
+          <button className="iconButton neutral" onClick={newAutomation} type="button" title={text("新增", "Add")}><Plus size={16} /></button>
+        </div>
+        <label>
+          <span>{text("模型自动设置", "Model Auto Setup")}</span>
+          <select value={options.automation_mode} onChange={(event) => setOptions((current) => ({ ...current, automation_mode: event.target.value }))}>
+            <option value="off">{text("关闭", "Off")}</option>
+            <option value="auto">{text("允许", "Allowed")}</option>
+          </select>
+          <small>{text("开启后，模型可以通过 automation tool 保存提醒、LLM 步骤、脚本或 MCP 自动化。", "When enabled, the model can use the automation tool to save reminders, LLM steps, scripts, or MCP automations.")}</small>
+        </label>
+        <div className="fileList">
+          {items.map((item) => (
+            <button key={item.id} className={selected === item.id ? "fileItem active" : "fileItem"} onClick={() => openAutomation(item.id)} type="button">
+              <RefreshCw size={15} />
+              <span>
+                {item.title || item.id}
+                <small className="inlineMeta">{scheduleSummary(item, text)}</small>
+              </span>
+              <small>{item.enabled ? item.action : text("关闭", "OFF")}</small>
+            </button>
+          ))}
+        </div>
+      </aside>
+      <form className="modelEditor" onSubmit={saveAutomation}>
+        <div className="editorHeader">
+          <div>
+            <h2>{selected ? form.title || selected : text("新增自动化", "New Automation")}</h2>
+            <span>{text("人工创建会保存到同一个自动化目录；模型自动创建也会出现在这里。", "Manual entries are saved to the same automation directory; model-created entries appear here too.")}</span>
+          </div>
+          <div className="rowActions">
+            <button className="dangerButton" onClick={deleteAutomation} disabled={!selected} type="button"><Trash2 size={16} /><span>{text("删除", "Delete")}</span></button>
+            <button className="secondaryButton" onClick={refreshAutomations} type="button"><RefreshCw size={16} /><span>{text("刷新", "Refresh")}</span></button>
+            <button className="primaryButton" type="submit"><Save size={16} /><span>{text("保存", "Save")}</span></button>
+          </div>
+        </div>
+        <div className="modelForm">
+          <label><span>{text("标题", "Title")}</span><input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder={text("检查报告", "Check report")} /></label>
+          <SelectField label={text("类型", "Action")} value={form.action} onChange={(value) => setForm({ ...form, action: value })} values={["reminder", "llm", "script", "mcp", "configureMcp"]} />
+          <label className="checkLine"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} /><span>{text("启用", "Enabled")}</span></label>
+          <div className="automationMeta fullWidth">
+            <div><strong>{text("时间类型", "Schedule Type")}</strong><span>{safeScheduleValue(form.scheduleText, "kind") || "once"}</span></div>
+            <div><strong>{text("下次执行", "Next Run")}</strong><span>{safeScheduleValue(form.scheduleText, "nextRunAt") || text("未设置", "Not set")}</span></div>
+            <div><strong>{text("操作记录", "Run Log")}</strong><code>backend/runtime/automation_runs/runs-YYYYMMDD.jsonl</code></div>
+            <div><strong>{text("自动化对话", "Automation Chat")}</strong><span>{selectedItem?.conversation_id || text("首次执行后创建", "Created on first run")}</span></div>
+          </div>
+          <label className="fullWidth"><span>{text("提示词", "Prompt")}</span><textarea value={form.prompt} onChange={(event) => setForm({ ...form, prompt: event.target.value })} placeholder={text("到时间后要提醒或交给模型执行的内容", "Prompt to remind or hand to the model when due")} /></label>
+          <label className="fullWidth"><span>{text("计划 JSON", "Schedule JSON")}</span><textarea value={form.scheduleText} onChange={(event) => setForm({ ...form, scheduleText: event.target.value })} /></label>
+          {form.action === "script" && (
+            <label className="fullWidth"><span>Python</span><textarea value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} placeholder="print('hello')" /></label>
+          )}
+          {form.action === "mcp" && (
+            <>
+              <label><span>{text("MCP 服务器", "MCP Server")}</span><input value={form.mcp_server} onChange={(event) => setForm({ ...form, mcp_server: event.target.value })} /></label>
+              <label><span>{text("MCP 工具", "MCP Tool")}</span><input value={form.mcp_tool} onChange={(event) => setForm({ ...form, mcp_tool: event.target.value })} /></label>
+              <label className="fullWidth"><span>{text("MCP 参数 JSON", "MCP Arguments JSON")}</span><textarea value={form.mcpArgumentsText} onChange={(event) => setForm({ ...form, mcpArgumentsText: event.target.value })} /></label>
+            </>
+          )}
+          {form.action === "configureMcp" && (
+            <label className="fullWidth"><span>{text("MCP 配置 JSON", "MCP Config JSON")}</span><textarea value={form.mcpConfigText} onChange={(event) => setForm({ ...form, mcpConfigText: event.target.value })} /></label>
+          )}
+        </div>
+        <div className="runList">
+          <div className="labelText">{text("最近运行记录", "Recent Runs")}</div>
+          {runs.length === 0 ? (
+            <div className="emptyState smallEmpty">{text("还没有运行记录。", "No run records yet.")}</div>
+          ) : (
+            runs.map((run) => (
+              <article className={run.status === "error" ? "runItem error" : "runItem"} key={run.run_id || run.started_at}>
+                <div>
+                  <strong>{run.status || "ok"}</strong>
+                  <span>{run.started_at}</span>
+                  <code>{run.path}</code>
+                </div>
+                <pre>{formatRunRecord(run)}</pre>
+              </article>
+            ))
+          )}
+        </div>
+        {status && <p className="statusLine"><Check size={15} />{status}</p>}
+      </form>
+    </section>
+  );
+}
+
+function McpView({ text }) {
   const [config, setConfig] = useState({ servers: {} });
   const [form, setForm] = useState({
     name: "",
@@ -1001,7 +1197,7 @@ function McpView() {
       const data = await fetchJson("/api/mcp/servers");
       setConfig(data || { servers: {} });
     } catch (error) {
-      setStatus(`Load failed: ${String(error.message || error)}`);
+      setStatus(`${text("加载失败", "Load failed")}: ${String(error.message || error)}`);
     }
   }
 
@@ -1024,7 +1220,7 @@ function McpView() {
     event.preventDefault();
     const payload = buildMcpPayload(form);
     if (!payload.name) {
-      setStatus("Name is required");
+      setStatus(text("名称不能为空", "Name is required"));
       return;
     }
     try {
@@ -1032,36 +1228,36 @@ function McpView() {
       setConfig(data);
       const saved = data.servers?.[payload.name] || payload;
       editServer(payload.name, saved);
-      setStatus(`Saved ${payload.name}`);
+      setStatus(`${text("已保存", "Saved")} ${payload.name}`);
     } catch (error) {
-      setStatus(`Save failed: ${String(error.message || error)}`);
+      setStatus(`${text("保存失败", "Save failed")}: ${String(error.message || error)}`);
     }
   }
 
   async function testCurrentServer() {
     const payload = buildMcpPayload(form);
     if (payload.transport === "streamable_http" && !payload.url) {
-      setStatus("Test failed: url is required");
+      setStatus(text("测试失败：需要 URL", "Test failed: url is required"));
       return;
     }
     if (payload.transport === "stdio" && !payload.command) {
-      setStatus("Test failed: command is required");
+      setStatus(text("测试失败：需要命令", "Test failed: command is required"));
       return;
     }
     try {
       const data = await fetchJson("/api/mcp/test", { method: "POST", body: payload });
-      setStatus(`Test ok: ${summarizeMcpTest(data)}`);
+      setStatus(`${text("测试通过", "Test ok")}: ${summarizeMcpTest(data)}`);
     } catch (error) {
-      setStatus(`Test failed: ${String(error.message || error)}`);
+      setStatus(`${text("测试失败", "Test failed")}: ${String(error.message || error)}`);
     }
   }
 
   async function testSavedServer(name) {
     try {
       const data = await fetchJson(`/api/mcp/servers/${encodeURIComponent(name)}/test`, { method: "POST" });
-      setStatus(`Test ok: ${summarizeMcpTest(data)}`);
+      setStatus(`${text("测试通过", "Test ok")}: ${summarizeMcpTest(data)}`);
     } catch (error) {
-      setStatus(`Test failed: ${String(error.message || error)}`);
+      setStatus(`${text("测试失败", "Test failed")}: ${String(error.message || error)}`);
     }
   }
 
@@ -1091,10 +1287,10 @@ function McpView() {
   async function deleteServer(name) {
     try {
       await fetchJson(`/api/mcp/servers/${encodeURIComponent(name)}`, { method: "DELETE" });
-      setStatus(`Deleted ${name}`);
+      setStatus(`${text("已删除", "Deleted")} ${name}`);
       await refresh();
     } catch (error) {
-      setStatus(`Delete failed: ${String(error.message || error)}`);
+      setStatus(`${text("删除失败", "Delete failed")}: ${String(error.message || error)}`);
     }
   }
 
@@ -1102,41 +1298,41 @@ function McpView() {
   return (
     <section className="mcpLayout">
       <div className="serverListPane">
-        <div className="editorHeader"><h2>MCP SERVERS</h2><button className="secondaryButton" onClick={refresh} type="button"><RefreshCw size={16} /><span>Refresh</span></button></div>
+        <div className="editorHeader"><h2>{text("MCP 服务器", "MCP SERVERS")}</h2><button className="secondaryButton" onClick={refresh} type="button"><RefreshCw size={16} /><span>{text("刷新", "Refresh")}</span></button></div>
         {servers.map(([name, server]) => (
           <article className="serverItem" key={name}>
-            <div><strong>{name}</strong><span>{server.enabled ? "enabled" : "disabled"}</span></div>
+            <div><strong>{name}</strong><span>{server.enabled ? text("已启用", "enabled") : text("已禁用", "disabled")}</span></div>
             <code>{server.transport || "stdio"} {server.url || server.command || ""}</code>
             <div className="rowActions">
-              <button className="secondaryButton" onClick={() => editServer(name, server)} type="button"><FileText size={15} /><span>Edit</span></button>
-              <button className="secondaryButton" onClick={() => testSavedServer(name)} type="button"><Plug size={15} /><span>Test</span></button>
-              <button className="dangerButton" onClick={() => deleteServer(name)} type="button"><Trash2 size={15} /><span>Delete</span></button>
+              <button className="secondaryButton" onClick={() => editServer(name, server)} type="button"><FileText size={15} /><span>{text("编辑", "Edit")}</span></button>
+              <button className="secondaryButton" onClick={() => testSavedServer(name)} type="button"><Plug size={15} /><span>{text("测试", "Test")}</span></button>
+              <button className="dangerButton" onClick={() => deleteServer(name)} type="button"><Trash2 size={15} /><span>{text("删除", "Delete")}</span></button>
             </div>
           </article>
         ))}
       </div>
       <form className="mcpForm" onSubmit={saveServer}>
-        <h2>ADD OR EDIT SERVER</h2>
-        <label><span>Name</span><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="rent" /></label>
-        <SelectField label="Transport" value={form.transport} onChange={(value) => setForm({ ...form, transport: value })} values={["streamable_http", "stdio"]} />
+        <h2>{text("新增或编辑服务器", "ADD OR EDIT SERVER")}</h2>
+        <label><span>{text("名称", "Name")}</span><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="rent" /></label>
+        <SelectField label={text("传输方式", "Transport")} value={form.transport} onChange={(value) => setForm({ ...form, transport: value })} values={["streamable_http", "stdio"]} />
         {form.transport === "stdio" ? (
           <>
-            <label><span>Command</span><input value={form.command} onChange={(event) => setForm({ ...form, command: event.target.value })} placeholder="node" /></label>
-            <label><span>Args 每行一个</span><textarea value={form.argsText} onChange={(event) => setForm({ ...form, argsText: event.target.value })} placeholder={"server.js\n--port\n5050"} /></label>
-            <KeyValueEditor title="Env" rows={form.envRows} setForm={setForm} field="envRows" />
+            <label><span>{text("命令", "Command")}</span><input value={form.command} onChange={(event) => setForm({ ...form, command: event.target.value })} placeholder="node" /></label>
+            <label><span>{text("参数，每行一个", "Args, one per line")}</span><textarea value={form.argsText} onChange={(event) => setForm({ ...form, argsText: event.target.value })} placeholder={"server.js\n--port\n5050"} /></label>
+            <KeyValueEditor title="Env" label={text("环境变量", "Env")} rows={form.envRows} setForm={setForm} field="envRows" text={text} />
           </>
         ) : (
           <>
             <label><span>URL</span><input value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder="http://127.0.0.1:5050/mcp" /></label>
-            <KeyValueEditor title="Headers" rows={form.headerRows} setForm={setForm} field="headerRows" />
+            <KeyValueEditor title="Headers" label={text("请求头", "Headers")} rows={form.headerRows} setForm={setForm} field="headerRows" text={text} />
           </>
         )}
-        <label><span>Timeout</span><input type="number" min="1" value={form.timeout} onChange={(event) => setForm({ ...form, timeout: event.target.value })} /></label>
-        <label><span>SSE Read Timeout</span><input type="number" min="1" value={form.sse_read_timeout} onChange={(event) => setForm({ ...form, sse_read_timeout: event.target.value })} /></label>
-        <label className="checkLine"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} /><span>Enabled</span></label>
+        <label><span>{text("超时", "Timeout")}</span><input type="number" min="1" value={form.timeout} onChange={(event) => setForm({ ...form, timeout: event.target.value })} /></label>
+        <label><span>{text("SSE 读取超时", "SSE Read Timeout")}</span><input type="number" min="1" value={form.sse_read_timeout} onChange={(event) => setForm({ ...form, sse_read_timeout: event.target.value })} /></label>
+        <label className="checkLine"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} /><span>{text("启用", "Enabled")}</span></label>
         <div className="formActions">
-          <button className="primaryButton" type="submit"><Save size={16} /><span>Save Server</span></button>
-          <button className="secondaryButton" type="button" onClick={testCurrentServer}><Plug size={16} /><span>Test Connection</span></button>
+          <button className="primaryButton" type="submit"><Save size={16} /><span>{text("保存服务器", "Save Server")}</span></button>
+          <button className="secondaryButton" type="button" onClick={testCurrentServer}><Plug size={16} /><span>{text("测试连接", "Test Connection")}</span></button>
         </div>
         {status && <p className="statusLine"><Check size={15} />{status}</p>}
       </form>
@@ -1144,20 +1340,20 @@ function McpView() {
   );
 }
 
-function KeyValueEditor({ title, rows, setForm, field }) {
+function KeyValueEditor({ title, label = title, rows, setForm, field, text = (zh) => zh }) {
   return (
     <div className="headerEditor">
-      <div className="labelText">{title}</div>
+      <div className="labelText">{label}</div>
       {rows.map((row, index) => (
         <div className="headerRow" key={index}>
-          <input value={row.key} onChange={(event) => updateHeaderRow(index, "key", event.target.value, setForm, field)} placeholder="Key" />
-          <input value={row.value} onChange={(event) => updateHeaderRow(index, "value", event.target.value, setForm, field)} placeholder="Value" />
-          <button className="iconButton" type="button" onClick={() => removeHeaderRow(index, setForm, field)} title={`Remove ${title}`}>
+          <input value={row.key} onChange={(event) => updateHeaderRow(index, "key", event.target.value, setForm, field)} placeholder={text("键", "Key")} />
+          <input value={row.value} onChange={(event) => updateHeaderRow(index, "value", event.target.value, setForm, field)} placeholder={text("值", "Value")} />
+          <button className="iconButton" type="button" onClick={() => removeHeaderRow(index, setForm, field)} title={`${text("移除", "Remove")} ${label}`}>
             <Trash2 size={15} />
           </button>
         </div>
       ))}
-      <button className="secondaryButton" type="button" onClick={() => addHeaderRow(setForm, field)}><Plus size={16} /><span>Add {title}</span></button>
+      <button className="secondaryButton" type="button" onClick={() => addHeaderRow(setForm, field)}><Plus size={16} /><span>{text("新增", "Add")} {label}</span></button>
     </div>
   );
 }
@@ -1195,7 +1391,7 @@ function normalizeOptions(options) {
 }
 
 function stringifyEventText(event, fallback) {
-  if (["tool_call", "assistant_progress", "approval_required", "error", "user", "assistant"].includes(event.type)) {
+  if (["tool_call", "assistant_progress", "approval_required", "ai_review", "error", "user", "assistant"].includes(event.type)) {
     return fallback;
   }
   return JSON.stringify(event, null, 2);
@@ -1216,6 +1412,7 @@ function eventLabel(type) {
     assistant_progress: "THINKING",
     tool_call: "TOOL",
     approval_required: "APPROVAL",
+    ai_review: "AI REVIEW",
     error: "ERROR",
     python: "PYTHON",
     rag: "RAG",
@@ -1281,27 +1478,33 @@ function normalizeImageSrc(src) {
   return `${API_BASE}/api/artifact?path=${encodeURIComponent(src.replaceAll("\\", "/"))}`;
 }
 
-function toolMentionOptions() {
+function toolMentionOptions(text) {
   return [
-    { label: "工具 Python", token: "@tool:python" },
-    { label: "工具 RAG", token: "@tool:rag" },
-    { label: "工具 Web", token: "@tool:webSearch" },
-    { label: "工具 HTTP", token: "@tool:curl" },
-    { label: "工具 文件编辑", token: "@tool:fileEditor" },
-    { label: "工具 MCP", token: "@tool:mcp" },
-    { label: "工具 历史", token: "@tool:history" },
-  ].concat([{ label: "Tool Settings", token: "@tool:settings" }]);
+    { label: text("工具 Python", "Tool Python"), token: "@tool:python" },
+    { label: text("工具 RAG", "Tool RAG"), token: "@tool:rag" },
+    { label: text("工具 Web", "Tool Web"), token: "@tool:webSearch" },
+    { label: text("工具 HTTP", "Tool HTTP"), token: "@tool:curl" },
+    { label: text("工具 文件编辑", "Tool File Editor"), token: "@tool:fileEditor" },
+    { label: text("工具 MCP", "Tool MCP"), token: "@tool:mcp" },
+    { label: text("工具 历史", "Tool History"), token: "@tool:history" },
+    { label: text("工具设置", "Tool Settings"), token: "@tool:settings" },
+  ];
 }
 
-function conversationMentionOptions(conversations) {
+function conversationMentionOptions(conversations, text) {
   return conversations.map((item) => ({
-    label: `历史 ${item.title || item.id}`,
+    label: `${text("历史", "History")} ${item.title || item.id}`,
     token: `@history:${item.id}`,
   }));
 }
 
-function fileMentionOptions(kind, files) {
-  const labelMap = { memory: "记忆", skill: "技能", knowledge: "知识", instruction: "指令" };
+function fileMentionOptions(kind, files, text) {
+  const labelMap = {
+    memory: text("记忆", "Memory"),
+    skill: text("技能", "Skill"),
+    knowledge: text("知识", "Knowledge"),
+    instruction: text("指令", "Instruction"),
+  };
   return files.map((item) => {
     const path = typeof item === "string" ? item : item.path;
     const scope = typeof item === "string" ? "" : item.scope;
@@ -1324,6 +1527,50 @@ function cleanInputUrl(value) {
     text = text.split("](", 2)[1].slice(0, -1).trim();
   }
   return text;
+}
+
+function automationPayloadFromForm(form) {
+  return {
+    title: form.title,
+    action: form.action,
+    enabled: form.enabled,
+    prompt: form.prompt,
+    code: form.code,
+    mcp_server: form.mcp_server,
+    mcp_tool: form.mcp_tool,
+    schedule: parseJsonObject(form.scheduleText, "schedule"),
+    mcp_arguments: parseJsonObject(form.mcpArgumentsText, "mcp_arguments"),
+    mcp_config: parseJsonObject(form.mcpConfigText, "mcp_config"),
+  };
+}
+
+function scheduleSummary(item, text) {
+  const kind = item.schedule_kind || item.schedule?.kind || text("未知", "unknown");
+  const nextRun = item.next_run_at || item.schedule?.nextRunAt || text("未设置", "not set");
+  return `${text("时间", "Schedule")}: ${kind} · ${text("下次", "Next")}: ${nextRun}`;
+}
+
+function safeScheduleValue(rawText, key) {
+  try {
+    const schedule = parseJsonObject(rawText, "schedule");
+    return schedule[key] ? String(schedule[key]) : "";
+  } catch {
+    return "";
+  }
+}
+
+function formatRunRecord(run) {
+  const payload = { ...run };
+  delete payload.path;
+  return JSON.stringify(payload, null, 2);
+}
+
+function parseJsonObject(rawText, fieldName) {
+  const value = rawText.trim() ? JSON.parse(rawText) : {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an object`);
+  }
+  return value;
 }
 
 function headerRowsFromObject(headers) {
@@ -1407,6 +1654,14 @@ function useLabel(language) {
     if (language === "en") return item[1];
     if (language === "both") return `${item[0]} / ${item[1]}`;
     return item[0];
+  };
+}
+
+function useText(language) {
+  return (zh, en) => {
+    if (language === "en") return en;
+    if (language === "both") return `${zh} / ${en}`;
+    return zh;
   };
 }
 

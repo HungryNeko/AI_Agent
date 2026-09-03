@@ -163,7 +163,7 @@ def events_to_transcript(events: list[dict[str, Any]]) -> str:
     lines = []
     for event in events:
         event_type = str(event.get("type") or "event")
-        if event_type not in {"user", "assistant", "assistant_progress", "tool_call", "error", "approval_required"}:
+        if event_type not in {"user", "assistant", "assistant_progress", "tool_call", "error", "approval_required", "ai_review"}:
             continue
         text = str(event.get("text") or "").strip()
         if not text:

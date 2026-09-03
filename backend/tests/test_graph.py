@@ -572,3 +572,75 @@ def test_stream_turn_emits_file_editor_approval_required_event(monkeypatch):
     assert events[2]["tool"] == "fileEditor"
     assert "approvalRequired: True" in events[2]["text"]
     assert events[-1]["text"] == "The edit needs approval before it is applied."
+
+
+def test_ai_review_denies_high_risk_tool_before_execution(monkeypatch):
+    calls = []
+    executed = []
+
+    def fake_complete_chat_once(messages, *, model=None, tools=None):
+        calls.append(messages)
+        if len(calls) == 1:
+            return {
+                "role": "assistant",
+                "content": "I will edit the file.",
+                "tool_calls": [
+                    {
+                        "id": "call_file",
+                        "type": "function",
+                        "function": {
+                            "name": "fileEditor",
+                            "arguments": '{"action":"write","path":"a.py","content":"print(1)\\n"}',
+                        },
+                    }
+                ],
+            }
+        return {"role": "assistant", "content": "The edit was not approved."}
+
+    monkeypatch.setattr(graph, "complete_chat_once", fake_complete_chat_once)
+    monkeypatch.setattr(graph, "review_tool_request", lambda *args, **kwargs: graph.ReviewDecision(False, "too broad"))
+    monkeypatch.setattr(graph, "execute_tool", lambda request, settings: executed.append(request) or "fileEditorResult:\napplied: True")
+
+    events = list(graph.stream_turn(graph.new_chat_state(file_editor_mode="auto", file_editor_approval="aiReview"), "edit"))
+
+    assert executed == []
+    assert any(event["type"] == "ai_review" and "denied" in event["text"] for event in events)
+    assert events[-1]["text"] == "The edit was not approved."
+
+
+def test_ai_review_approval_executes_file_editor_as_auto(monkeypatch):
+    calls = []
+    seen_approval = []
+
+    def fake_complete_chat_once(messages, *, model=None, tools=None):
+        calls.append(messages)
+        if len(calls) == 1:
+            return {
+                "role": "assistant",
+                "content": "I will edit the file.",
+                "tool_calls": [
+                    {
+                        "id": "call_file",
+                        "type": "function",
+                        "function": {
+                            "name": "fileEditor",
+                            "arguments": '{"action":"write","path":"a.py","content":"print(1)\\n"}',
+                        },
+                    }
+                ],
+            }
+        return {"role": "assistant", "content": "The edit was applied."}
+
+    def fake_execute_tool(request, settings):
+        seen_approval.append(settings.file_editor.approval)
+        return "fileEditorResult:\napplied: True\napprovalRequired: False"
+
+    monkeypatch.setattr(graph, "complete_chat_once", fake_complete_chat_once)
+    monkeypatch.setattr(graph, "review_tool_request", lambda *args, **kwargs: graph.ReviewDecision(True, "narrow edit"))
+    monkeypatch.setattr(graph, "execute_tool", fake_execute_tool)
+
+    events = list(graph.stream_turn(graph.new_chat_state(file_editor_mode="auto", file_editor_approval="aiReview"), "edit"))
+
+    assert seen_approval == ["auto"]
+    assert any(event["type"] == "ai_review" and "approved" in event["text"] for event in events)
+    assert events[-1]["text"] == "The edit was applied."

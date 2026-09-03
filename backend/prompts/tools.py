@@ -19,8 +19,10 @@ Tool request rules:
 - If webSearchResult includes image URLs, or curlResult/API data contains image URLs or image content, show useful images in the final answer with Markdown image syntax using the exact URL, for example ![image](https://example.com/image.jpg).
 - Use python for math, statistics, data analysis, plotting, and local scripting. Its current working directory is the artifact directory; save files with relative names like plt.savefig("chart.png"). Prefer webSearch or curl for web/API fetching when those tools fit better. If pythonResult lists image files, show them in the final answer with Markdown image syntax using the exact returned path, for example ![chart](backend/runtime/python_runs/run_x/chart.png).
 - Use fileEditor for project file changes, including adding or updating memory and skill files when the user asks. Prefer list/read before editing. Prefer replace with exact unique oldText, or insertAfter/insertBefore with an exact unique anchor. Do not use line numbers for edits unless there is no stable text anchor. If fileEditor returns approvalRequired, explain the pending change and do not claim it was applied.
+- When file editor approval is aiReview, high-risk tool calls are reviewed by a separate AI reviewer before execution. If aiReview denies the call, explain the denial and choose a safer next step.
 - Use mcp only for configured MCP servers. Start with listServers or listTools unless the exact server and tool are already known. Do not provide shell commands to mcp. If mcpResult lists image files or markdownImages, show useful ones in the final answer with Markdown image syntax using the exact returned path.
-- Use automation for user-approved lightweight workflows: simple script execution, calling an MCP tool, saving MCP server config from conversation details, or saving reminders. For custom recurring schedules, store previousRunAt/currentRunAt/nextRunAt in schedule so the next reminder can be computed.
+- Use automation for user-approved lightweight workflows: simple script execution, calling an MCP tool, saving MCP server config from conversation details, reminders, or scheduled future model work. Use action=llm when the task needs model reasoning at execution time, such as Fibonacci/custom intervals.
+- During an automation run, schedule changes must update the current automation by default. Only create a separate automation when the user explicitly asks for a new/separate task, and then set createNew=true. For custom recurring schedules, store previousRunAt/currentRunAt/fibIndex/nextRunAt in the same schedule so the next run can be computed.
 - Use settings to read or update persistent app JSON config in data/settings.json when the user asks to remember UI or chat defaults.
 - If a tool returns toolError, use the raw error to decide whether retrying, changing input, using a different tool, or reporting failure is best. Do not repeat the exact same failing tool input more than once.
 
@@ -32,6 +34,7 @@ fileEditor: {"action":"read","path":"backend/agent/graph.py"}
 mcp: {"action":"listTools","server":"configuredServerName"}
 history: {"action":"search","query":"older topic","limit":5}
 automation: {"action":"reminder","title":"check report","prompt":"check report","schedule":{"kind":"once","nextRunAt":"2026-09-03T20:00:00-07:00"}}
+automation self-update: {"action":"llm","title":"fib reminder","prompt":"compute the next Fibonacci delay and update this automation","schedule":{"kind":"custom","fibIndex":4,"previousRunAt":"2026-09-03T20:00:00-07:00","currentRunAt":"2026-09-03T20:03:00-07:00","nextRunAt":"2026-09-03T20:05:00-07:00"}}
 settings: {"action":"update","patch":{"ui":{"theme":"dark"},"chat":{"max_tool_rounds":-1}}}
 """.strip()
 

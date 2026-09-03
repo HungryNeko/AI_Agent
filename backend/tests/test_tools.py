@@ -8,6 +8,7 @@ from tools.executor import (
     format_web_search_results,
     execute_tool,
 )
+from tools.automation import AutomationRequest, execute as execute_automation
 from tools.request import build_openai_tools, parse_openai_tool_calls
 from tools.settings import make_tool_settings
 
@@ -135,6 +136,35 @@ def test_settings_tool_updates_persistent_json(tmp_path, monkeypatch):
     assert result.startswith("settingsResult:")
     assert '"theme": "dark"' in result
     assert '"max_tool_rounds": -1' in result
+
+
+def test_automation_llm_action_saves_scheduled_task(tmp_path):
+    settings = make_tool_settings(
+        web_search_mode="off",
+        rag_mode="off",
+        curl_mode="off",
+        python_mode="off",
+        file_editor_mode="off",
+        mcp_mode="off",
+        history_mode="off",
+        automation_mode="auto",
+        automation_root=str(tmp_path),
+    )
+
+    result = execute_automation(
+        AutomationRequest(
+            action="llm",
+            title="Later model work",
+            prompt="summarize invoices",
+            schedule={"kind": "once", "nextRunAt": "2026-09-03T20:00:00Z"},
+        ),
+        settings,
+    )
+
+    saved = list(tmp_path.glob("*.json"))
+    assert result["action"] == "llm"
+    assert saved
+    assert '"action": "llm"' in saved[0].read_text(encoding="utf-8")
 
 
 
@@ -483,9 +513,11 @@ def test_mcp_result_formats_image_artifacts():
 def test_file_editor_approval_defaults_to_auto_and_normalizes_aliases():
     settings = make_tool_settings(file_editor_mode="auto")
     read_only_settings = make_tool_settings(file_editor_mode="auto", file_editor_approval="read-only")
+    ai_review_settings = make_tool_settings(file_editor_mode="auto", file_editor_approval="ai-review")
 
     assert settings.file_editor.approval == "auto"
     assert read_only_settings.file_editor.approval == "readOnly"
+    assert ai_review_settings.file_editor.approval == "aiReview"
 
     with pytest.raises(ValueError, match="file_editor_approval"):
         make_tool_settings(file_editor_mode="auto", file_editor_approval="always")

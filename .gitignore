@@ -22,6 +22,9 @@ env/
 
 # Backend runtime artifacts
 backend/runtime/
+data/api_configs.local.json
+data/settings.local.json
+data/mcp/servers.local.json
 
 # Local user knowledge/memory/skills kept outside tracked system docs
 data/memory/user*.md

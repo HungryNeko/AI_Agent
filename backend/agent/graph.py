@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import mimetypes
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
 
@@ -15,6 +16,7 @@ from agent.debug_log import log_event, log_exception
 from agent.instructions import load_instruction
 from agent.llm import complete_chat_once
 from agent.references import resolve_reference_context
+from agent.reviewer import ReviewDecision, review_tool_request
 from prompts.context import build_context_prompt, format_current_time
 from prompts.tools import build_tool_usage_reminder, build_tools_prompt_from_settings
 from tools import rag
@@ -319,7 +321,14 @@ def tool_call(state: ChatState) -> dict[str, Any]:
     tool_events: list[AgentEvent] = []
 
     for request in tool_requests:
-        result = execute_tool(request, settings)
+        review_decision = maybe_review_tool_request(request, state)
+        if review_decision and not review_decision.approved:
+            result = f'toolError: "aiReview denied {request.name}: {review_decision.reason}"'
+            tool_events.append({"type": "ai_review", "tool": request.name, "text": f"denied: {review_decision.reason}"})
+        else:
+            if review_decision:
+                tool_events.append({"type": "ai_review", "tool": request.name, "text": f"approved: {review_decision.reason}"})
+            result = execute_tool(request, reviewed_tool_settings(request, settings))
         messages.append(
             {
                 "role": "tool",
@@ -680,6 +689,42 @@ def describe_tool_call_target(request: ToolRequest) -> str:
 
 def file_editor_approval_required(result: str) -> bool:
     return result.startswith("fileEditorResult:") and "approvalRequired: True" in result
+
+
+def maybe_review_tool_request(request: ToolRequest, state: ChatState) -> ReviewDecision | None:
+    settings = state["settings"]
+    if settings.file_editor.approval != "aiReview" or not is_high_risk_tool_request(request):
+        return None
+    try:
+        return review_tool_request(
+            request,
+            user_message=state.get("message", ""),
+            assistant_message=last_assistant_message(state),
+            model=state.get("model"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log_exception("ai_review.error", exc, tool=request.name, target=describe_tool_call_target(request))
+        return ReviewDecision(False, f"reviewer failed: {exc}")
+
+
+def reviewed_tool_settings(request: ToolRequest, settings: ToolSettings) -> ToolSettings:
+    if request.name == "fileEditor" and settings.file_editor.approval == "aiReview":
+        return replace(settings, file_editor=replace(settings.file_editor, approval="auto"))
+    return settings
+
+
+def is_high_risk_tool_request(request: ToolRequest) -> bool:
+    if request.name == "fileEditor" and request.file_edit:
+        return request.file_edit.action not in {"list", "read"}
+    if request.name == "python":
+        return True
+    if request.name == "mcp" and request.mcp_request:
+        return request.mcp_request.action == "callTool"
+    if request.name == "automation" and request.automation_request:
+        return request.automation_request.action in {"script", "mcp", "configureMcp"}
+    if request.name == "settings" and request.settings_request:
+        return request.settings_request.action in {"update", "replace"}
+    return False
 
 
 def describe_assistant_progress_events(state: ChatState) -> Iterator[AgentEvent]:

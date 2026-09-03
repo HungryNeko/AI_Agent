@@ -39,21 +39,28 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 
 def load_app_settings() -> dict[str, Any]:
-    if not SETTINGS_PATH.exists():
-        save_app_settings(DEFAULT_SETTINGS)
-        return copy.deepcopy(DEFAULT_SETTINGS)
-    with SETTINGS_PATH.open("r", encoding="utf-8") as file:
-        raw = json.load(file)
-    if not isinstance(raw, dict):
-        raise ValueError("data/settings.json must be a JSON object.")
+    raw = copy.deepcopy(DEFAULT_SETTINGS)
+    if SETTINGS_PATH.exists():
+        with SETTINGS_PATH.open("r", encoding="utf-8") as file:
+            raw = json.load(file)
+        if not isinstance(raw, dict):
+            raise ValueError("data/settings.json must be a JSON object.")
+    local_path = local_settings_path()
+    if local_path.exists():
+        with local_path.open("r", encoding="utf-8") as file:
+            local = json.load(file)
+        if not isinstance(local, dict):
+            raise ValueError("data/settings.local.json must be a JSON object.")
+        raw = deep_merge(raw, local)
     return normalize_app_settings(raw)
 
 
-def save_app_settings(settings: dict[str, Any]) -> dict[str, Any]:
+def save_app_settings(settings: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
     normalized = normalize_app_settings(settings)
-    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return normalized
+    target = path or local_settings_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return load_app_settings()
 
 
 def patch_app_settings(patch: dict[str, Any]) -> dict[str, Any]:
@@ -62,6 +69,10 @@ def patch_app_settings(patch: dict[str, Any]) -> dict[str, Any]:
     current = load_app_settings()
     merged = deep_merge(current, patch)
     return save_app_settings(merged)
+
+
+def local_settings_path() -> Path:
+    return SETTINGS_PATH.with_name("settings.local.json")
 
 
 def normalize_app_settings(raw: dict[str, Any]) -> dict[str, Any]:
@@ -87,7 +98,7 @@ def normalize_app_settings(raw: dict[str, Any]) -> dict[str, Any]:
         "curl_mode": {"off", "auto"},
         "python_mode": {"off", "auto"},
         "file_editor_mode": {"off", "auto"},
-        "file_editor_approval": {"readOnly", "manual", "auto"},
+        "file_editor_approval": {"readOnly", "manual", "auto", "aiReview"},
         "mcp_mode": {"off", "auto"},
         "history_mode": {"off", "auto"},
         "automation_mode": {"off", "auto"},

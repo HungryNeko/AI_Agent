@@ -201,6 +201,7 @@ def test_config_endpoint_reads_and_writes(tmp_path, monkeypatch):
 
 def test_settings_endpoint_persists_json_config(tmp_path, monkeypatch):
     settings_path = tmp_path / "settings.json"
+    local_settings_path = tmp_path / "settings.local.json"
     monkeypatch.setattr("agent.app_settings.SETTINGS_PATH", settings_path)
     client = TestClient(server.app)
 
@@ -211,10 +212,10 @@ def test_settings_endpoint_persists_json_config(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     data = client.get("/api/settings").json()
-    assert data["path"] == "data/settings.json"
+    assert data["path"] == "data/settings.local.json"
     assert data["settings"]["ui"] == {"theme": "dark", "language": "en"}
     assert data["settings"]["chat"]["max_tool_rounds"] == -1
-    assert settings_path.exists()
+    assert local_settings_path.exists()
 
 
 def test_rag_reindex_endpoint_reports_vector_status():
@@ -235,3 +236,46 @@ def test_upload_endpoint_stores_runtime_file(tmp_path, monkeypatch):
     path = response.json()["path"]
     assert path == "backend/runtime/uploads/note.txt"
     assert (tmp_path / path).read_bytes() == b"hello"
+
+
+def test_automation_endpoints_manage_runtime_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "PROJECT_ROOT", tmp_path)
+    client = TestClient(server.app)
+
+    created = client.post(
+        "/api/automations",
+        json={
+            "title": "Check report",
+            "action": "reminder",
+            "enabled": True,
+            "prompt": "check the report",
+            "schedule": {"kind": "once", "nextRunAt": "2026-09-03T20:00:00-07:00"},
+        },
+    )
+
+    assert created.status_code == 200
+    item = created.json()["item"]
+    assert item["title"] == "Check report"
+    assert item["path"].startswith("backend/runtime/automations/")
+    assert item["schedule_kind"] == "once"
+    assert item["next_run_at"] == "2026-09-03T20:00:00-07:00"
+    assert item["run_log"] == "backend/runtime/automation_runs/runs-YYYYMMDD.jsonl"
+
+    listed = client.get("/api/automations").json()["items"]
+    assert listed[0]["id"] == item["id"]
+    assert client.get("/api/automation-runs").json()["items"] == []
+
+    updated = client.put(
+        f"/api/automations/{item['id']}",
+        json={"title": "Updated", "action": "llm", "enabled": False, "prompt": "next model step"},
+    )
+    assert updated.status_code == 200
+
+    read_back = client.get(f"/api/automations/{item['id']}").json()["content"]
+    assert read_back["title"] == "Updated"
+    assert read_back["action"] == "llm"
+    assert read_back["enabled"] is False
+
+    deleted = client.delete(f"/api/automations/{item['id']}")
+    assert deleted.status_code == 200
+    assert client.get("/api/automations").json()["items"] == []

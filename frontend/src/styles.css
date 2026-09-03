@@ -314,6 +314,17 @@ small {
   white-space: nowrap;
 }
 
+.fileItem span {
+  display: grid;
+}
+
+.inlineMeta {
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .fileItem.active,
 .fileItem:hover {
   background: #f0f2f4;
@@ -848,8 +859,94 @@ textarea:focus {
 
 .modelEditor {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   overflow: hidden;
+}
+
+.automationMeta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.automationMeta div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  background: #fbfbfa;
+  padding: 9px;
+}
+
+.automationMeta strong,
+.runItem strong {
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.automationMeta span,
+.automationMeta code,
+.runItem code {
+  min-width: 0;
+  overflow: hidden;
+  color: #6b7280;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runList {
+  max-height: 280px;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.runItem {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  background: #fbfbfa;
+  padding: 9px;
+}
+
+.runItem.error {
+  border-color: #fecaca;
+  background: #fff5f6;
+}
+
+.runItem div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.runItem span {
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.runItem pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #e5e7eb;
+  padding: 9px;
+  font-size: 12px;
+}
+
+.smallEmpty {
+  min-height: 90px;
 }
 
 .providerItem {
@@ -1045,7 +1142,8 @@ textarea:focus {
   .composerRow,
   .settingGrid,
   .headerRow,
-  .modelForm {
+  .modelForm,
+  .automationMeta {
     grid-template-columns: 1fr;
   }
 
@@ -1128,6 +1226,8 @@ textarea:focus {
 :root[data-theme="dark"] .operationDetails,
 :root[data-theme="dark"] .markdownPreview,
 :root[data-theme="dark"] .serverItem,
+:root[data-theme="dark"] .automationMeta div,
+:root[data-theme="dark"] .runItem,
 :root[data-theme="dark"] .attachmentChip,
 :root[data-theme="dark"] .attachmentList span {
   background: #0d1117;
@@ -1225,7 +1325,9 @@ textarea:focus {
   .event.compact,
   .operationDetails,
   .markdownPreview,
-  .serverItem {
+  .serverItem,
+  .automationMeta div,
+  .runItem {
     background: #0d1117;
     border-color: #30363d;
   }

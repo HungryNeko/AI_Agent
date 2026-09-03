@@ -201,6 +201,8 @@ def parse_automation_request(arguments: dict[str, Any]) -> AutomationRequest:
         mcp_arguments=raw_mcp_arguments,
         mcp_config=raw_mcp_config,
         schedule=raw_schedule,
+        target_automation=optional_string(arguments.get("targetAutomationId")),
+        create_new=optional_bool(arguments.get("createNew")),
     )
 
 
@@ -367,7 +369,7 @@ def history_tool() -> dict[str, Any]:
 def automation_tool() -> dict[str, Any]:
     return function_tool(
         name="automation",
-        description="Create or run small automations. Use script for simple Python work, mcp to call an already configured MCP tool, configureMcp to save a new MCP server from conversation details, reminder to save one-time or repeating reminders, and llm to store a prompt for a later model step. For complex schedules such as Fibonacci intervals, save the previous and current run time in schedule so the next reminder can be computed later.",
+        description="Create, update, or run small automations. During an automation run, reminder/llm saves update the current automation by default; only create a separate automation when the user explicitly asks, then set createNew=true. Use script for simple Python work, mcp to call an already configured MCP tool, configureMcp to save a new MCP server from conversation details, reminder to save fixed reminders, and llm to schedule future model work. Use llm for schedules that need reasoning at execution time, including Fibonacci or custom intervals, and update the same automation schedule with previousRunAt/currentRunAt/fibIndex/nextRunAt.",
         properties={
             "action": {
                 "type": "string",
@@ -387,6 +389,8 @@ def automation_tool() -> dict[str, Any]:
                 "type": "object",
                 "description": "Reminder schedule. Supports kind=once/interval/cron/custom, nextRunAt, intervalSeconds, cron, timezone, previousRunAt, currentRunAt.",
             },
+            "targetAutomationId": {"type": "string", "description": "Existing automation JSON id to update. Omit during a running automation to update itself."},
+            "createNew": {"type": "boolean", "description": "Set true only when the user explicitly wants a separate new automation instead of updating the current one."},
         },
         required=["action"],
     )

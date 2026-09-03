@@ -175,6 +175,31 @@ def test_mcp_streamable_http_lists_tools(tmp_path, monkeypatch):
     ]
 
 
+def test_mcp_loads_local_config_overlay(tmp_path):
+    config = tmp_path / "servers.json"
+    local_config = tmp_path / "servers.local.json"
+    config.write_text(json.dumps({"servers": {"public": {"enabled": False, "command": "python", "args": []}}}), encoding="utf-8")
+    local_config.write_text(json.dumps({"servers": {"private": {"enabled": False, "command": "node", "args": []}}}), encoding="utf-8")
+
+    servers = mcp.load_config(McpSettings(mode="auto", config_path=str(config)))
+
+    assert set(servers) == {"public", "private"}
+
+
+def test_mcp_expands_env_placeholders_in_headers(monkeypatch):
+    monkeypatch.setenv("RENT_MCP_TOKEN", "test-token")
+
+    headers = mcp.build_http_headers(
+        {
+            "transport": "streamable_http",
+            "url": "http://mcp.test/mcp",
+            "headers": {"Authorization": "Bearer ${RENT_MCP_TOKEN}"},
+        },
+    )
+
+    assert headers["Authorization"] == "Bearer test-token"
+
+
 def test_mcp_rejects_disabled_server(tmp_path):
     config = tmp_path / "servers.json"
     write_config(config, sys.executable, ["server.py"], enabled=False)

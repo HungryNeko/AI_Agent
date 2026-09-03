@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import subprocess
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, AsyncIterator, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from agent.automation_runner import list_run_records, start_runner, stop_runner
 from agent.app_settings import load_app_settings, patch_app_settings, save_app_settings
 from agent import session_store
-from agent.config import load_config
+from agent.config import load_config, save_config
 from agent.debug_log import log_event, log_exception
 from agent.graph import ChatState, stream_turn
 from agent.instructions import load_instruction, save_instruction
@@ -39,6 +43,7 @@ USER_DATA_ROOTS = {
 }
 ALLOWED_DATA_ROOTS = {kind: (SYSTEM_DATA_ROOTS[kind], USER_DATA_ROOTS[kind]) for kind in SYSTEM_DATA_ROOTS}
 MCP_CONFIG_PATH = DATA_ROOT / "mcp" / "servers.json"
+MCP_LOCAL_CONFIG_PATH = DATA_ROOT / "mcp" / "servers.local.json"
 TEXT_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml"}
 ARTIFACT_ROOTS = [
     PROJECT_ROOT / "backend" / "runtime" / "python_runs",
@@ -46,7 +51,17 @@ ARTIFACT_ROOTS = [
     PROJECT_ROOT / "backend" / "runtime" / "uploads",
 ]
 
-app = FastAPI(title="AI Agent Backend", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    start_runner()
+    try:
+        yield
+    finally:
+        stop_runner()
+
+
+app = FastAPI(title="AI Agent Backend", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -97,7 +112,7 @@ class ChatOptions(BaseModel):
     curl_mode: Literal["off", "auto"] = "auto"
     python_mode: Literal["off", "auto"] = "auto"
     file_editor_mode: Literal["off", "auto"] = "auto"
-    file_editor_approval: Literal["readOnly", "manual", "auto"] = "auto"
+    file_editor_approval: Literal["readOnly", "manual", "auto", "aiReview"] = "auto"
     mcp_mode: Literal["off", "auto"] = "auto"
     history_mode: Literal["off", "auto"] = "auto"
     automation_mode: Literal["off", "auto"] = "off"
@@ -157,6 +172,19 @@ class DataImportPayload(BaseModel):
 class DataRenamePayload(BaseModel):
     path: str
     new_name: str
+
+
+class AutomationPayload(BaseModel):
+    title: str = ""
+    action: Literal["script", "mcp", "configureMcp", "reminder", "llm"] = "reminder"
+    enabled: bool = True
+    prompt: str = ""
+    code: str = ""
+    mcp_server: str = ""
+    mcp_tool: str = ""
+    mcp_arguments: dict[str, Any] = {}
+    mcp_config: dict[str, Any] = {}
+    schedule: dict[str, Any] = {}
 
 
 class McpServerPayload(BaseModel):
@@ -229,9 +257,8 @@ def get_config() -> dict[str, Any]:
 def put_config(payload: ConfigPayload) -> dict[str, Any]:
     if not isinstance(payload.config.get("providers"), dict):
         raise HTTPException(status_code=400, detail="config.providers must be an object")
-    path = DATA_ROOT / "api_configs.json"
-    path.write_text(json.dumps(payload.config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    return {"path": "data/api_configs.json", "status": "saved", "config": load_config()}
+    merged = save_config(payload.config, DATA_ROOT / "api_configs.local.json")
+    return {"path": "data/api_configs.local.json", "status": "saved", "config": merged}
 
 
 @app.get("/api/settings")
@@ -240,7 +267,7 @@ def get_settings() -> dict[str, Any]:
         settings = load_app_settings()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"path": "data/settings.json", "settings": settings}
+    return {"path": "data/settings.local.json", "settings": settings}
 
 
 @app.put("/api/settings")
@@ -249,7 +276,7 @@ def put_settings(payload: SettingsPayload) -> dict[str, Any]:
         settings = save_app_settings(payload.settings)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"path": "data/settings.json", "status": "saved", "settings": settings}
+    return {"path": "data/settings.local.json", "status": "saved", "settings": settings}
 
 
 @app.patch("/api/settings")
@@ -258,7 +285,7 @@ def patch_settings(payload: SettingsPatchPayload) -> dict[str, Any]:
         settings = patch_app_settings(payload.patch)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"path": "data/settings.json", "status": "saved", "settings": settings}
+    return {"path": "data/settings.local.json", "status": "saved", "settings": settings}
 
 
 @app.post("/api/chat/stream")
@@ -455,6 +482,53 @@ def rename_data_file(payload: DataRenamePayload) -> dict[str, str]:
     resolved.rename(target)
     rag.index_status(make_tool_settings(rag_mode="auto").rag)
     return {"path": relative_to_project(target), "status": "renamed"}
+
+
+@app.get("/api/automations")
+def list_automations() -> dict[str, Any]:
+    root = automation_root()
+    root.mkdir(parents=True, exist_ok=True)
+    items = [automation_summary(path) for path in sorted(root.glob("*.json"), reverse=True)]
+    return {"items": items}
+
+
+@app.post("/api/automations")
+def create_automation(payload: AutomationPayload) -> dict[str, Any]:
+    root = automation_root()
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / new_automation_filename(payload.title or payload.action)
+    write_automation(path, payload)
+    return {"status": "saved", "item": automation_summary(path)}
+
+
+@app.get("/api/automations/{automation_id}")
+def read_automation(automation_id: str) -> dict[str, Any]:
+    path = resolve_automation_path(automation_id)
+    return {
+        "item": automation_summary(path),
+        "content": read_automation_payload(path),
+        "runs": list_run_records(automation_run_root(), automation_id=path.name, limit=20),
+    }
+
+
+@app.get("/api/automation-runs")
+def automation_runs(limit: int = Query(50, ge=1, le=200), automation_id: str = Query("")) -> dict[str, Any]:
+    clean_id = clean_automation_name(automation_id) if automation_id else None
+    return {"items": list_run_records(automation_run_root(), automation_id=clean_id, limit=limit)}
+
+
+@app.put("/api/automations/{automation_id}")
+def update_automation(automation_id: str, payload: AutomationPayload) -> dict[str, Any]:
+    path = resolve_automation_path(automation_id, allow_missing=True)
+    write_automation(path, payload)
+    return {"status": "saved", "item": automation_summary(path)}
+
+
+@app.delete("/api/automations/{automation_id}")
+def delete_automation(automation_id: str) -> dict[str, str]:
+    path = resolve_automation_path(automation_id)
+    path.unlink()
+    return {"status": "deleted"}
 
 
 @app.post("/api/skills/import")
@@ -671,17 +745,22 @@ def is_git_ignored(path: Path) -> bool:
 
 def load_mcp_config() -> dict[str, Any]:
     MCP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not MCP_CONFIG_PATH.exists():
-        return {"servers": {}}
-    data = json.loads(MCP_CONFIG_PATH.read_text(encoding="utf-8"))
+    data: dict[str, Any] = {"servers": {}}
+    if MCP_CONFIG_PATH.exists():
+        data = json.loads(MCP_CONFIG_PATH.read_text(encoding="utf-8"))
+    if MCP_LOCAL_CONFIG_PATH.exists():
+        local = json.loads(MCP_LOCAL_CONFIG_PATH.read_text(encoding="utf-8"))
+        base_servers = data.get("servers") if isinstance(data.get("servers"), dict) else {}
+        local_servers = local.get("servers") if isinstance(local.get("servers"), dict) else {}
+        data["servers"] = {**base_servers, **local_servers}
     if not isinstance(data, dict) or not isinstance(data.get("servers"), dict):
         raise HTTPException(status_code=500, detail="invalid data/mcp/servers.json")
     return data
 
 
 def save_mcp_config(config: dict[str, Any]) -> None:
-    MCP_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    MCP_CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    MCP_LOCAL_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MCP_LOCAL_CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def mcp_server_config_from_payload(payload: McpServerPayload) -> dict[str, Any]:
@@ -725,6 +804,92 @@ def clean_upload_name(name: str) -> str:
     if not clean or clean in {".", ".."}:
         raise HTTPException(status_code=400, detail="invalid upload filename")
     return clean
+
+
+def automation_root() -> Path:
+    return (PROJECT_ROOT / "backend" / "runtime" / "automations").resolve()
+
+
+def automation_run_root() -> Path:
+    return (PROJECT_ROOT / "backend" / "runtime" / "automation_runs").resolve()
+
+
+def resolve_automation_path(automation_id: str, *, allow_missing: bool = False) -> Path:
+    name = clean_automation_name(automation_id)
+    path = (automation_root() / name).resolve()
+    if not is_relative_to(path, automation_root()):
+        raise HTTPException(status_code=400, detail="automation path is not allowed")
+    if not allow_missing and not path.is_file():
+        raise HTTPException(status_code=404, detail="automation not found")
+    return path
+
+
+def clean_automation_name(name: str) -> str:
+    clean = Path(name.replace("\\", "/")).name.strip()
+    if not clean or clean in {".", ".."} or ".." in clean:
+        raise HTTPException(status_code=400, detail="invalid automation name")
+    if Path(clean).suffix and Path(clean).suffix.lower() != ".json":
+        raise HTTPException(status_code=400, detail="automation must be a json file")
+    return clean if clean.lower().endswith(".json") else f"{clean}.json"
+
+
+def new_automation_filename(title: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", title.strip().lower()).strip("-") or "automation"
+    return f"{int(time.time())}-{slug[:48]}.json"
+
+
+def write_automation(path: Path, payload: AutomationPayload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current = read_automation_payload(path) if path.exists() else {}
+    data = {
+        **current,
+        "title": payload.title.strip() or payload.action,
+        "action": payload.action,
+        "enabled": payload.enabled,
+        "prompt": payload.prompt,
+        "code": payload.code,
+        "mcp_server": payload.mcp_server,
+        "mcp_tool": payload.mcp_tool,
+        "mcp_arguments": payload.mcp_arguments,
+        "mcp_config": payload.mcp_config,
+        "schedule": payload.schedule,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    data.setdefault("created_at", data["updated_at"])
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def read_automation_payload(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"invalid automation json: {path.name}") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail=f"invalid automation json: {path.name}")
+    return data
+
+
+def automation_summary(path: Path) -> dict[str, Any]:
+    data = read_automation_payload(path)
+    schedule = data.get("schedule") if isinstance(data.get("schedule"), dict) else {}
+    recent_runs = list_run_records(automation_run_root(), automation_id=path.name, limit=3)
+    return {
+        "id": path.name,
+        "path": relative_to_project(path),
+        "title": str(data.get("title") or path.stem),
+        "action": str(data.get("action") or "reminder"),
+        "enabled": bool(data.get("enabled", True)),
+        "prompt": str(data.get("prompt") or ""),
+        "schedule": schedule,
+        "schedule_kind": str(schedule.get("kind") or ""),
+        "next_run_at": str(schedule.get("nextRunAt") or ""),
+        "last_run": data.get("last_run") if isinstance(data.get("last_run"), dict) else {},
+        "recent_runs": recent_runs,
+        "run_log": "backend/runtime/automation_runs/runs-YYYYMMDD.jsonl",
+        "conversation_id": str(data.get("conversation_id") or ""),
+        "created_at": str(data.get("created_at") or ""),
+        "updated_at": str(data.get("updated_at") or ""),
+    }
 
 
 def clean_url(url: str) -> str:

@@ -214,6 +214,15 @@ def finish_write_action(
             "diff": make_unified_diff(rel_path, old_text, new_text),
         }
 
+    if settings.approval == "aiReview":
+        return {
+            **base,
+            "applied": False,
+            "approvalRequired": True,
+            "reason": "aiReview must approve this edit before applying it.",
+            "diff": make_unified_diff(rel_path, old_text, new_text),
+        }
+
     if settings.approval == "auto":
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(new_text, encoding="utf-8")

@@ -13,7 +13,7 @@ WebSearchMode = Literal["off", "auto"]
 CurlMode = Literal["off", "auto"]
 PythonMode = Literal["off", "auto"]
 FileEditorMode = Literal["off", "auto"]
-FileEditorApproval = Literal["readOnly", "manual", "auto"]
+FileEditorApproval = Literal["readOnly", "manual", "auto", "aiReview"]
 McpMode = Literal["off", "auto"]
 HistoryMode = Literal["off", "auto"]
 AutomationMode = Literal["off", "auto"]
@@ -349,9 +349,12 @@ def normalize_file_editor_approval(file_editor_approval: str) -> FileEditorAppro
         "read-only": "readOnly",
         "manual": "manual",
         "auto": "auto",
+        "aireview": "aiReview",
+        "ai_review": "aiReview",
+        "ai-review": "aiReview",
     }
     if value not in aliases:
-        raise ValueError("file_editor_approval must be one of: readOnly, manual, auto.")
+        raise ValueError("file_editor_approval must be one of: readOnly, manual, auto, aiReview.")
     return aliases[value]
 
 
