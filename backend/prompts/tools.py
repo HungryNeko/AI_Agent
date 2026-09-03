@@ -4,15 +4,27 @@ from __future__ import annotations
 
 from tools.settings import ToolSettings, make_tool_settings
 
-
 TOOL_REQUEST_FORMAT = """
 Tool request rules:
 - Tools are provided through the API tool_calls field.
 - Request only tools listed in available.
 - If you can answer from the conversation or injected results, do not call a tool.
+- Use rag to search local knowledge, memory, and skill files. Memory files live under data/memory. Skill entrypoints live at data/skills/<name>/SKILL.md.
+- For weather or other date-sensitive searches, include the current date from currentTime. For weather, include the location; ask for it if missing.
+- Use curl only for direct public http(s) API GET requests when a web API URL is known.
+- If a curl request fails or returns an API error, do not blindly retry the same URL. If webSearch is available, search the official API documentation, then change the endpoint or parameters before trying curl again.
+- If webSearchResult includes image URLs, or curlResult/API data contains image URLs or image content, show useful images in the final answer with Markdown image syntax using the exact URL, for example ![image](https://example.com/image.jpg).
+- Use python for math, statistics, data analysis, plotting, and local scripting. Its current working directory is the artifact directory; save files with relative names like plt.savefig("chart.png"). Prefer webSearch or curl for web/API fetching when those tools fit better. If pythonResult lists image files, show them in the final answer with Markdown image syntax using the exact returned path, for example ![chart](backend/runtime/python_runs/run_x/chart.png).
+- Use fileEditor for project file changes, including adding or updating memory and skill files when the user asks. Prefer list/read before editing. Prefer replace with exact unique oldText, or insertAfter/insertBefore with an exact unique anchor. Do not use line numbers for edits unless there is no stable text anchor. If fileEditor returns approvalRequired, explain the pending change and do not claim it was applied.
+- Use mcp only for configured MCP servers. Start with listServers or listTools unless the exact server and tool are already known. Do not provide shell commands to mcp. If mcpResult lists image files or markdownImages, show useful ones in the final answer with Markdown image syntax using the exact returned path.
+- If a tool returns toolError, use the raw error to decide whether retrying, changing input, using a different tool, or reporting failure is best. Do not repeat the exact same failing tool input more than once.
 
-Tool argument schema:
-{"query":"short search query"}
+Tool argument schemas:
+webSearch/rag: {"query":"short search query"}
+curl: {"url":"https://api.example.com/path?x=1"}
+python: {"code":"print(2 + 2)"}
+fileEditor: {"action":"read","path":"backend/agent/graph.py"}
+mcp: {"action":"listTools","server":"configuredServerName"}
 """.strip()
 
 
@@ -21,6 +33,10 @@ def build_tools_prompt(
     web_search: bool = False,
     web_search_mode: str | None = None,
     rag_mode: str = "off",
+    curl_mode: str = "off",
+    python_mode: str = "off",
+    file_editor_mode: str = "off",
+    mcp_mode: str = "off",
     rag_context: str | None = None,
     web_search_results: list[str] | None = None,
     rag_results: list[str] | None = None,
@@ -37,6 +53,10 @@ def build_tools_prompt(
         web_search=web_search if web_search_mode is None else None,
         web_search_mode=web_search_mode or "off",
         rag_mode=rag_mode,
+        curl_mode=curl_mode,
+        python_mode=python_mode,
+        file_editor_mode=file_editor_mode,
+        mcp_mode=mcp_mode,
     )
     lines: list[str] = []
 
@@ -68,6 +88,10 @@ def build_tools_prompt_from_settings(
     return build_tools_prompt(
         web_search_mode=settings.web_search.mode,
         rag_mode=settings.rag.mode,
+        curl_mode=settings.curl.mode,
+        python_mode=settings.python.mode,
+        file_editor_mode=settings.file_editor.mode,
+        mcp_mode=settings.mcp.mode,
         rag_context=rag_context,
         web_search_results=web_search_results,
         rag_results=rag_results,

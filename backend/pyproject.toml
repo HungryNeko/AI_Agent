@@ -8,6 +8,16 @@ dependencies = [
     "httpx",
     "python-dotenv",
     "ddgs",
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "scipy",
+    "scikit-learn",
+    "seaborn",
+    "plotly",
+    "beautifulsoup4",
+    "fastapi",
+    "uvicorn",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +31,7 @@ dev = [
 ai-agent = "agent.cli:main"
 
 [tool.ruff]
+exclude = ["runtime"]
 line-length = 100
 target-version = "py311"
 

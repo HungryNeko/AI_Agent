@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "rent": {
+      "enabled": true,
+      "transport": "streamable_http",
+      "url": "http://127.0.0.1:5050/mcp",
+      "headers": {
+        "Authorization": "Bearer ${RENT_MCP_TOKEN}"
+      },
+      "timeout": 5.0,
+      "sse_read_timeout": 300.0
+    }
+  }
+}

@@ -33,7 +33,15 @@ def test_chat_sends_openai_tools_and_returns_content(monkeypatch):
         )(),
     )
 
-    result = llm.chat("hello", web_search_mode="auto", rag_mode="auto")
+    result = llm.chat(
+        "hello",
+        web_search_mode="auto",
+        rag_mode="auto",
+        curl_mode="off",
+        python_mode="off",
+        file_editor_mode="off",
+        mcp_mode="off",
+    )
 
     assert result == "done"
     assert payloads[0]["tool_choice"] == "auto"

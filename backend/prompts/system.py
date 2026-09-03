@@ -10,6 +10,7 @@ BASE_SYSTEM_PROMPT = """
 You are an AI agent.
 
 Answer directly when you have enough information.
+For complex tasks, briefly state the next check before requesting tools, briefly state what you found before requesting another tool, then finish with a concise summary.
 """.strip()
 
 
@@ -18,6 +19,10 @@ def build_system_prompt(
     web_search: bool = False,
     web_search_mode: str | None = None,
     rag_mode: str = "off",
+    curl_mode: str = "off",
+    python_mode: str = "off",
+    file_editor_mode: str = "off",
+    mcp_mode: str = "off",
     rag_context: str | None = None,
     web_search_results: list[str] | None = None,
     rag_results: list[str] | None = None,
@@ -39,6 +44,10 @@ def build_system_prompt(
         web_search=web_search,
         web_search_mode=web_search_mode,
         rag_mode=rag_mode,
+        curl_mode=curl_mode,
+        python_mode=python_mode,
+        file_editor_mode=file_editor_mode,
+        mcp_mode=mcp_mode,
         rag_context=rag_context,
         web_search_results=web_search_results,
         rag_results=rag_results,

@@ -1,3 +1,6 @@
+from datetime import datetime, timezone
+
+from prompts.context import format_current_time
 from prompts.system import build_system_prompt
 from prompts.tools import build_tools_prompt
 
@@ -17,6 +20,20 @@ def test_rag_auto_exposes_rag_tool():
     assert "rag" in prompt
     assert "RAG mode" not in prompt
 
+
+def test_curl_auto_exposes_curl_tool():
+    prompt = build_tools_prompt(curl_mode="auto")
+
+    assert 'available: ["curl"]' in prompt
+
+
+
+def test_tool_rules_handle_curl_failure_generically():
+    prompt = build_tools_prompt(web_search_mode="auto", curl_mode="auto", include_rules=True)
+
+    assert "official API documentation" in prompt
+    assert "change the endpoint or parameters" in prompt
+    assert "Open-Meteo" not in prompt
 
 def test_rag_on_injects_context_and_exposes_tool():
     prompt = build_system_prompt(rag_mode="on", rag_context="Document says hello.")
@@ -93,3 +110,45 @@ def test_static_rules_come_before_dynamic_context():
 
     assert base_index < context_rules_index < tool_rules_index
     assert tool_rules_index < summary_index < available_index < result_index
+
+def test_current_time_prompt_has_local_and_utc_reference():
+    prompt = format_current_time(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc))
+
+    assert 'currentTime: "2026-09-02T12:00:00+00:00"' in prompt
+    assert 'referenceUTC: "2026-09-02T12:00:00Z"' in prompt
+
+
+def test_python_auto_exposes_python_tool_without_rules():
+    prompt = build_tools_prompt(python_mode="auto")
+
+    assert 'available: ["python"]' in prompt
+    assert "artifact directory" not in prompt
+
+
+def test_tool_rules_include_python_artifact_guidance():
+    prompt = build_tools_prompt(python_mode="auto", include_rules=True)
+
+    assert "current working directory is the artifact directory" in prompt
+    assert "Markdown image syntax" in prompt
+    assert 'python: {"code"' in prompt
+
+
+def test_tool_rules_include_web_and_api_image_guidance():
+    prompt = build_tools_prompt(web_search_mode="auto", curl_mode="auto", include_rules=True)
+
+    assert "webSearchResult includes image URLs" in prompt
+    assert "curlResult/API data contains image URLs or image content" in prompt
+    assert "![image](https://example.com/image.jpg)" in prompt
+
+def test_file_editor_auto_exposes_tool_without_rules():
+    prompt = build_tools_prompt(file_editor_mode="auto")
+
+    assert 'available: ["fileEditor"]' in prompt
+    assert "oldText" not in prompt
+
+
+def test_tool_rules_include_file_editor_anchor_guidance():
+    prompt = build_tools_prompt(file_editor_mode="auto", include_rules=True)
+
+    assert "Use fileEditor for project file changes" in prompt
+    assert 'fileEditor: {"action":"read"' in prompt
