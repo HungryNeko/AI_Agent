@@ -2,9 +2,21 @@
 
 from tools.executor import execute_tool
 from tools.request import ToolRequest, build_openai_tools, parse_openai_tool_calls
-from tools.settings import RagSettings, ToolSettings, WebSearchSettings
+from tools.settings import (
+    CurlSettings,
+    FileEditorSettings,
+    McpSettings,
+    PythonSettings,
+    RagSettings,
+    ToolSettings,
+    WebSearchSettings,
+)
 
 __all__ = [
+    "CurlSettings",
+    "FileEditorSettings",
+    "McpSettings",
+    "PythonSettings",
     "RagSettings",
     "ToolRequest",
     "ToolSettings",

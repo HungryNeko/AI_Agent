@@ -114,14 +114,14 @@ def normalize_tavily_results(data: dict[str, Any]) -> list[dict[str, str]]:
     for item in raw_results:
         if not isinstance(item, dict):
             continue
-        results.append(
-            {
-                "title": text_or_empty(item.get("title")),
-                "url": text_or_empty(item.get("url")),
-                "snippet": text_or_empty(item.get("content") or item.get("snippet")),
-                "score": text_or_empty(item.get("score")),
-            }
-        )
+        result = {
+            "title": text_or_empty(item.get("title")),
+            "url": text_or_empty(item.get("url")),
+            "snippet": text_or_empty(item.get("content") or item.get("snippet")),
+            "score": text_or_empty(item.get("score")),
+        }
+        add_optional_image(result, item)
+        results.append(result)
 
     return results
 
@@ -131,13 +131,13 @@ def normalize_duckduckgo_results(raw_results: list[dict[str, Any]]) -> list[dict
     for item in raw_results:
         if not isinstance(item, dict):
             continue
-        results.append(
-            {
-                "title": text_or_empty(item.get("title")),
-                "url": text_or_empty(item.get("href") or item.get("url")),
-                "snippet": text_or_empty(item.get("body") or item.get("snippet")),
-            }
-        )
+        result = {
+            "title": text_or_empty(item.get("title")),
+            "url": text_or_empty(item.get("href") or item.get("url")),
+            "snippet": text_or_empty(item.get("body") or item.get("snippet")),
+        }
+        add_optional_image(result, item)
+        results.append(result)
     return results
 
 
@@ -150,16 +150,21 @@ def normalize_searxng_results(data: dict[str, Any]) -> list[dict[str, str]]:
     for item in raw_results:
         if not isinstance(item, dict):
             continue
-        results.append(
-            {
-                "title": text_or_empty(item.get("title")),
-                "url": text_or_empty(item.get("url")),
-                "snippet": text_or_empty(item.get("content")),
-                "score": text_or_empty(item.get("score")),
-            }
-        )
+        result = {
+            "title": text_or_empty(item.get("title")),
+            "url": text_or_empty(item.get("url")),
+            "snippet": text_or_empty(item.get("content")),
+            "score": text_or_empty(item.get("score")),
+        }
+        add_optional_image(result, item)
+        results.append(result)
     return results
 
+
+def add_optional_image(result: dict[str, str], item: dict[str, Any]) -> None:
+    image = text_or_empty(item.get("image") or item.get("thumbnail") or item.get("img_src"))
+    if image:
+        result["image"] = image
 
 def get_api_key(env_name: str) -> str | None:
     load_tool_env()
