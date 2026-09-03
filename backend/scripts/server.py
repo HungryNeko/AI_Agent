@@ -14,4 +14,4 @@ if str(BACKEND_ROOT) not in sys.path:
 
 if __name__ == "__main__":
     port = int(os.environ.get("AI_AGENT_BACKEND_PORT", "8010"))
-    uvicorn.run("agent.server:app", host="127.0.0.1", port=port, reload=True)
+    uvicorn.run("agent.server:app", host="127.0.0.1", port=port, reload=False)

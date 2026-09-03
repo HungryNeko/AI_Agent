@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = PROJECT_ROOT / "backend"
@@ -107,6 +106,8 @@ def load_system_prompt(
     python_mode: str = "off",
     file_editor_mode: str = "off",
     mcp_mode: str = "off",
+    history_mode: str = "off",
+    instruction_text: str | None = None,
     rag_context: str | None = None,
     web_search_results: list[str] | None = None,
     rag_results: list[str] | None = None,
@@ -125,6 +126,8 @@ def load_system_prompt(
         python_mode=python_mode,
         file_editor_mode=file_editor_mode,
         mcp_mode=mcp_mode,
+        history_mode=history_mode,
+        instruction_text=instruction_text,
         rag_context=rag_context,
         web_search_results=web_search_results,
         rag_results=rag_results,

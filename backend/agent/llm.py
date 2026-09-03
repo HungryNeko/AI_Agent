@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from agent.config import get_model_config
+from agent.debug_log import log_event, log_exception
 
 
 def chat(
@@ -19,6 +20,9 @@ def chat(
     web_search_provider: str = "duckduckgo",
     web_search_base_url: str | None = None,
     rag_mode: str = "auto",
+    rag_include_knowledge: bool = True,
+    rag_include_memory: bool = True,
+    rag_include_skills: bool = True,
     curl: bool = False,
     curl_mode: str = "auto",
     python: bool = False,
@@ -28,6 +32,8 @@ def chat(
     file_editor_approval: str = "auto",
     mcp: bool = False,
     mcp_mode: str = "auto",
+    history: bool = False,
+    history_mode: str = "off",
     rag_context: str | None = None,
     web_search_results: list[str] | None = None,
     rag_results: list[str] | None = None,
@@ -54,6 +60,9 @@ def chat(
         web_search_provider=web_search_provider,
         web_search_base_url=web_search_base_url,
         rag_mode=rag_mode,
+        rag_include_knowledge=rag_include_knowledge,
+        rag_include_memory=rag_include_memory,
+        rag_include_skills=rag_include_skills,
         curl=curl,
         curl_mode=curl_mode,
         python=python,
@@ -63,6 +72,8 @@ def chat(
         file_editor_approval=file_editor_approval,
         mcp=mcp,
         mcp_mode=mcp_mode,
+        history=history,
+        history_mode=history_mode,
         rag_context=rag_context,
         web_search_results=web_search_results,
         rag_results=rag_results,
@@ -88,7 +99,35 @@ def complete_chat_once(
         raise ValueError(f"Missing API key. Set {config.api_key_env} in backend/.env.")
 
     payload = build_chat_payload(config.model_id, messages, tools=tools)
-    data = post_chat_completion(config.base_url, api_key, payload)
+    log_event(
+        "llm.request",
+        provider=config.provider,
+        base_url=config.base_url,
+        model=config.model_id,
+        message_count=len(messages),
+        tool_count=len(tools or []),
+        payload=payload,
+    )
+    try:
+        data = post_chat_completion(config.base_url, api_key, payload)
+    except Exception as exc:
+        log_exception(
+            "llm.error",
+            exc,
+            provider=config.provider,
+            base_url=config.base_url,
+            model=config.model_id,
+            message_count=len(messages),
+            tool_count=len(tools or []),
+        )
+        raise
+    log_event(
+        "llm.response",
+        provider=config.provider,
+        base_url=config.base_url,
+        model=config.model_id,
+        response=data,
+    )
     return read_assistant_message(data)
 
 

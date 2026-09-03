@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 import httpx
 
+from agent.debug_log import log_event, log_exception
 from tools.settings import McpSettings
 
 McpAction = Literal["listServers", "listTools", "callTool"]
@@ -39,15 +40,30 @@ class McpRequest:
 
 
 def execute(request: McpRequest, settings: McpSettings) -> dict[str, Any]:
-    if not settings.can_model_call:
-        raise ValueError("mcp is disabled for the model.")
-    if request.action == "listServers":
-        return list_servers(settings)
-    if request.action == "listTools":
-        return list_tools(request.server, settings)
-    if request.action == "callTool":
-        return call_tool(request.server, request.tool, request.arguments, settings)
-    raise ValueError(f"unknown mcp action: {request.action}")
+    log_event("mcp.request", action=request.action, server=request.server, tool=request.tool, arguments=request.arguments)
+    try:
+        if not settings.can_model_call:
+            raise ValueError("mcp is disabled for the model.")
+        if request.action == "listServers":
+            result = list_servers(settings)
+        elif request.action == "listTools":
+            result = list_tools(request.server, settings)
+        elif request.action == "callTool":
+            result = call_tool(request.server, request.tool, request.arguments, settings)
+        else:
+            raise ValueError(f"unknown mcp action: {request.action}")
+    except Exception as exc:
+        log_exception(
+            "mcp.error",
+            exc,
+            action=request.action,
+            server=request.server,
+            tool=request.tool,
+            arguments=request.arguments,
+        )
+        raise
+    log_event("mcp.response", action=request.action, server=request.server, tool=request.tool, response=result)
+    return result
 
 
 def list_servers(settings: McpSettings) -> dict[str, Any]:
@@ -138,10 +154,17 @@ def run_session(server: dict[str, Any], settings: McpSettings, *, method: str, p
 
 
 def test_server_config(server: dict[str, Any], settings: McpSettings) -> dict[str, Any]:
+    log_event("mcp.test.request", server=server)
     if not server.get("enabled", True):
         raise ValueError("mcp server is disabled.")
-    response = run_session(server, settings, method="tools/list", params={})
-    return {"action": "testConnection", "response": trim_json(response, settings.max_output_chars)}
+    try:
+        response = run_session(server, settings, method="tools/list", params={})
+    except Exception as exc:
+        log_exception("mcp.test.error", exc, server=server)
+        raise
+    result = {"action": "testConnection", "response": trim_json(response, settings.max_output_chars)}
+    log_event("mcp.test.response", server=server, response=result)
+    return result
 
 
 def run_stdio_session(
@@ -557,10 +580,7 @@ def resolve_project_path(path_text: str) -> Path:
     path = Path(path_text)
     if not path.is_absolute():
         path = project_root() / path
-    root = project_root()
-    resolved = path.resolve()
-    resolved.relative_to(root)
-    return resolved
+    return path.resolve()
 
 
 def project_root() -> Path:

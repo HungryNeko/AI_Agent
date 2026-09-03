@@ -10,6 +10,9 @@ Tool request rules:
 - Request only tools listed in available.
 - If you can answer from the conversation or injected results, do not call a tool.
 - Use rag to search local knowledge, memory, and skill files. Memory files live under data/memory. Skill entrypoints live at data/skills/<name>/SKILL.md.
+- RAG results include sourceType and path. Use those source paths in the answer when they matter, and request more file detail if an excerpt is not enough.
+- Use history to list/search/read saved conversation JSON when exact previous messages or tool output are needed after compression.
+- User text may contain @ references such as @tool:python, @file:data/skills/name/SKILL.md, or @history:conversation-id. Treat them as explicit user intent for that tool or context.
 - For weather or other date-sensitive searches, include the current date from currentTime. For weather, include the location; ask for it if missing.
 - Use curl only for direct public http(s) API GET requests when a web API URL is known.
 - If a curl request fails or returns an API error, do not blindly retry the same URL. If webSearch is available, search the official API documentation, then change the endpoint or parameters before trying curl again.
@@ -17,6 +20,8 @@ Tool request rules:
 - Use python for math, statistics, data analysis, plotting, and local scripting. Its current working directory is the artifact directory; save files with relative names like plt.savefig("chart.png"). Prefer webSearch or curl for web/API fetching when those tools fit better. If pythonResult lists image files, show them in the final answer with Markdown image syntax using the exact returned path, for example ![chart](backend/runtime/python_runs/run_x/chart.png).
 - Use fileEditor for project file changes, including adding or updating memory and skill files when the user asks. Prefer list/read before editing. Prefer replace with exact unique oldText, or insertAfter/insertBefore with an exact unique anchor. Do not use line numbers for edits unless there is no stable text anchor. If fileEditor returns approvalRequired, explain the pending change and do not claim it was applied.
 - Use mcp only for configured MCP servers. Start with listServers or listTools unless the exact server and tool are already known. Do not provide shell commands to mcp. If mcpResult lists image files or markdownImages, show useful ones in the final answer with Markdown image syntax using the exact returned path.
+- Use automation for user-approved lightweight workflows: simple script execution, calling an MCP tool, saving MCP server config from conversation details, or saving reminders. For custom recurring schedules, store previousRunAt/currentRunAt/nextRunAt in schedule so the next reminder can be computed.
+- Use settings to read or update persistent app JSON config in data/settings.json when the user asks to remember UI or chat defaults.
 - If a tool returns toolError, use the raw error to decide whether retrying, changing input, using a different tool, or reporting failure is best. Do not repeat the exact same failing tool input more than once.
 
 Tool argument schemas:
@@ -25,6 +30,9 @@ curl: {"url":"https://api.example.com/path?x=1"}
 python: {"code":"print(2 + 2)"}
 fileEditor: {"action":"read","path":"backend/agent/graph.py"}
 mcp: {"action":"listTools","server":"configuredServerName"}
+history: {"action":"search","query":"older topic","limit":5}
+automation: {"action":"reminder","title":"check report","prompt":"check report","schedule":{"kind":"once","nextRunAt":"2026-09-03T20:00:00-07:00"}}
+settings: {"action":"update","patch":{"ui":{"theme":"dark"},"chat":{"max_tool_rounds":-1}}}
 """.strip()
 
 
@@ -37,6 +45,8 @@ def build_tools_prompt(
     python_mode: str = "off",
     file_editor_mode: str = "off",
     mcp_mode: str = "off",
+    history_mode: str = "off",
+    automation_mode: str = "off",
     rag_context: str | None = None,
     web_search_results: list[str] | None = None,
     rag_results: list[str] | None = None,
@@ -57,6 +67,8 @@ def build_tools_prompt(
         python_mode=python_mode,
         file_editor_mode=file_editor_mode,
         mcp_mode=mcp_mode,
+        history_mode=history_mode,
+        automation_mode=automation_mode,
     )
     lines: list[str] = []
 
@@ -92,6 +104,8 @@ def build_tools_prompt_from_settings(
         python_mode=settings.python.mode,
         file_editor_mode=settings.file_editor.mode,
         mcp_mode=settings.mcp.mode,
+        history_mode=settings.history.mode,
+        automation_mode=settings.automation.mode,
         rag_context=rag_context,
         web_search_results=web_search_results,
         rag_results=rag_results,

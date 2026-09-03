@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from prompts.context import build_context_prompt, build_context_rules_prompt
-from prompts.tools import build_tool_usage_reminder, build_tools_prompt
-
+from prompts.context import build_context_rules_prompt
+from prompts.tools import build_tool_usage_reminder
 
 BASE_SYSTEM_PROMPT = """
 You are an AI agent.
 
 Answer directly when you have enough information.
 For complex tasks, briefly state the next check before requesting tools, briefly state what you found before requesting another tool, then finish with a concise summary.
+When a mistake, repeated workaround, or reusable workflow is discovered, consider whether it belongs in instruction, memory, skills, or knowledge, and update the relevant project file when the user asks or the task clearly requires it.
 """.strip()
 
 
@@ -23,6 +23,8 @@ def build_system_prompt(
     python_mode: str = "off",
     file_editor_mode: str = "off",
     mcp_mode: str = "off",
+    history_mode: str = "off",
+    instruction_text: str | None = None,
     rag_context: str | None = None,
     web_search_results: list[str] | None = None,
     rag_results: list[str] | None = None,
@@ -37,26 +39,16 @@ def build_system_prompt(
         if include_tool_rules or tool_error
         else ""
     )
-    context_prompt = build_context_prompt(
-        conversation_summary=conversation_summary,
-    )
-    tools_prompt = build_tools_prompt(
-        web_search=web_search,
-        web_search_mode=web_search_mode,
-        rag_mode=rag_mode,
-        curl_mode=curl_mode,
-        python_mode=python_mode,
-        file_editor_mode=file_editor_mode,
-        mcp_mode=mcp_mode,
-        rag_context=rag_context,
-        web_search_results=web_search_results,
-        rag_results=rag_results,
-    )
     parts = [
         BASE_SYSTEM_PROMPT,
+        format_instruction(instruction_text),
         context_rules,
         tool_rules,
-        context_prompt,
-        tools_prompt,
     ]
     return "\n\n".join(part for part in parts if part).strip()
+
+
+def format_instruction(instruction_text: str | None) -> str:
+    if not instruction_text:
+        return ""
+    return f"instruction:\n{instruction_text.strip()}"

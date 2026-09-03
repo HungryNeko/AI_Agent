@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$backendCommand = "Set-Location -LiteralPath '$root'; `$env:AI_AGENT_BACKEND_PORT='8010'; conda run --no-capture-output -n sde python backend\scripts\server.py"
+$backendCommand = "Set-Location -LiteralPath '$root'; `$env:AI_AGENT_BACKEND_PORT='8012'; conda run --no-capture-output -n sde python backend\scripts\server.py"
 $frontendCommand = "Set-Location -LiteralPath '$root\frontend'; npm.cmd run dev"
 
 function Stop-DevPort {
@@ -45,9 +45,12 @@ function Stop-DevPort {
 }
 
 Stop-DevPort 8010
+Stop-DevPort 8011
+Stop-DevPort 8012
 Stop-DevPort 5173
+Stop-DevPort 5174
 
-Write-Host "Starting backend:  http://127.0.0.1:8010"
+Write-Host "Starting backend:  http://127.0.0.1:8012"
 Start-Process powershell.exe -ArgumentList @(
     "-NoProfile",
     "-NoExit",

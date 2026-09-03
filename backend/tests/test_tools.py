@@ -6,6 +6,7 @@ from tools.executor import (
     format_mcp_result,
     format_python_result,
     format_web_search_results,
+    execute_tool,
 )
 from tools.request import build_openai_tools, parse_openai_tool_calls
 from tools.settings import make_tool_settings
@@ -65,6 +66,75 @@ def test_build_openai_tools_includes_curl_when_enabled():
     tool_names = [tool["function"]["name"] for tool in build_openai_tools(settings)]
 
     assert tool_names == ["curl"]
+
+
+def test_build_openai_tools_includes_history_when_enabled():
+    settings = make_tool_settings(
+        web_search_mode="off",
+        rag_mode="off",
+        curl_mode="off",
+        python_mode="off",
+        file_editor_mode="off",
+        mcp_mode="off",
+        history_mode="auto",
+    )
+
+    tool_names = [tool["function"]["name"] for tool in build_openai_tools(settings)]
+
+    assert tool_names == ["history"]
+
+
+def test_settings_tool_is_available_with_automation_mode():
+    settings = make_tool_settings(
+        web_search_mode="off",
+        rag_mode="off",
+        curl_mode="off",
+        python_mode="off",
+        file_editor_mode="off",
+        mcp_mode="off",
+        history_mode="off",
+        automation_mode="auto",
+    )
+
+    tool_names = [tool["function"]["name"] for tool in build_openai_tools(settings)]
+
+    assert tool_names == ["automation", "settings"]
+
+
+def test_settings_tool_updates_persistent_json(tmp_path, monkeypatch):
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr("agent.app_settings.SETTINGS_PATH", settings_path)
+    tool_settings = make_tool_settings(
+        web_search_mode="off",
+        rag_mode="off",
+        curl_mode="off",
+        python_mode="off",
+        file_editor_mode="off",
+        mcp_mode="off",
+        history_mode="off",
+        automation_mode="auto",
+    )
+
+    [request] = parse_openai_tool_calls(
+        {
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "settings",
+                        "arguments": '{"action":"update","patch":{"ui":{"theme":"dark"},"chat":{"max_tool_rounds":-1}}}',
+                    },
+                }
+            ]
+        },
+        tool_settings,
+    )
+    result = execute_tool(request, tool_settings)
+
+    assert result.startswith("settingsResult:")
+    assert '"theme": "dark"' in result
+    assert '"max_tool_rounds": -1' in result
 
 
 

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from prompts.context import format_current_time
+from prompts.context import build_context_prompt, format_current_time
 from prompts.system import build_system_prompt
 from prompts.tools import build_tools_prompt
 
@@ -36,7 +36,7 @@ def test_tool_rules_handle_curl_failure_generically():
     assert "Open-Meteo" not in prompt
 
 def test_rag_on_injects_context_and_exposes_tool():
-    prompt = build_system_prompt(rag_mode="on", rag_context="Document says hello.")
+    prompt = build_tools_prompt(rag_mode="on", rag_context="Document says hello.")
 
     assert "Document says hello." in prompt
     assert "rag" in prompt
@@ -77,7 +77,7 @@ def test_injected_results_are_prefixed():
 def test_context_summary_without_rules_by_default():
     prompt = build_system_prompt(conversation_summary="Previous work was summarized.")
 
-    assert 'conversationSummary: "Previous work was summarized."' in prompt
+    assert 'conversationSummary: "Previous work was summarized."' not in prompt
     assert "Context rules:" not in prompt
 
 
@@ -89,10 +89,11 @@ def test_context_rules_are_optional():
 
     assert "Context rules:" in prompt
     assert "not a complete log" in prompt
+    assert 'conversationSummary: "Previous work was summarized."' not in prompt
 
 
-def test_static_rules_come_before_dynamic_context():
-    prompt = build_system_prompt(
+def test_system_prompt_keeps_dynamic_context_out_for_prompt_cache():
+    system_prompt = build_system_prompt(
         conversation_summary="Previous work was summarized.",
         include_context_rules=True,
         include_tool_rules=True,
@@ -100,16 +101,28 @@ def test_static_rules_come_before_dynamic_context():
         rag_mode="auto",
         web_search_results=["Search says A."],
     )
+    turn_prompt = "\n\n".join(
+        [
+            build_context_prompt(conversation_summary="Previous work was summarized."),
+            build_tools_prompt(
+                web_search_mode="auto",
+                rag_mode="auto",
+                web_search_results=["Search says A."],
+            ),
+        ]
+    )
 
-    base_index = prompt.index("You are an AI agent.")
-    context_rules_index = prompt.index("Context rules:")
-    tool_rules_index = prompt.index("Tool request format reminder:")
-    summary_index = prompt.index("conversationSummary:")
-    available_index = prompt.index("available:")
-    result_index = prompt.index("webSearchResult:")
+    base_index = system_prompt.index("You are an AI agent.")
+    context_rules_index = system_prompt.index("Context rules:")
+    tool_rules_index = system_prompt.index("Tool request format reminder:")
 
     assert base_index < context_rules_index < tool_rules_index
-    assert tool_rules_index < summary_index < available_index < result_index
+    assert "conversationSummary:" not in system_prompt
+    assert "available:" not in system_prompt
+    assert "webSearchResult:" not in system_prompt
+    assert 'conversationSummary: "Previous work was summarized."' in turn_prompt
+    assert "available:" in turn_prompt
+    assert "webSearchResult:" in turn_prompt
 
 def test_current_time_prompt_has_local_and_utc_reference():
     prompt = format_current_time(datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc))
