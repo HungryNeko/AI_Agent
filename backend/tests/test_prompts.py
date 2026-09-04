@@ -142,6 +142,7 @@ def test_tool_rules_include_python_artifact_guidance():
     prompt = build_tools_prompt(python_mode="auto", include_rules=True)
 
     assert "current working directory is the artifact directory" in prompt
+    assert "write_osm_scatter" in prompt
     assert "Markdown image syntax" in prompt
     assert 'python: {"code"' in prompt
 
@@ -152,6 +153,15 @@ def test_tool_rules_include_web_and_api_image_guidance():
     assert "webSearchResult includes image URLs" in prompt
     assert "curlResult/API data contains image URLs or image content" in prompt
     assert "![image](https://example.com/image.jpg)" in prompt
+
+
+def test_tool_rules_include_mcp_file_base64_guidance():
+    prompt = build_tools_prompt(mcp_mode="auto", include_rules=True)
+
+    assert "content_base64_from_file" in prompt
+    assert "never inline large base64" in prompt
+    assert 'mcp file upload: {"action":"callTool"' in prompt
+
 
 def test_file_editor_auto_exposes_tool_without_rules():
     prompt = build_tools_prompt(file_editor_mode="auto")

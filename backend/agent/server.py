@@ -7,9 +7,12 @@ import mimetypes
 import re
 import subprocess
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from threading import Lock
 from typing import Any, AsyncIterator, Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,6 +53,23 @@ ARTIFACT_ROOTS = [
     PROJECT_ROOT / "backend" / "runtime" / "mcp_artifacts",
     PROJECT_ROOT / "backend" / "runtime" / "uploads",
 ]
+_CANCELLED_RUNS: set[str] = set()
+_CANCELLED_RUNS_LOCK = Lock()
+
+
+def mark_cancelled_run(run_id: str) -> None:
+    with _CANCELLED_RUNS_LOCK:
+        _CANCELLED_RUNS.add(run_id)
+
+
+def is_cancelled_run(run_id: str) -> bool:
+    with _CANCELLED_RUNS_LOCK:
+        return run_id in _CANCELLED_RUNS
+
+
+def clear_cancelled_run(run_id: str) -> None:
+    with _CANCELLED_RUNS_LOCK:
+        _CANCELLED_RUNS.discard(run_id)
 
 
 @asynccontextmanager
@@ -123,14 +143,22 @@ class AttachmentPayload(BaseModel):
     path: str
     filename: str = ""
     content_type: str = ""
+    url: str = ""
+    absolute_url: str = ""
+    size: int = 0
 
 
 class ChatRequest(BaseModel):
     message: str
+    run_id: str | None = None
     conversation_id: str | None = None
     state: dict[str, Any] | None = None
     options: ChatOptions | None = None
     attachments: list[AttachmentPayload] = []
+
+
+class StopChatRequest(BaseModel):
+    run_id: str
 
 
 class DataFilePayload(BaseModel):
@@ -203,6 +231,12 @@ class McpServerPayload(BaseModel):
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api")
+@app.get("/api/")
+def api_root() -> dict[str, str]:
+    return {"status": "ok", "health": "/api/health"}
 
 
 @app.get("/api/version")
@@ -288,10 +322,20 @@ def patch_settings(payload: SettingsPatchPayload) -> dict[str, Any]:
     return {"path": "data/settings.local.json", "status": "saved", "settings": settings}
 
 
+@app.post("/api/chat/stop")
+def stop_chat(payload: StopChatRequest) -> dict[str, str]:
+    run_id = payload.run_id.strip()
+    if not run_id:
+        raise HTTPException(status_code=400, detail="run_id is required")
+    mark_cancelled_run(run_id)
+    log_event("http.chat_stop", run_id=run_id)
+    return {"status": "stopping", "run_id": run_id}
+
+
 @app.post("/api/chat/stream")
 def chat_stream(payload: ChatRequest) -> StreamingResponse:
-    if not payload.message.strip():
-        raise HTTPException(status_code=400, detail="message is required")
+    if not payload.message.strip() and not payload.attachments:
+        raise HTTPException(status_code=400, detail="message or attachment is required")
 
     log_event("http.chat_stream", message=payload.message, options=model_to_dict(payload.options) if payload.options else {})
     state = build_chat_state(payload)
@@ -300,17 +344,39 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
         session_store.conversation_path(conversation_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    run_id = (payload.run_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
+    clear_cancelled_run(run_id)
 
     def events():
         turn_events: list[dict[str, Any]] = []
         final_state: dict[str, Any] = {}
         try:
             for event in stream_turn(state, payload.message):
-                event_with_id = {**event, "conversation_id": conversation_id}
+                if is_cancelled_run(run_id):
+                    stopped_event = {
+                        "type": "stopped",
+                        "text": "AI output stopped.",
+                        "conversation_id": conversation_id,
+                        "run_id": run_id,
+                    }
+                    turn_events.append(stopped_event)
+                    yield encode_sse(stopped_event)
+                    break
+                event_with_id = {**event, "conversation_id": conversation_id, "run_id": run_id}
                 turn_events.append(event_with_id)
                 if event.get("type") == "assistant" and isinstance(event.get("state"), dict):
                     final_state = public_state(event["state"])
                 yield encode_sse(event_with_id)
+                if is_cancelled_run(run_id):
+                    stopped_event = {
+                        "type": "stopped",
+                        "text": "AI output stopped.",
+                        "conversation_id": conversation_id,
+                        "run_id": run_id,
+                    }
+                    turn_events.append(stopped_event)
+                    yield encode_sse(stopped_event)
+                    break
             session_store.save_turn(
                 conversation_id,
                 user_text=payload.message,
@@ -320,7 +386,7 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
             )
         except Exception as exc:  # noqa: BLE001
             log_exception("http.chat_stream_error", exc, message=payload.message)
-            error_event = {"type": "error", "text": str(exc), "conversation_id": conversation_id}
+            error_event = {"type": "error", "text": str(exc), "conversation_id": conversation_id, "run_id": run_id}
             turn_events.append(error_event)
             session_store.save_turn(
                 conversation_id,
@@ -330,6 +396,8 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
                 attachments=[model_to_dict(item) for item in payload.attachments],
             )
             yield encode_sse(error_event)
+        finally:
+            clear_cancelled_run(run_id)
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -392,18 +460,36 @@ def reindex_rag() -> dict[str, Any]:
 
 
 @app.post("/api/uploads")
-async def upload_file(request: Request, filename: str = Query("upload.bin")) -> dict[str, str]:
-    root = PROJECT_ROOT / "backend" / "runtime" / "uploads"
-    root.mkdir(parents=True, exist_ok=True)
+async def upload_file(request: Request, filename: str = Query("upload.bin")) -> dict[str, Any]:
+    root = upload_root()
     clean_name = clean_upload_name(filename)
-    path = root / clean_name
-    suffix = 1
-    while path.exists():
-        path = root / f"{Path(clean_name).stem}-{suffix}{Path(clean_name).suffix}"
-        suffix += 1
-    path.write_bytes(await request.body())
+    upload_id = uuid.uuid4().hex
+    upload_dir = root / upload_id
+    upload_dir.mkdir(parents=True, exist_ok=False)
+    path = upload_dir / clean_name
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="upload body is empty")
+    path.write_bytes(body)
     content_type = request.headers.get("content-type") or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    return {"path": relative_to_project(path), "filename": path.name, "content_type": content_type}
+    url = f"/api/uploads/{upload_id}/{quote(path.name)}"
+    return {
+        "id": upload_id,
+        "path": relative_to_project(path),
+        "filename": path.name,
+        "content_type": content_type,
+        "size": path.stat().st_size,
+        "url": url,
+        "absolute_url": absolute_request_url(request, url),
+    }
+
+
+@app.get("/api/uploads/{upload_id}/{filename}")
+def uploaded_file(upload_id: str, filename: str) -> FileResponse:
+    resolved = resolve_uploaded_file_path(upload_id, filename)
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="upload not found")
+    return FileResponse(resolved)
 
 
 @app.get("/api/data/files")
@@ -804,6 +890,34 @@ def clean_upload_name(name: str) -> str:
     if not clean or clean in {".", ".."}:
         raise HTTPException(status_code=400, detail="invalid upload filename")
     return clean
+
+
+def clean_upload_id(upload_id: str) -> str:
+    clean = upload_id.strip()
+    if not re.fullmatch(r"[a-fA-F0-9]{32}", clean):
+        raise HTTPException(status_code=400, detail="invalid upload id")
+    return clean.lower()
+
+
+def upload_root() -> Path:
+    return (PROJECT_ROOT / "backend" / "runtime" / "uploads").resolve()
+
+
+def resolve_uploaded_file_path(upload_id: str, filename: str) -> Path:
+    root = upload_root()
+    path = (root / clean_upload_id(upload_id) / clean_upload_name(filename)).resolve()
+    if not is_relative_to(path, root):
+        raise HTTPException(status_code=400, detail="upload path is not allowed")
+    return path
+
+
+def absolute_request_url(request: Request, path: str) -> str:
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",", 1)[0].strip()
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",", 1)[0].strip()
+    prefix = (request.headers.get("x-forwarded-prefix") or "").rstrip("/")
+    if host:
+        return f"{proto}://{host}{prefix}{path}"
+    return str(request.base_url).rstrip("/") + path
 
 
 def automation_root() -> Path:

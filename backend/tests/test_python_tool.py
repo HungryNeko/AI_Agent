@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 
 from tools import python
 from tools.settings import PythonSettings
@@ -24,6 +25,23 @@ def test_python_run_can_create_plot_artifact(tmp_path):
     assert result["return_code"] == 0
     assert result["stdout"].strip() == "saved"
     assert any(path.endswith("chart.png") for path in result["files"])
+
+
+def test_python_run_can_create_lightweight_osm_scatter_map(tmp_path):
+    result = python.run(
+        (
+            "from ai_agent_maps import write_osm_scatter\n"
+            "path = write_osm_scatter([{'lat': 34.0522, 'lon': -118.2437, 'label': 'LA'}], 'map.html')\n"
+            "print(path)"
+        ),
+        PythonSettings(mode="auto", artifact_root=str(tmp_path)),
+    )
+
+    assert result["return_code"] == 0
+    assert result["stdout"].strip() == "map.html"
+    map_files = [path for path in result["files"] if path.endswith("map.html")]
+    assert map_files
+    assert "tile.openstreetmap.org" in Path(map_files[0]).read_text(encoding="utf-8")
 
 
 def test_python_run_allows_system_import(tmp_path):

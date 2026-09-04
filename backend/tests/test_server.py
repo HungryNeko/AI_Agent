@@ -171,6 +171,7 @@ def test_conversation_can_be_renamed_and_deleted(tmp_path, monkeypatch):
     monkeypatch.setattr(server.session_store, "CONVERSATION_ROOT", tmp_path)
     conversation_id = server.session_store.create_conversation_id()
     server.session_store.save_turn(conversation_id, user_text="hello", turn_events=[], state={})
+    conversation_path = tmp_path / f"{conversation_id}.json"
     client = TestClient(server.app)
 
     renamed = client.patch(f"/api/conversations/{conversation_id}", json={"title": "New title"})
@@ -179,6 +180,7 @@ def test_conversation_can_be_renamed_and_deleted(tmp_path, monkeypatch):
     assert renamed.status_code == 200
     assert renamed.json()["title"] == "New title"
     assert deleted.status_code == 200
+    assert not conversation_path.exists()
     assert server.session_store.list_conversations() == []
 
 
@@ -233,9 +235,72 @@ def test_upload_endpoint_stores_runtime_file(tmp_path, monkeypatch):
     response = client.post("/api/uploads", params={"filename": "note.txt"}, content=b"hello")
 
     assert response.status_code == 200
-    path = response.json()["path"]
-    assert path == "backend/runtime/uploads/note.txt"
+    data = response.json()
+    path = data["path"]
+    assert path.startswith("backend/runtime/uploads/")
+    assert path.endswith("/note.txt")
+    assert data["url"].startswith(f"/api/uploads/{data['id']}/")
+    assert data["absolute_url"].endswith(data["url"])
+    assert data["size"] == 5
     assert (tmp_path / path).read_bytes() == b"hello"
+
+    download = client.get(data["url"])
+
+    assert download.status_code == 200
+    assert download.content == b"hello"
+
+
+def test_upload_absolute_url_uses_forwarded_headers(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "PROJECT_ROOT", tmp_path)
+    client = TestClient(server.app)
+
+    response = client.post(
+        "/api/uploads",
+        params={"filename": "photo.png"},
+        content=b"image",
+        headers={
+            "content-type": "image/png",
+            "x-forwarded-proto": "https",
+            "x-forwarded-host": "agent.example.com",
+            "x-forwarded-prefix": "/app",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["absolute_url"].startswith("https://agent.example.com/app/api/uploads/")
+
+
+def test_chat_stream_accepts_attachment_without_message(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.session_store, "CONVERSATION_ROOT", tmp_path / "conversations")
+
+    def fake_stream_turn(state, message):
+        assert message == ""
+        assert state["attachments"][0]["url"] == "/api/uploads/upload-id/photo.png"
+        assert state["attachments"][0]["absolute_url"] == "https://agent.example.com/api/uploads/upload-id/photo.png"
+        yield {"type": "assistant", "text": "saw attachment", "state": state}
+
+    monkeypatch.setattr(server, "stream_turn", fake_stream_turn)
+    client = TestClient(server.app)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "message": "",
+            "attachments": [
+                {
+                    "path": "backend/runtime/uploads/upload-id/photo.png",
+                    "filename": "photo.png",
+                    "content_type": "image/png",
+                    "url": "/api/uploads/upload-id/photo.png",
+                    "absolute_url": "https://agent.example.com/api/uploads/upload-id/photo.png",
+                    "size": 12,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert "saw attachment" in response.text
 
 
 def test_automation_endpoints_manage_runtime_json(tmp_path, monkeypatch):

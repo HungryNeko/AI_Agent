@@ -6,6 +6,7 @@ import base64
 import binascii
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import subprocess
@@ -13,6 +14,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -22,6 +24,12 @@ from tools.settings import McpSettings
 McpAction = Literal["listServers", "listTools", "callTool"]
 PROTOCOL_VERSION = "2025-03-26"
 IMAGE_BASE64_KEYS = {"body_base64", "image_base64", "b64_json"}
+BASE64_FROM_FILE_KEYS = {
+    "content_base64_from_file": "content_base64",
+    "body_base64_from_file": "body_base64",
+    "image_base64_from_file": "image_base64",
+    "file_base64_from_file": "file_base64",
+}
 IMAGE_EXTENSIONS_BY_CONTENT_TYPE = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -95,21 +103,103 @@ def call_tool(server_name: str, tool_name: str, arguments: dict[str, Any], setti
     if not tool_name.strip():
         raise ValueError("mcp callTool requires tool.")
     server = require_server(server_name, settings)
+    prepared_arguments, expanded_uploads = prepare_mcp_arguments(arguments)
     response = run_session(
         server,
         settings,
         method="tools/call",
-        params={"name": tool_name, "arguments": arguments},
+        params={"name": tool_name, "arguments": prepared_arguments},
     )
     files = extract_image_artifacts(response)
     response_for_model = redact_image_payloads(response) if files else response
-    return {
+    result = {
         "action": "callTool",
         "server": server_name,
         "tool": tool_name,
         "response": trim_json(response_for_model, settings.max_output_chars),
         "files": files,
     }
+    if expanded_uploads:
+        result["expandedUploads"] = expanded_uploads
+    return result
+
+
+def prepare_mcp_arguments(arguments: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    expanded_uploads: list[dict[str, Any]] = []
+    prepared = expand_mcp_file_placeholders(arguments, expanded_uploads)
+    if not isinstance(prepared, dict):
+        raise ValueError("mcp arguments must be an object.")
+    return prepared, expanded_uploads
+
+
+def expand_mcp_file_placeholders(value: Any, expanded_uploads: list[dict[str, Any]]) -> Any:
+    if isinstance(value, list):
+        return [expand_mcp_file_placeholders(item, expanded_uploads) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    expanded: dict[str, Any] = {}
+    defaults: dict[str, str] = {}
+    for key, item in value.items():
+        if key in BASE64_FROM_FILE_KEYS:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(f"mcp `{key}` must be a non-empty uploaded file path or upload URL.")
+            target_key = BASE64_FROM_FILE_KEYS[key]
+            file_payload = encode_uploaded_file_for_mcp(item, target_key)
+            expanded[target_key] = file_payload["base64"]
+            defaults.setdefault("filename", file_payload["filename"])
+            defaults.setdefault("content_type", file_payload["content_type"])
+            expanded_uploads.append(
+                {
+                    "path": file_payload["path"],
+                    "filename": file_payload["filename"],
+                    "content_type": file_payload["content_type"],
+                    "sizeBytes": file_payload["size_bytes"],
+                    "targetKey": target_key,
+                }
+            )
+            continue
+        expanded[key] = expand_mcp_file_placeholders(item, expanded_uploads)
+
+    for key, item in defaults.items():
+        expanded.setdefault(key, item)
+    return expanded
+
+
+def encode_uploaded_file_for_mcp(reference: str, target_key: str) -> dict[str, Any]:
+    path = resolve_uploaded_file_reference(reference)
+    data = path.read_bytes()
+    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return {
+        "base64": base64.b64encode(data).decode("ascii"),
+        "content_type": content_type,
+        "filename": path.name,
+        "path": relative_to_project(path),
+        "size_bytes": len(data),
+        "target_key": target_key,
+    }
+
+
+def resolve_uploaded_file_reference(reference: str) -> Path:
+    clean = reference.strip()
+    parsed = urlparse(clean)
+    if parsed.scheme in {"http", "https"}:
+        clean = parsed.path
+    if clean.startswith("/api/uploads/"):
+        parts = clean.split("/", 4)
+        if len(parts) < 5 or not parts[3] or not parts[4]:
+            raise ValueError("mcp upload URL must be /api/uploads/{upload_id}/{filename}.")
+        clean = f"backend/runtime/uploads/{unquote(parts[3])}/{unquote(parts[4])}"
+    else:
+        clean = clean.split("?", 1)[0]
+
+    path = resolve_project_path(clean)
+    upload_root = (project_root() / "backend" / "runtime" / "uploads").resolve()
+    if not path.is_relative_to(upload_root):
+        raise ValueError("mcp file base64 placeholders may only read files from backend/runtime/uploads.")
+    if not path.is_file():
+        raise ValueError(f"mcp uploaded file was not found: {relative_to_project(path)}")
+    return path
 
 
 def load_config(settings: McpSettings) -> dict[str, dict[str, Any]]:

@@ -1,5 +1,6 @@
 import json
 import sys
+import base64
 
 import httpx
 import pytest
@@ -207,6 +208,94 @@ def test_mcp_rejects_disabled_server(tmp_path):
 
     with pytest.raises(ValueError, match="disabled"):
         mcp.execute(McpRequest(action="listTools", server="local"), settings)
+
+
+def test_mcp_expands_content_base64_from_uploaded_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp, "project_root", lambda: tmp_path)
+    upload = tmp_path / "backend" / "runtime" / "uploads" / "upload-1" / "photo.png"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"image-bytes")
+
+    arguments, expanded_uploads = mcp.prepare_mcp_arguments(
+        {"content_base64_from_file": "backend/runtime/uploads/upload-1/photo.png"}
+    )
+
+    assert arguments == {
+        "content_base64": base64.b64encode(b"image-bytes").decode("ascii"),
+        "filename": "photo.png",
+        "content_type": "image/png",
+    }
+    assert expanded_uploads == [
+        {
+            "path": "backend/runtime/uploads/upload-1/photo.png",
+            "filename": "photo.png",
+            "content_type": "image/png",
+            "sizeBytes": len(b"image-bytes"),
+            "targetKey": "content_base64",
+        }
+    ]
+
+
+def test_mcp_expands_file_placeholders_inside_batch_upload_url(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp, "project_root", lambda: tmp_path)
+    upload = tmp_path / "backend" / "runtime" / "uploads" / "upload-2" / "a b.jpg"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"jpg-bytes")
+
+    arguments, expanded_uploads = mcp.prepare_mcp_arguments(
+        {
+            "files": [
+                {
+                    "display_name": "front",
+                    "content_base64_from_file": "http://agent.local/api/uploads/upload-2/a%20b.jpg",
+                }
+            ]
+        }
+    )
+
+    assert arguments["files"][0]["content_base64"] == base64.b64encode(b"jpg-bytes").decode("ascii")
+    assert arguments["files"][0]["filename"] == "a b.jpg"
+    assert arguments["files"][0]["content_type"] == "image/jpeg"
+    assert "content_base64_from_file" not in arguments["files"][0]
+    assert expanded_uploads[0]["path"] == "backend/runtime/uploads/upload-2/a b.jpg"
+
+
+def test_mcp_call_tool_uses_expanded_file_arguments(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp, "project_root", lambda: tmp_path)
+    upload = tmp_path / "backend" / "runtime" / "uploads" / "upload-3" / "doc.bin"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"abc")
+    captured = {}
+
+    monkeypatch.setattr(mcp, "require_server", lambda name, settings: {"transport": "stdio", "command": "unused"})
+
+    def fake_run_session(server, settings, *, method, params):
+        captured["params"] = params
+        return {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": "ok"}]}}
+
+    monkeypatch.setattr(mcp, "run_session", fake_run_session)
+
+    result = mcp.call_tool(
+        "local",
+        "upload",
+        {"name": "doc.bin", "content_base64_from_file": "backend/runtime/uploads/upload-3/doc.bin"},
+        McpSettings(mode="auto"),
+    )
+
+    sent_arguments = captured["params"]["arguments"]
+    assert sent_arguments["content_base64"] == base64.b64encode(b"abc").decode("ascii")
+    assert "content_base64_from_file" not in sent_arguments
+    assert result["expandedUploads"][0]["targetKey"] == "content_base64"
+
+
+def test_mcp_rejects_base64_placeholder_outside_uploads(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp, "project_root", lambda: tmp_path)
+    secret = tmp_path / "data" / "secret.txt"
+    secret.parent.mkdir()
+    secret.write_text("secret", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="backend/runtime/uploads"):
+        mcp.prepare_mcp_arguments({"content_base64_from_file": "data/secret.txt"})
 
 
 def test_mcp_extracts_standard_image_content_to_artifact(tmp_path, monkeypatch):

@@ -512,7 +512,8 @@ small {
 }
 
 .markdownBody img,
-.imageStrip img {
+.imageStrip img,
+.imagePreview img {
   width: auto;
   max-width: 100%;
   max-height: 560px;
@@ -521,6 +522,103 @@ small {
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   background: #ffffff;
+}
+
+.imageCard {
+  margin: 8px 0;
+  display: inline-grid;
+  max-width: 100%;
+  gap: 6px;
+}
+
+.imageOpenButton,
+.attachmentThumbButton,
+.attachmentAction,
+.imageCardActions button,
+.imageCardActions a {
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.imageOpenButton {
+  padding: 0;
+  text-align: left;
+  border-radius: 8px;
+}
+
+.imageOpenButton:hover img,
+.attachmentThumbButton:hover img {
+  border-color: #2563eb;
+}
+
+.imageCardActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.imageCardActions button,
+.imageCardActions a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  text-decoration: none;
+}
+
+.imagePreviewOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.imagePreview {
+  width: min(1120px, 100%);
+  max-height: min(860px, calc(100vh - 48px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 24px 80px rgba(15, 23, 42, 0.35);
+}
+
+.imagePreviewBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.imagePreviewBar > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.imagePreviewBar > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.imagePreview img {
+  justify-self: center;
+  align-self: center;
+  max-height: 100%;
 }
 
 .imageStrip {
@@ -608,6 +706,7 @@ textarea:focus {
 .primaryButton,
 .secondaryButton,
 .dangerButton,
+.stopButton,
 .iconButton {
   height: 38px;
   display: inline-flex;
@@ -620,7 +719,8 @@ textarea:focus {
   font-weight: 800;
 }
 
-.composer .primaryButton {
+.composer .primaryButton,
+.composer .stopButton {
   width: 100%;
   height: 54px;
   padding: 0 14px;
@@ -629,6 +729,12 @@ textarea:focus {
 .primaryButton {
   background: #111827;
   color: #ffffff;
+}
+
+.stopButton {
+  background: #fff1f2;
+  border-color: #fecdd3;
+  color: #be123c;
 }
 
 .composerIcon {
@@ -793,7 +899,7 @@ textarea:focus {
 }
 
 .attachmentChip,
-.attachmentList span {
+.attachmentList > span {
   max-width: 260px;
   display: inline-flex;
   align-items: center;
@@ -808,10 +914,41 @@ textarea:focus {
 }
 
 .attachmentChip span,
-.attachmentList span {
+.attachmentList > span > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.attachmentThumbButton,
+.attachmentAction {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: #4b5563;
+  padding: 0;
+}
+
+.attachmentAction {
+  width: 24px;
+  height: 24px;
+  text-decoration: none;
+}
+
+.attachmentAction:hover {
+  background: #e5e7eb;
+}
+
+.attachmentThumb {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  object-fit: cover;
 }
 
 .spinner,
@@ -1228,10 +1365,20 @@ textarea:focus {
 :root[data-theme="dark"] .serverItem,
 :root[data-theme="dark"] .automationMeta div,
 :root[data-theme="dark"] .runItem,
+:root[data-theme="dark"] .imagePreview,
 :root[data-theme="dark"] .attachmentChip,
-:root[data-theme="dark"] .attachmentList span {
+:root[data-theme="dark"] .attachmentList > span {
   background: #0d1117;
   border-color: #30363d;
+}
+
+:root[data-theme="dark"] .imageCardActions,
+:root[data-theme="dark"] .attachmentAction {
+  color: #c9d1d9;
+}
+
+:root[data-theme="dark"] .attachmentAction:hover {
+  background: #21262d;
 }
 
 :root[data-theme="dark"] .event-tool_call.compact {
@@ -1327,9 +1474,21 @@ textarea:focus {
   .markdownPreview,
   .serverItem,
   .automationMeta div,
-  .runItem {
+  .runItem,
+  .imagePreview,
+  .attachmentChip,
+  .attachmentList > span {
     background: #0d1117;
     border-color: #30363d;
+  }
+
+  .imageCardActions,
+  .attachmentAction {
+    color: #c9d1d9;
+  }
+
+  .attachmentAction:hover {
+    background: #21262d;
   }
 
   .event-tool_call.compact {
@@ -1435,7 +1594,7 @@ textarea:focus {
 :root[data-theme="light"] .markdownPreview,
 :root[data-theme="light"] .serverItem,
 :root[data-theme="light"] .attachmentChip,
-:root[data-theme="light"] .attachmentList span {
+:root[data-theme="light"] .attachmentList > span {
   background: #ffffff;
   border-color: #e5e7eb;
 }

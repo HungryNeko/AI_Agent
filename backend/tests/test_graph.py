@@ -1,4 +1,44 @@
-from agent import graph
+from agent import graph, references
+
+
+def test_image_attachment_context_uses_server_url_and_vision_part(tmp_path, monkeypatch):
+    monkeypatch.setattr(graph, "PROJECT_ROOT", tmp_path)
+    upload = tmp_path / "backend" / "runtime" / "uploads" / "abc123" / "photo.png"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"\x89PNG\r\n")
+
+    text, image_parts = graph.build_attachment_context(
+        [
+            {
+                "path": "backend/runtime/uploads/abc123/photo.png",
+                "filename": "photo.png",
+                "content_type": "image/png",
+                "url": "/api/uploads/abc123/photo.png",
+                "absolute_url": "https://agent.example.com/api/uploads/abc123/photo.png",
+            }
+        ]
+    )
+
+    assert "url: /api/uploads/abc123/photo.png" in text
+    assert "absoluteUrl: https://agent.example.com/api/uploads/abc123/photo.png" in text
+    assert "sizeBytes: 6" in text
+    assert image_parts[0]["type"] == "image_url"
+    assert image_parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_file_reference_does_not_read_image_as_text(tmp_path, monkeypatch):
+    monkeypatch.setattr(references, "PROJECT_ROOT", tmp_path)
+    upload_root = tmp_path / "backend" / "runtime" / "uploads"
+    monkeypatch.setattr(references, "ALLOWED_FILE_ROOTS", [upload_root])
+    upload = upload_root / "abc123" / "photo.png"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"\x89PNG\r\n")
+
+    context = references.resolve_reference_context("@file:backend/runtime/uploads/abc123/photo.png")
+
+    assert "referencedFile: backend/runtime/uploads/abc123/photo.png" in context
+    assert "mime: image/png" in context
+    assert "sizeBytes: 6" in context
 
 
 def test_run_agent_calls_model_once(monkeypatch):

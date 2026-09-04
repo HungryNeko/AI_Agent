@@ -296,7 +296,7 @@ def curl_tool() -> dict[str, Any]:
 def python_tool() -> dict[str, Any]:
     return function_tool(
         name="python",
-        description="Run Python for math, statistics, data analysis, plotting, and local scripting. The current working directory is the artifact directory; save charts/files with relative names like chart.png. If pythonResult lists image files, include them in the final answer as Markdown images using the exact returned path, for example ![chart](backend/runtime/python_runs/run_x/chart.png). Local file reads, network access, imports, and normal Python introspection are available; obvious destructive operations and writes outside the artifact directory are blocked.",
+        description="Run Python for math, statistics, data analysis, plotting, and local scripting. The current working directory is the artifact directory; save charts/files with relative names like chart.png. For lightweight coordinate maps, `from ai_agent_maps import write_osm_scatter` is available to create OpenStreetMap/Leaflet HTML scatter-map artifacts from lat/lon points. If pythonResult lists image files, include them in the final answer as Markdown images using the exact returned path, for example ![chart](backend/runtime/python_runs/run_x/chart.png). Local file reads, network access, imports, and normal Python introspection are available; obvious destructive operations and writes outside the artifact directory are blocked.",
         properties={
             "code": {
                 "type": "string",
@@ -335,7 +335,7 @@ def file_editor_tool() -> dict[str, Any]:
 def mcp_tool() -> dict[str, Any]:
     return function_tool(
         name="mcp",
-        description="Use configured MCP servers only. Start with listServers or listTools unless the exact server and tool are already known. Never provide URLs, headers, commands, or connection details; pass only server, tool, and arguments. If mcpResult lists image files or markdownImages, include useful images in the final answer with Markdown image syntax using the exact returned path.",
+        description="Use configured MCP servers only. Start with listServers or listTools unless the exact server and tool are already known. Never provide URLs, headers, commands, or connection details; pass only server, tool, and arguments. For MCP file-byte inputs, do not inline large base64; use content_base64_from_file, body_base64_from_file, image_base64_from_file, or file_base64_from_file with an uploaded file path or /api/uploads URL so the backend injects exact bytes. For batches, pass arrays of file objects with these *_from_file fields when supported. If mcpResult lists image files or markdownImages, include useful images in the final answer with Markdown image syntax using the exact returned path.",
         properties={
             "action": {
                 "type": "string",

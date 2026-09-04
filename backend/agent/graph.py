@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
+from urllib.parse import unquote
 
 from langgraph.graph import END, START, StateGraph
 
@@ -201,22 +202,32 @@ def build_attachment_context(attachments: list[dict[str, Any]]) -> tuple[str, li
     image_parts: list[dict[str, Any]] = []
     if not attachments:
         return "", []
-    lines.append("uploadedAttachments:")
+    lines.append(
+        "uploadedAttachments:\n"
+        "Use these uploaded files when the user asks about attachments. For remote MCP file inputs, prefer absoluteUrl when present; for local MCP tools, use path. For batch uploads, pass every relevant file as an array if the MCP tool schema supports it."
+    )
     for index, attachment in enumerate(attachments, start=1):
         path_text = str(attachment.get("path") or "")
         filename = str(attachment.get("filename") or Path(path_text).name or f"upload-{index}")
         content_type = str(attachment.get("content_type") or mimetypes.guess_type(filename)[0] or "")
+        url = str(attachment.get("url") or "")
+        absolute_url = str(attachment.get("absolute_url") or "")
         try:
             path = resolve_upload_path(path_text)
         except ValueError as exc:
             lines.append(f"- {filename}: unavailable ({exc})")
             continue
-        lines.append(
+        detail = (
             f"- {filename}\n"
             f"  path: {relative_to_project(path)}\n"
             f"  mime: {content_type or 'application/octet-stream'}\n"
             f"  sizeBytes: {path.stat().st_size}"
         )
+        if url:
+            detail += f"\n  url: {url}"
+        if absolute_url:
+            detail += f"\n  absoluteUrl: {absolute_url}"
+        lines.append(detail)
         if content_type.startswith("image/"):
             image_parts.append(
                 {
@@ -234,6 +245,10 @@ def build_attachment_context(attachments: list[dict[str, Any]]) -> tuple[str, li
 
 def resolve_upload_path(path_text: str) -> Path:
     root = (PROJECT_ROOT / "backend" / "runtime" / "uploads").resolve()
+    if path_text.startswith("/api/uploads/"):
+        parts = path_text.split("/", 4)
+        if len(parts) == 5:
+            path_text = f"backend/runtime/uploads/{parts[3]}/{unquote(parts[4])}"
     raw = Path(path_text)
     path = raw if raw.is_absolute() else PROJECT_ROOT / raw
     resolved = path.resolve()

@@ -411,6 +411,7 @@ def test_build_openai_tools_includes_python_when_enabled():
 
     assert tool["function"]["name"] == "python"
     assert "current working directory is the artifact directory" in tool["function"]["description"]
+    assert "write_osm_scatter" in tool["function"]["description"]
     assert "Markdown images" in tool["function"]["description"]
 
 
@@ -640,6 +641,7 @@ def test_build_openai_tools_includes_mcp_when_enabled():
 
     assert tool["function"]["name"] == "mcp"
     assert "configured MCP servers" in tool["function"]["description"]
+    assert "content_base64_from_file" in tool["function"]["description"]
 
 
 def test_parse_mcp_tool_call_when_enabled():

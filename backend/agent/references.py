@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import mimetypes
 from pathlib import Path
 
 from agent import session_store
@@ -17,6 +18,7 @@ ALLOWED_FILE_ROOTS = [
     PROJECT_ROOT / "backend" / "runtime" / "uploads",
 ]
 MAX_REFERENCE_CHARS = 8_000
+TEXT_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".tsv", ".log", ".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css"}
 
 
 def resolve_reference_context(message: str) -> str:
@@ -27,8 +29,16 @@ def resolve_reference_context(message: str) -> str:
         elif kind == "file":
             resolved = resolve_file(value)
             if resolved and resolved.is_file():
-                text = resolved.read_text(encoding="utf-8", errors="replace")
-                items.append(f"referencedFile: {relative_to_project(resolved)}\n{trim(text)}")
+                content_type = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+                if content_type.startswith("image/") or resolved.suffix.lower() not in TEXT_SUFFIXES:
+                    items.append(
+                        f"referencedFile: {relative_to_project(resolved)}\n"
+                        f"mime: {content_type}\n"
+                        f"sizeBytes: {resolved.stat().st_size}"
+                    )
+                else:
+                    text = resolved.read_text(encoding="utf-8", errors="replace")
+                    items.append(f"referencedFile: {relative_to_project(resolved)}\n{trim(text)}")
         elif kind == "history":
             conversation = session_store.read_conversation(value)
             summary = session_store.events_to_transcript(conversation.get("events") or [])

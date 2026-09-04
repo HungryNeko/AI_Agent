@@ -7,6 +7,7 @@ import {
   AtSign,
   Check,
   Database,
+  Download,
   FileText,
   Image,
   Key,
@@ -19,6 +20,7 @@ import {
   Save,
   Send,
   Settings,
+  Square,
   Sun,
   Trash2,
   X,
@@ -26,6 +28,11 @@ import {
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
+
+function createRunId() {
+  return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 const emptyOptions = {
   model: "",
   system_prompt: "",
@@ -58,8 +65,9 @@ const TEXT = {
   compress: ["压缩", "Compress"],
   send: ["发送", "Send"],
   running: ["运行中", "Running"],
-  uploadFile: ["上传文件", "Upload file"],
-  uploadImage: ["上传图片", "Upload image"],
+  stop: ["\u505c\u6b62", "Stop"],
+  uploadFile: ["批量上传文件", "Upload files"],
+  uploadImage: ["批量上传图片", "Upload images"],
   autoApproval: ["自动批准", "Auto approval"],
   system: ["系统", "System"],
 };
@@ -194,12 +202,16 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
   const [mentionOptions, setMentionOptions] = useState([]);
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionOpen, setMentionOpen] = useState(false);
+  const [previewImage, setPreviewImage] = useState(null);
   const [busy, setBusy] = useState(false);
   const outputRef = useRef(null);
   const composerRef = useRef(null);
   const fileInputRef = useRef(null);
   const imageInputRef = useRef(null);
   const atBottomRef = useRef(true);
+  const abortRef = useRef(null);
+  const activeRunIdRef = useRef("");
+  const stopRequestedRef = useRef(false);
 
   useEffect(() => {
     refreshConversations();
@@ -255,6 +267,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
     setEvents([]);
     setState(null);
     setAttachments([]);
+    setPreviewImage(null);
     setHistoryStatus("");
   }
 
@@ -275,6 +288,11 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
     if ((!message.trim() && attachments.length === 0) || busy) return;
     atBottomRef.current = true;
     setBusy(true);
+    const runId = createRunId();
+    const controller = new AbortController();
+    activeRunIdRef.current = runId;
+    stopRequestedRef.current = false;
+    abortRef.current = controller;
     const nextMessage = message.trim() || "请读取这些附件。";
     const nextAttachments = attachments;
     setEvents((items) => [...items, { type: "user", text: nextMessage, attachments: nextAttachments }]);
@@ -285,9 +303,11 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
     try {
       const response = await fetch(`${API_BASE}/api/chat/stream`, {
         method: "POST",
+        signal: controller.signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: nextMessage,
+          run_id: runId,
           attachments: nextAttachments,
           conversation_id: conversationId || null,
           state,
@@ -304,10 +324,33 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
       });
       await refreshConversations();
     } catch (error) {
-      setEvents((items) => [...items, { type: "error", text: String(error.message || error) }]);
+      if (!stopRequestedRef.current && error?.name !== "AbortError") {
+        setEvents((items) => [...items, { type: "error", text: String(error.message || error) }]);
+      }
     } finally {
-      setBusy(false);
+      if (activeRunIdRef.current === runId) {
+        abortRef.current = null;
+        activeRunIdRef.current = "";
+        stopRequestedRef.current = false;
+        setBusy(false);
+      }
     }
+  }
+
+  function stopOutput() {
+    if (!busy) return;
+    const runId = activeRunIdRef.current;
+    stopRequestedRef.current = true;
+    if (runId) {
+      fetchJson("/api/chat/stop", { method: "POST", body: { run_id: runId } }).catch(() => {});
+    }
+    abortRef.current?.abort();
+    setEvents((items) => {
+      if (runId && items.some((item) => item.type === "stopped" && item.run_id === runId)) return items;
+      return [...items, { type: "stopped", text: "AI output stopped.", run_id: runId, conversation_id: conversationId || undefined }];
+    });
+    setBusy(false);
+    window.setTimeout(() => refreshConversations().catch(() => {}), 500);
   }
 
   async function loadMentionOptions() {
@@ -362,26 +405,43 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
   }
 
   async function uploadSelectedFile(event) {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files || []);
     event.target.value = "";
-    if (!file) return;
+    if (!files.length) return;
+    setHistoryStatus(files.length > 1 ? `上传中: ${files.length} 个文件` : "上传中");
+    const results = await Promise.allSettled(files.map(uploadOneFile));
+    const uploaded = results.filter((result) => result.status === "fulfilled").map((result) => result.value);
+    const failed = results.filter((result) => result.status === "rejected");
+    if (uploaded.length) {
+      setAttachments((current) => [...current, ...uploaded]);
+      const tokens = uploaded.map((item) => `@file:${item.path}`).join(" ");
+      setMessage((current) => `${current}${current ? " " : ""}${tokens}`);
+    }
+    if (failed.length) {
+      setHistoryStatus(`上传失败: ${failed.length}/${files.length}`);
+    } else {
+      setHistoryStatus(files.length > 1 ? `已上传 ${uploaded.length} 个文件` : "");
+    }
+  }
+
+  async function uploadOneFile(file) {
     const response = await fetch(`${API_BASE}/api/uploads?filename=${encodeURIComponent(file.name)}`, {
       method: "POST",
       headers: file.type ? { "Content-Type": file.type } : undefined,
       body: await file.arrayBuffer(),
     });
     if (!response.ok) {
-      setHistoryStatus(`上传失败: ${await response.text()}`);
-      return;
+      throw new Error(`${file.name}: ${await response.text()}`);
     }
     const data = await response.json();
-    const item = {
+    return {
       path: data.path,
+      url: data.url || data.absolute_url || "",
+      absolute_url: data.absolute_url || "",
       filename: data.filename || file.name,
       content_type: data.content_type || file.type || "application/octet-stream",
+      size: data.size || file.size || 0,
     };
-    setAttachments((current) => [...current, item]);
-    setMessage((current) => `${current}${current ? " " : ""}@file:${item.path}`);
   }
 
   const filteredMentions = mentionOptions
@@ -446,7 +506,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
         </div>
         <div className="stream" ref={outputRef} onScroll={trackScroll}>
           {events.length === 0 && <div className="emptyState">输入消息，或用 @ 指定工具、历史、技能、记忆和知识。</div>}
-          <StreamEvents events={events} />
+          <StreamEvents events={events} onPreviewImage={setPreviewImage} />
         </div>
         <form className="composer" onSubmit={sendMessage}>
           {mentionOpen && filteredMentions.length > 0 && (
@@ -461,19 +521,44 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
           )}
           {attachments.length > 0 && (
             <div className="attachmentTray">
-              {attachments.map((item) => (
-                <button
-                  className="attachmentChip"
-                  key={item.path}
-                  type="button"
-                  onClick={() => setAttachments((current) => current.filter((candidate) => candidate.path !== item.path))}
-                  title="移除附件"
-                >
-                  {item.content_type?.startsWith("image/") ? <Image size={14} /> : <Paperclip size={14} />}
-                  <span>{item.filename}</span>
-                  <X size={13} />
-                </button>
-              ))}
+              {attachments.map((item) => {
+                const isImage = item.content_type?.startsWith("image/");
+                const src = item.url || item.path;
+                const href = normalizeImageSrc(src);
+                return (
+                  <div
+                    className="attachmentChip"
+                    key={item.path}
+                  >
+                    {isImage ? (
+                      <button
+                        className="attachmentThumbButton"
+                        type="button"
+                        onClick={() => setPreviewImage({ src, alt: item.filename || "upload" })}
+                        title="View image"
+                      >
+                        <img className="attachmentThumb" src={href} alt={item.filename || "upload"} />
+                      </button>
+                    ) : (
+                      <Paperclip size={14} />
+                    )}
+                    <span>{item.filename}</span>
+                    {isImage && (
+                      <a className="attachmentAction" href={href} download={imageDownloadName(item.filename || src)} title="Download image">
+                        <Download size={13} />
+                      </a>
+                    )}
+                    <button
+                      className="attachmentAction"
+                      type="button"
+                      onClick={() => setAttachments((current) => current.filter((candidate) => candidate.path !== item.path))}
+                      title="Remove attachment"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
           <div className="composerRow">
@@ -495,14 +580,22 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
               onFocus={loadMentionOptions}
               placeholder="输入消息，Enter 发送，Shift+Enter 换行..."
             />
-            <button className="primaryButton" type="submit" disabled={busy || (!message.trim() && attachments.length === 0)} title="Send">
-              {busy ? <span className="spinner" /> : <Send size={18} />}
-              <span>{busy ? label("running") : label("send")}</span>
-            </button>
+            {busy ? (
+              <button className="stopButton" type="button" onClick={stopOutput} title={label("stop")}>
+                <Square size={17} />
+                <span>{label("stop")}</span>
+              </button>
+            ) : (
+              <button className="primaryButton" type="submit" disabled={!message.trim() && attachments.length === 0} title="Send">
+                <Send size={18} />
+                <span>{label("send")}</span>
+              </button>
+            )}
           </div>
-          <input ref={fileInputRef} type="file" className="hiddenInput" onChange={uploadSelectedFile} />
-          <input ref={imageInputRef} type="file" accept="image/*" className="hiddenInput" onChange={uploadSelectedFile} />
+          <input ref={fileInputRef} type="file" className="hiddenInput" onChange={uploadSelectedFile} multiple />
+          <input ref={imageInputRef} type="file" accept="image/*" className="hiddenInput" onChange={uploadSelectedFile} multiple />
         </form>
+        <ImagePreview image={previewImage} onClose={() => setPreviewImage(null)} />
       </div>
     </section>
   );
@@ -569,7 +662,7 @@ function SelectField({ label, value, onChange, values, icon = null }) {
   );
 }
 
-function StreamEvents({ events }) {
+function StreamEvents({ events, onPreviewImage }) {
   const turns = [];
   let current = [];
   for (const event of events) {
@@ -580,12 +673,13 @@ function StreamEvents({ events }) {
     current.push(event);
   }
   if (current.length > 0) turns.push(current);
-  return turns.map((turn, index) => <StreamTurn key={index} events={turn} />);
+  return turns.map((turn, index) => <StreamTurn key={index} events={turn} onPreviewImage={onPreviewImage} />);
 }
 
-function StreamTurn({ events }) {
+function StreamTurn({ events, onPreviewImage }) {
   const assistantIndex = findLastIndex(events, (event) => event.type === "assistant");
-  const finalIndex = assistantIndex;
+  const stoppedIndex = findLastIndex(events, (event) => event.type === "stopped");
+  const finalIndex = Math.max(assistantIndex, stoppedIndex);
   const completed = finalIndex >= 0;
   const userEvents = events.filter((event) => event.type === "user");
   const finalEvent = completed ? events[finalIndex] : null;
@@ -594,7 +688,7 @@ function StreamTurn({ events }) {
 
   return (
     <div className="streamTurn">
-      {userEvents.map((event, index) => <StreamEvent key={`${event.type}-${index}`} event={event} />)}
+      {userEvents.map((event, index) => <StreamEvent key={`${event.type}-${index}`} event={event} onPreviewImage={onPreviewImage} />)}
       {operationEvents.length > 0 && (
         <details className="operationDetails">
           <summary>
@@ -602,15 +696,15 @@ function StreamTurn({ events }) {
             <span>{currentWork}</span>
             <small>{operationEvents.length} steps</small>
           </summary>
-          {operationEvents.map((event, index) => <StreamEvent key={`${event.type}-${index}`} event={event} compact />)}
+          {operationEvents.map((event, index) => <StreamEvent key={`${event.type}-${index}`} event={event} compact onPreviewImage={onPreviewImage} />)}
         </details>
       )}
-      {finalEvent && <StreamEvent event={finalEvent} />}
+      {finalEvent && <StreamEvent event={finalEvent} onPreviewImage={onPreviewImage} />}
     </div>
   );
 }
 
-function StreamEvent({ event, compact = false }) {
+function StreamEvent({ event, compact = false, onPreviewImage }) {
   const type = event.type || "event";
   const fallback = event.text || event.query || event.url || "";
   const body = stringifyEventText(event, fallback);
@@ -618,23 +712,43 @@ function StreamEvent({ event, compact = false }) {
   return (
     <article className={`event event-${type}${compact ? " compact" : ""}`}>
       <div className="eventType">{eventLabel(type)}</div>
-      <MarkdownText text={body} />
-      {event.attachments?.length > 0 && <AttachmentList attachments={event.attachments} />}
-      {images.length > 0 && <ImageStrip images={images} />}
+      <MarkdownText text={body} onPreviewImage={onPreviewImage} />
+      {event.attachments?.length > 0 && <AttachmentList attachments={event.attachments} onPreviewImage={onPreviewImage} />}
+      {images.length > 0 && <ImageStrip images={images} onPreviewImage={onPreviewImage} />}
       {type === "assistant" && <ReferenceList refs={extractReferences(body)} />}
     </article>
   );
 }
 
-function AttachmentList({ attachments }) {
+function AttachmentList({ attachments, onPreviewImage }) {
   return (
     <div className="attachmentList">
-      {attachments.map((item) => (
-        <span key={item.path}>
-          {item.content_type?.startsWith("image/") ? <Image size={14} /> : <Paperclip size={14} />}
-          {item.filename || item.path}
-        </span>
-      ))}
+      {attachments.map((item) => {
+        const isImage = item.content_type?.startsWith("image/");
+        const src = item.url || item.path;
+        return (
+          <span key={item.path}>
+            {isImage ? (
+              <button
+                className="attachmentThumbButton"
+                type="button"
+                onClick={() => onPreviewImage?.({ src, alt: item.filename || "upload" })}
+                title="View image"
+              >
+                <img className="attachmentThumb" src={normalizeImageSrc(src)} alt={item.filename || "upload"} />
+              </button>
+            ) : (
+              <Paperclip size={14} />
+            )}
+            <span>{item.filename || item.path}</span>
+            {isImage && (
+              <a className="attachmentAction" href={normalizeImageSrc(src)} download={imageDownloadName(item.filename || src)} title="Download image">
+                <Download size={13} />
+              </a>
+            )}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -651,14 +765,14 @@ function ReferenceList({ refs }) {
   );
 }
 
-function MarkdownText({ text }) {
+function MarkdownText({ text, onPreviewImage }) {
   return (
     <div className="markdownBody">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
           a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
-          img: ({ src, alt }) => <img src={normalizeImageSrc(src || "")} alt={alt || "image"} />,
+          img: ({ src, alt }) => <ImageCard src={src || ""} alt={alt || "image"} onPreviewImage={onPreviewImage} />,
         }}
       >
         {text || ""}
@@ -667,10 +781,62 @@ function MarkdownText({ text }) {
   );
 }
 
-function ImageStrip({ images }) {
+function ImageStrip({ images, onPreviewImage }) {
   return (
     <div className="imageStrip">
-      {images.map((src) => <img key={src} src={normalizeImageSrc(src)} alt="tool output" loading="lazy" />)}
+      {images.map((src) => <ImageCard key={src} src={src} alt="tool output" onPreviewImage={onPreviewImage} />)}
+    </div>
+  );
+}
+
+function ImageCard({ src, alt, onPreviewImage }) {
+  const href = normalizeImageSrc(src);
+  if (!href) return null;
+  return (
+    <span className="imageCard">
+      <button className="imageOpenButton" type="button" onClick={() => onPreviewImage?.({ src, alt })} title="View image">
+        <img src={href} alt={alt || "image"} loading="lazy" />
+      </button>
+      <span className="imageCardActions">
+        <button type="button" onClick={() => onPreviewImage?.({ src, alt })}>View</button>
+        <a href={href} download={imageDownloadName(src)} target="_blank" rel="noreferrer">
+          <Download size={13} />
+          <span>Download</span>
+        </a>
+      </span>
+    </span>
+  );
+}
+
+function ImagePreview({ image, onClose }) {
+  useEffect(() => {
+    if (!image) return undefined;
+    function closeOnEscape(event) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [image, onClose]);
+
+  if (!image) return null;
+  const href = normalizeImageSrc(image.src);
+  return (
+    <div className="imagePreviewOverlay" role="dialog" aria-modal="true" onClick={onClose}>
+      <div className="imagePreview" onClick={(event) => event.stopPropagation()}>
+        <div className="imagePreviewBar">
+          <span>{image.alt || imageDownloadName(image.src)}</span>
+          <div>
+            <a className="secondaryButton" href={href} download={imageDownloadName(image.src)} target="_blank" rel="noreferrer">
+              <Download size={15} />
+              <span>Download</span>
+            </a>
+            <button className="iconButton neutral" type="button" onClick={onClose} title="Close">
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+        <img src={href} alt={image.alt || "image preview"} />
+      </div>
     </div>
   );
 }
@@ -1391,7 +1557,7 @@ function normalizeOptions(options) {
 }
 
 function stringifyEventText(event, fallback) {
-  if (["tool_call", "assistant_progress", "approval_required", "ai_review", "error", "user", "assistant"].includes(event.type)) {
+  if (["tool_call", "assistant_progress", "approval_required", "ai_review", "error", "stopped", "user", "assistant"].includes(event.type)) {
     return fallback;
   }
   return JSON.stringify(event, null, 2);
@@ -1414,6 +1580,7 @@ function eventLabel(type) {
     approval_required: "APPROVAL",
     ai_review: "AI REVIEW",
     error: "ERROR",
+    stopped: "STOPPED",
     python: "PYTHON",
     rag: "RAG",
     mcp: "MCP",
@@ -1436,6 +1603,9 @@ function extractImages(text) {
     /(backend\\runtime\\python_runs\\[^\s)]+\.(?:png|jpg|jpeg|gif|webp|svg))/gi,
     /(backend\/runtime\/mcp_artifacts\/[^\s)]+\.(?:png|jpg|jpeg|gif|webp|svg))/gi,
     /(backend\\runtime\\mcp_artifacts\\[^\s)]+\.(?:png|jpg|jpeg|gif|webp|svg))/gi,
+    /(backend\/runtime\/uploads\/[^\s)]+\.(?:png|jpg|jpeg|gif|webp|svg))/gi,
+    /(backend\\runtime\\uploads\\[^\s)]+\.(?:png|jpg|jpeg|gif|webp|svg))/gi,
+    /(\/api\/uploads\/[^\s)]+\.(?:png|jpg|jpeg|gif|webp|svg)(?:\?[^\s<>"')]+)?)/gi,
   ];
   const found = [];
   for (const pattern of patterns) {
@@ -1455,7 +1625,7 @@ function extractLooseImages(text) {
 function extractReferences(text) {
   const refs = [];
   for (const match of text.matchAll(/https?:\/\/[^\s<>"')]+/gi)) refs.push(cleanImageSrc(match[0]));
-  for (const match of text.matchAll(/(?:data|backend)\/[^\s)]+\.(?:md|txt|json|yaml|yml|png|jpg|jpeg|gif|webp|svg)/gi)) {
+  for (const match of text.matchAll(/(?:data|backend)\/[^\s)]+\.(?:md|txt|json|yaml|yml|html|png|jpg|jpeg|gif|webp|svg)/gi)) {
     refs.push(cleanImageSrc(match[0]));
   }
   return Array.from(new Set(refs)).slice(0, 8);
@@ -1463,7 +1633,7 @@ function extractReferences(text) {
 
 function normalizeReferenceHref(ref) {
   if (/^https?:\/\//i.test(ref)) return ref;
-  if (/\.(?:png|jpg|jpeg|gif|webp|svg)$/i.test(ref)) return normalizeImageSrc(ref);
+  if (/\.(?:html|png|jpg|jpeg|gif|webp|svg)$/i.test(ref)) return normalizeImageSrc(ref);
   return "#";
 }
 
@@ -1474,8 +1644,20 @@ function cleanImageSrc(src) {
 function normalizeImageSrc(src) {
   if (!src) return "";
   if (/^https?:\/\//i.test(src) || src.startsWith("data:")) return src;
-  if (src.startsWith("/api/")) return src;
+  if (src.startsWith("/api/")) return `${API_BASE}${src}`;
   return `${API_BASE}/api/artifact?path=${encodeURIComponent(src.replaceAll("\\", "/"))}`;
+}
+
+function imageDownloadName(src) {
+  const clean = cleanImageSrc(src).split("?", 1)[0].replaceAll("\\", "/");
+  const rawName = clean.split("/").filter(Boolean).pop() || "image";
+  let name = rawName;
+  try {
+    name = decodeURIComponent(rawName);
+  } catch {
+    name = rawName;
+  }
+  return name || "image";
 }
 
 function toolMentionOptions(text) {
