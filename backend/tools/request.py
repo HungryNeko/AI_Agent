@@ -6,14 +6,16 @@ import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from tools.automation import AutomationRequest
 from tools.appSettings import SettingsRequest
+from tools.automation import AutomationRequest
 from tools.fileEditor import FileEditRequest
+from tools.fileReader import FileReadRequest
 from tools.history import HistoryRequest
 from tools.mcp import McpRequest
+from tools.rag import RagRequest
 from tools.settings import ToolSettings
 
-ToolName = Literal["webSearch", "rag", "curl", "python", "fileEditor", "mcp", "history", "automation", "settings"]
+ToolName = Literal["webSearch", "rag", "curl", "python", "fileReader", "fileEditor", "mcp", "history", "automation", "settings"]
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,8 @@ class ToolRequest:
     query: str = ""
     url: str = ""
     code: str = ""
+    rag_request: RagRequest | None = None
+    file_read: FileReadRequest | None = None
     file_edit: FileEditRequest | None = None
     mcp_request: McpRequest | None = None
     history_request: HistoryRequest | None = None
@@ -42,16 +46,13 @@ def build_openai_tools(settings: ToolSettings) -> list[dict[str, Any]]:
             )
         )
     if settings.rag.can_model_call:
-        tools.append(
-            query_tool(
-                name="rag",
-                description="Search local knowledge, memory, and skill files when project context or saved instructions are needed.",
-            )
-        )
+        tools.append(rag_tool())
     if settings.curl.can_model_call:
         tools.append(curl_tool())
     if settings.python.can_model_call:
         tools.append(python_tool())
+    if settings.file_reader.can_model_call:
+        tools.append(file_reader_tool())
     if settings.file_editor.can_model_call:
         tools.append(file_editor_tool())
     if settings.mcp.can_model_call:
@@ -89,7 +90,7 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
         raise ValueError("tool_call.function is required.")
 
     name = function.get("name")
-    if name not in {"webSearch", "rag", "curl", "python", "fileEditor", "mcp", "history", "automation", "settings"}:
+    if name not in {"webSearch", "rag", "curl", "python", "fileReader", "fileEditor", "mcp", "history", "automation", "settings"}:
         raise ValueError(f"Unknown tool: {name}")
 
     arguments = function.get("arguments") or "{}"
@@ -105,12 +106,16 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
         raise ValueError("tool arguments must be a JSON object.")
 
     validate_tool_allowed(name, settings)
+    if name == "rag":
+        return ToolRequest(id=call_id, name="rag", rag_request=parse_rag_request(parsed_arguments))
     if name == "curl":
         url = require_string(parsed_arguments, "url", "curl")
         return ToolRequest(id=call_id, name="curl", url=url)
     if name == "python":
         code = require_string(parsed_arguments, "code", "python")
         return ToolRequest(id=call_id, name="python", code=code)
+    if name == "fileReader":
+        return ToolRequest(id=call_id, name="fileReader", file_read=parse_file_read(parsed_arguments))
     if name == "fileEditor":
         return ToolRequest(id=call_id, name="fileEditor", file_edit=parse_file_edit(parsed_arguments))
     if name == "mcp":
@@ -124,6 +129,40 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
 
     query = require_string(parsed_arguments, "query", "tool")
     return ToolRequest(id=call_id, name=name, query=query)
+
+
+def parse_rag_request(arguments: dict[str, Any]) -> RagRequest:
+    action = optional_string(arguments.get("action")) or "search"
+    if action not in {"search", "ingest"}:
+        raise ValueError("rag action must be one of: search, ingest.")
+    query = optional_string(arguments.get("query")).strip()
+    path = optional_string(arguments.get("path")).strip()
+    if action == "search" and not query:
+        raise ValueError("rag search requires a non-empty query.")
+    if action == "ingest" and not path:
+        raise ValueError("rag ingest requires an uploaded file path.")
+    split_mode = optional_string(arguments.get("splitMode")) or "simple"
+    if split_mode not in {"simple", "llm"}:
+        raise ValueError("rag splitMode must be one of: simple, llm.")
+    return RagRequest(
+        action=action,
+        query=query,
+        path=path,
+        name=optional_string(arguments.get("name")).strip(),
+        split_mode=split_mode,
+        chunk_model=optional_string(arguments.get("chunkModel")).strip(),
+        overwrite=optional_bool(arguments.get("overwrite")),
+    )
+
+
+def parse_file_read(arguments: dict[str, Any]) -> FileReadRequest:
+    return FileReadRequest(
+        path=require_string(arguments, "path", "fileReader"),
+        start_page=optional_int(arguments.get("startPage")),
+        end_page=optional_int(arguments.get("endPage")),
+        sheet=optional_string(arguments.get("sheet")),
+        max_chars=optional_int(arguments.get("maxChars")),
+    )
 
 
 def parse_file_edit(arguments: dict[str, Any]) -> FileEditRequest:
@@ -253,6 +292,8 @@ def validate_tool_allowed(name: str, settings: ToolSettings) -> None:
         raise ValueError("curl can only be called when curl_mode is auto.")
     if name == "python" and not settings.python.can_model_call:
         raise ValueError("python can only be called when python_mode is auto.")
+    if name == "fileReader" and not settings.file_reader.can_model_call:
+        raise ValueError("fileReader can only be called when file_reader_mode is auto.")
     if name == "fileEditor" and not settings.file_editor.can_model_call:
         raise ValueError("fileEditor can only be called when file_editor_mode is auto.")
     if name == "mcp" and not settings.mcp.can_model_call:
@@ -276,6 +317,28 @@ def query_tool(*, name: Literal["webSearch", "rag"], description: str) -> dict[s
             }
         },
         required=["query"],
+    )
+
+
+def rag_tool() -> dict[str, Any]:
+    return function_tool(
+        name="rag",
+        description=(
+            "Search local RAG data, or ingest an uploaded document into user knowledge as Markdown. "
+            "For ingest, first inspect the upload with fileReader, then pass its path here; never copy "
+            "the full extracted content into tool arguments. simple splitting is free and deterministic; "
+            "llm splitting uses a dedicated model with strict token limits and incremental caching."
+        ),
+        properties={
+            "action": {"type": "string", "enum": ["search", "ingest"]},
+            "query": {"type": "string", "description": "Required for search."},
+            "path": {"type": "string", "description": "Uploaded file path required for ingest."},
+            "name": {"type": "string", "description": "Optional destination Markdown filename."},
+            "splitMode": {"type": "string", "enum": ["simple", "llm"]},
+            "chunkModel": {"type": "string", "description": "Dedicated configured model for LLM splitting."},
+            "overwrite": {"type": "boolean"},
+        },
+        required=["action"],
     )
 
 
@@ -304,6 +367,29 @@ def python_tool() -> dict[str, Any]:
             }
         },
         required=["code"],
+    )
+
+
+def file_reader_tool() -> dict[str, Any]:
+    return function_tool(
+        name="fileReader",
+        description=(
+            "Read and extract text from a local project file or uploaded file without modifying it. "
+            "Supports PDF, DOCX, PPTX, XLSX, HTML, CSV, Markdown, source code, and other UTF-8 text. "
+            "Use startPage/endPage for PDF pages or PowerPoint slides, and sheet for one Excel worksheet. "
+            "Scanned image-only PDFs need OCR and may return no text."
+        ),
+        properties={
+            "path": {
+                "type": "string",
+                "description": "Project-relative path, backend/runtime/uploads path, or local /api/uploads URL.",
+            },
+            "startPage": {"type": "integer", "description": "Optional 1-based first PDF page or slide."},
+            "endPage": {"type": "integer", "description": "Optional 1-based last PDF page or slide."},
+            "sheet": {"type": "string", "description": "Optional XLSX worksheet name."},
+            "maxChars": {"type": "integer", "description": "Optional bounded output size."},
+        },
+        required=["path"],
     )
 
 

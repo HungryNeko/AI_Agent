@@ -62,6 +62,16 @@ def parse_review_decision(text: str) -> ReviewDecision:
 
 
 def describe_request(request: ToolRequest) -> dict[str, Any]:
+    if request.name == "rag" and request.rag_request:
+        item = request.rag_request
+        return {
+            "action": item.action,
+            "path": item.path,
+            "name": item.name,
+            "splitMode": item.split_mode,
+            "chunkModel": item.chunk_model,
+            "overwrite": item.overwrite,
+        }
     if request.name == "fileEditor" and request.file_edit:
         edit = request.file_edit
         return {

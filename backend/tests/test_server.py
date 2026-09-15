@@ -1,3 +1,5 @@
+import json
+
 from fastapi.testclient import TestClient
 
 from agent import server
@@ -209,7 +211,16 @@ def test_settings_endpoint_persists_json_config(tmp_path, monkeypatch):
 
     response = client.patch(
         "/api/settings",
-        json={"patch": {"ui": {"theme": "dark", "language": "en"}, "chat": {"max_tool_rounds": -1}}},
+        json={
+            "patch": {
+                "ui": {"theme": "dark", "language": "en"},
+                "chat": {"max_tool_rounds": -1},
+                "rag_ingestion": {
+                    "split_mode": "llm",
+                    "model": "deepseek:deepseek-chat",
+                },
+            }
+        },
     )
 
     assert response.status_code == 200
@@ -217,6 +228,10 @@ def test_settings_endpoint_persists_json_config(tmp_path, monkeypatch):
     assert data["path"] == "data/settings.local.json"
     assert data["settings"]["ui"] == {"theme": "dark", "language": "en"}
     assert data["settings"]["chat"]["max_tool_rounds"] == -1
+    assert data["settings"]["rag_ingestion"] == {
+        "split_mode": "llm",
+        "model": "deepseek:deepseek-chat",
+    }
     assert local_settings_path.exists()
 
 
@@ -226,6 +241,83 @@ def test_rag_reindex_endpoint_reports_vector_status():
 
     assert response.status_code == 200
     assert response.json()["index"] == "local-vector"
+
+
+def test_rag_reindex_endpoint_passes_llm_chunking_options(monkeypatch):
+    seen = {}
+
+    def fake_index_status(settings, **kwargs):
+        seen.update(kwargs)
+        return {"status": "ready", "index": "local-vector", "chunk_count": 3}
+
+    monkeypatch.setattr(server.rag, "index_status", fake_index_status)
+    client = TestClient(server.app)
+
+    response = client.post(
+        "/api/rag/reindex",
+        json={"split_mode": "llm", "chunk_model": "deepseek:deepseek-chat", "force": True},
+    )
+
+    assert response.status_code == 200
+    assert seen == {
+        "split_mode": "llm",
+        "chunk_model": "deepseek:deepseek-chat",
+        "force": True,
+    }
+
+
+def test_rag_ingest_endpoint_routes_upload_to_markdown_pipeline(monkeypatch):
+    seen = {}
+
+    def fake_ingest(request, settings):
+        seen["request"] = request
+        return {"status": "saved", "path": "backend/runtime/user_data/knowledge/report.md"}
+
+    monkeypatch.setattr(server.rag, "ingest_uploaded_file", fake_ingest)
+    client = TestClient(server.app)
+
+    response = client.post(
+        "/api/rag/ingest",
+        json={
+            "path": "backend/runtime/uploads/abc/report.docx",
+            "name": "report.md",
+            "split_mode": "llm",
+            "chunk_model": "deepseek:deepseek-chat",
+        },
+    )
+
+    assert response.status_code == 200
+    assert seen["request"].action == "ingest"
+    assert seen["request"].split_mode == "llm"
+    assert seen["request"].chunk_model == "deepseek:deepseek-chat"
+
+
+def test_delete_user_data_file_refreshes_rag(tmp_path, monkeypatch):
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    note = knowledge / "note.md"
+    note.write_text("delete me", encoding="utf-8")
+    monkeypatch.setattr(server, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(server, "ALLOWED_DATA_ROOTS", {"knowledge": knowledge})
+    monkeypatch.setattr(
+        server,
+        "refresh_rag",
+        lambda split_mode=None, chunk_model="": {
+            "chunk_count": 0,
+            "documents_removed": 1,
+            "llm_calls": 0,
+        },
+    )
+    client = TestClient(server.app)
+
+    response = client.delete(
+        "/api/data/file",
+        params={"path": str(note), "split_mode": "llm", "chunk_model": "chunker"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rag"]["documents_removed"] == 1
+    assert not note.exists()
 
 
 def test_upload_endpoint_stores_runtime_file(tmp_path, monkeypatch):
@@ -301,6 +393,29 @@ def test_chat_stream_accepts_attachment_without_message(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert "saw attachment" in response.text
+
+
+def test_chat_stream_marks_backend_failure_as_terminal(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.session_store, "CONVERSATION_ROOT", tmp_path / "conversations")
+
+    def failing_stream_turn(state, message):
+        raise ValueError("Missing API key")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(server, "stream_turn", failing_stream_turn)
+    client = TestClient(server.app)
+
+    response = client.post("/api/chat/stream", json={"message": "hello"})
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+    assert response.status_code == 200
+    assert events[-1]["type"] == "error"
+    assert events[-1]["terminal"] is True
+    assert "Missing API key" in events[-1]["text"]
 
 
 def test_automation_endpoints_manage_runtime_json(tmp_path, monkeypatch):

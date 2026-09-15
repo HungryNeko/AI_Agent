@@ -22,14 +22,40 @@ env/
 
 # Backend runtime artifacts
 backend/runtime/
+data/api_configs.json
 data/api_configs.local.json
+data/settings.json
 data/settings.local.json
+data/instruction.md
+data/mcp/servers.json
 data/mcp/servers.local.json
 
 # Local user knowledge/memory/skills kept outside tracked system docs
+data/memory/*.md
+!data/memory/README.md
 data/memory/user*.md
+data/memory/local/
+data/knowledge/local/
 data/skills/local/
 data/skills/Rent/
+
+# Downloaded model weights and local ML caches
+.cache/
+models/
+model_cache/
+huggingface/
+*.safetensors
+*.gguf
+*.onnx
+pytorch_model*.bin
+
+# Private keys and certificate bundles
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
 
 # Node / frontend
 node_modules/

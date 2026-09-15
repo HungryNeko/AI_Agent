@@ -27,6 +27,8 @@ def chat(
     curl_mode: str = "auto",
     python: bool = False,
     python_mode: str = "auto",
+    file_reader: bool = False,
+    file_reader_mode: str = "auto",
     file_editor: bool = False,
     file_editor_mode: str = "auto",
     file_editor_approval: str = "auto",
@@ -67,6 +69,8 @@ def chat(
         curl_mode=curl_mode,
         python=python,
         python_mode=python_mode,
+        file_reader=file_reader,
+        file_reader_mode=file_reader_mode,
         file_editor=file_editor,
         file_editor_mode=file_editor_mode,
         file_editor_approval=file_editor_approval,
@@ -90,6 +94,8 @@ def complete_chat_once(
     *,
     model: str | None = None,
     tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Send one request and return the assistant message."""
 
@@ -98,7 +104,13 @@ def complete_chat_once(
     if not api_key and config.provider != "ollama":
         raise ValueError(f"Missing API key. Set {config.api_key_env} in backend/.env.")
 
-    payload = build_chat_payload(config.model_id, messages, tools=tools)
+    payload = build_chat_payload(
+        config.model_id,
+        messages,
+        tools=tools,
+        tool_choice=tool_choice,
+        max_tokens=max_tokens,
+    )
     log_event(
         "llm.request",
         provider=config.provider,
@@ -136,6 +148,8 @@ def build_chat_payload(
     messages: list[dict[str, Any]],
     *,
     tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model_id,
@@ -143,7 +157,9 @@ def build_chat_payload(
     }
     if tools:
         payload["tools"] = tools
-        payload["tool_choice"] = "auto"
+        payload["tool_choice"] = tool_choice or "auto"
+    if max_tokens is not None:
+        payload["max_tokens"] = max(1, int(max_tokens))
     return payload
 
 

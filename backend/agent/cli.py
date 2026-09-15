@@ -42,6 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--curl-mode", choices=["off", "auto"], default="auto")
     parser.add_argument("--python", action="store_true", help="Alias for --python-mode auto.")
     parser.add_argument("--python-mode", choices=["off", "auto"], default="auto")
+    parser.add_argument("--file-reader", action="store_true", help="Alias for --file-reader-mode auto.")
+    parser.add_argument("--file-reader-mode", choices=["off", "auto"], default="auto")
     parser.add_argument("--file-editor", action="store_true", help="Alias for --file-editor-mode auto.")
     parser.add_argument("--file-editor-mode", choices=["off", "auto"], default="auto")
     parser.add_argument("--file-editor-approval", choices=["readOnly", "manual", "auto"], default="auto")
@@ -94,6 +96,8 @@ def make_state(args: argparse.Namespace) -> ChatState:
         curl_mode=args.curl_mode,
         python=args.python,
         python_mode=args.python_mode,
+        file_reader=args.file_reader,
+        file_reader_mode=args.file_reader_mode,
         file_editor=args.file_editor,
         file_editor_mode=args.file_editor_mode,
         file_editor_approval=args.file_editor_approval,

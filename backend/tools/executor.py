@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
 from agent.debug_log import log_event, log_exception
-from tools import WebSearch, appSettings, automation, curl, fileEditor, history, mcp, rag
+from tools import (
+    WebSearch,
+    appSettings,
+    automation,
+    curl,
+    fileEditor,
+    fileReader,
+    history,
+    mcp,
+    rag,
+)
 from tools import python as python_tool
 from tools.request import ToolRequest
 from tools.settings import ToolSettings
@@ -46,7 +57,12 @@ def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
         results = WebSearch.search(request.query, settings.web_search)
         return format_web_search_results(results)
     if request.name == "rag":
-        results = rag.search(request.query, settings.rag)
+        if request.rag_request is None:
+            return 'toolError: "rag request is missing rag_request."'
+        if request.rag_request.action == "ingest":
+            result = rag.ingest_uploaded_file(request.rag_request, settings.rag)
+            return "ragIngestResult:\n" + json.dumps(result, ensure_ascii=False, indent=2)
+        results = rag.search(request.rag_request.query, settings.rag)
         return format_rag_results(results)
     if request.name == "curl":
         result = curl.get(request.url, settings.curl)
@@ -54,6 +70,11 @@ def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
     if request.name == "python":
         result = python_tool.run(request.code, settings.python)
         return format_python_result(result)
+    if request.name == "fileReader":
+        if request.file_read is None:
+            return 'toolError: "fileReader request is missing file_read."'
+        result = fileReader.read(request.file_read, settings.file_reader)
+        return format_file_reader_result(result)
     if request.name == "fileEditor":
         if request.file_edit is None:
             return 'toolError: "fileEditor request is missing file_edit."'
@@ -220,6 +241,20 @@ def format_file_editor_result(result: dict[str, Any]) -> str:
         if key in {"content", "diff"}:
             lines.append(f"{key}:")
             lines.append(str(value))
+            continue
+        lines.append(f"{key}: {value}")
+    return "\n".join(lines)
+
+
+def format_file_reader_result(result: dict[str, Any]) -> str:
+    lines = ["fileReaderResult:"]
+    for key, value in result.items():
+        if key == "content":
+            lines.append("content:")
+            lines.append(str(value))
+            continue
+        if isinstance(value, list):
+            lines.append(f"{key}: {json_dumps(value)}")
             continue
         lines.append(f"{key}: {value}")
     return "\n".join(lines)

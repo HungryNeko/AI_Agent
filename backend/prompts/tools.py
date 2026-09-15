@@ -9,7 +9,8 @@ Tool request rules:
 - Tools are provided through the API tool_calls field.
 - Request only tools listed in available.
 - If you can answer from the conversation or injected results, do not call a tool.
-- Use rag to search local knowledge, memory, and skill files. Memory files live under data/memory. Skill entrypoints live at data/skills/<name>/SKILL.md.
+- Use rag action=search to search local knowledge, memory, and skill files. Memory files live under data/memory. Skill entrypoints live at data/skills/<name>/SKILL.md.
+- When the user asks to add an uploaded PDF, Word, PowerPoint, Excel, or text document to the knowledge base, first call fileReader to inspect it, then call rag action=ingest with the same uploaded path. Do not paste the extracted document into the rag arguments. Use simple splitting unless the user explicitly requests LLM splitting.
 - RAG results include sourceType and path. Use those source paths in the answer when they matter, and request more file detail if an excerpt is not enough.
 - Use history to list/search/read saved conversation JSON when exact previous messages or tool output are needed after compression.
 - User text may contain @ references such as @tool:python, @file:data/skills/name/SKILL.md, or @history:conversation-id. Treat them as explicit user intent for that tool or context.
@@ -18,6 +19,7 @@ Tool request rules:
 - If a curl request fails or returns an API error, do not blindly retry the same URL. If webSearch is available, search the official API documentation, then change the endpoint or parameters before trying curl again.
 - If webSearchResult includes image URLs, or curlResult/API data contains image URLs or image content, show useful images in the final answer with Markdown image syntax using the exact URL, for example ![image](https://example.com/image.jpg).
 - Use python for math, statistics, data analysis, plotting, and local scripting. Its current working directory is the artifact directory; save files with relative names like plt.savefig("chart.png"). For lightweight coordinate maps, use `from ai_agent_maps import write_osm_scatter` to create an OpenStreetMap/Leaflet HTML artifact from lat/lon points. Prefer webSearch or curl for web/API fetching when those tools fit better. If pythonResult lists image files, show them in the final answer with Markdown image syntax using the exact returned path, for example ![chart](backend/runtime/python_runs/run_x/chart.png); for HTML map artifacts, mention the returned path as a clickable reference.
+- Use fileReader to extract text from uploaded or project PDF, DOCX, PPTX, XLSX, HTML, CSV, Markdown, and source files. It is read-only. Use page ranges or an Excel sheet name for large files. Scanned image-only PDFs require OCR and may contain no extractable text.
 - Use fileEditor for project file changes, including adding or updating memory and skill files when the user asks. Prefer list/read before editing. Prefer replace with exact unique oldText, or insertAfter/insertBefore with an exact unique anchor. Do not use line numbers for edits unless there is no stable text anchor. If fileEditor returns approvalRequired, explain the pending change and do not claim it was applied.
 - When file editor approval is aiReview, high-risk tool calls are reviewed by a separate AI reviewer before execution. If aiReview denies the call, explain the denial and choose a safer next step.
 - Use mcp only for configured MCP servers. Start with listServers or listTools unless the exact server and tool are already known. Do not provide shell commands to mcp. Uploaded attachments include path, url, and absoluteUrl; for remote MCP file URL inputs prefer absoluteUrl, and for local MCP tools use path. If an MCP tool requires file bytes such as content_base64/body_base64/image_base64, never inline large base64 in tool arguments; pass content_base64_from_file/body_base64_from_file/image_base64_from_file with the uploaded path or upload URL, and the backend will inject the exact bytes. For batch uploads, pass an array of file objects using these *_from_file fields when the MCP schema supports it. If mcpResult lists image files or markdownImages, show useful ones in the final answer with Markdown image syntax using the exact returned path.
@@ -27,10 +29,13 @@ Tool request rules:
 - If a tool returns toolError, use the raw error to decide whether retrying, changing input, using a different tool, or reporting failure is best. Do not repeat the exact same failing tool input more than once.
 
 Tool argument schemas:
-webSearch/rag: {"query":"short search query"}
+webSearch: {"query":"short search query"}
+rag search: {"action":"search","query":"short search query"}
+rag ingest: {"action":"ingest","path":"backend/runtime/uploads/upload_id/report.docx","name":"report.md","splitMode":"simple"}
 curl: {"url":"https://api.example.com/path?x=1"}
 python: {"code":"print(2 + 2)"}
 python OSM map: {"code":"from ai_agent_maps import write_osm_scatter\nprint(write_osm_scatter([{\"lat\":34.0522,\"lon\":-118.2437,\"label\":\"LA\"}], \"map.html\"))"}
+fileReader: {"path":"backend/runtime/uploads/upload_id/report.pdf","startPage":1,"endPage":10}
 fileEditor: {"action":"read","path":"backend/agent/graph.py"}
 mcp: {"action":"listTools","server":"configuredServerName"}
 mcp file upload: {"action":"callTool","server":"configuredServerName","tool":"uploadFile","arguments":{"filename":"photo.jpg","content_type":"image/jpeg","content_base64_from_file":"backend/runtime/uploads/upload_id/photo.jpg"}}
@@ -48,6 +53,7 @@ def build_tools_prompt(
     rag_mode: str = "off",
     curl_mode: str = "off",
     python_mode: str = "off",
+    file_reader_mode: str = "off",
     file_editor_mode: str = "off",
     mcp_mode: str = "off",
     history_mode: str = "off",
@@ -70,6 +76,7 @@ def build_tools_prompt(
         rag_mode=rag_mode,
         curl_mode=curl_mode,
         python_mode=python_mode,
+        file_reader_mode=file_reader_mode,
         file_editor_mode=file_editor_mode,
         mcp_mode=mcp_mode,
         history_mode=history_mode,
@@ -107,6 +114,7 @@ def build_tools_prompt_from_settings(
         rag_mode=settings.rag.mode,
         curl_mode=settings.curl.mode,
         python_mode=settings.python.mode,
+        file_reader_mode=settings.file_reader.mode,
         file_editor_mode=settings.file_editor.mode,
         mcp_mode=settings.mcp.mode,
         history_mode=settings.history.mode,

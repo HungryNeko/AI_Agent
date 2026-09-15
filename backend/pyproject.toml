@@ -13,9 +13,15 @@ dependencies = [
     "matplotlib",
     "scipy",
     "scikit-learn",
+    "sentence-transformers>=3,<6",
+    "transformers>=4.41,<5",
     "seaborn",
     "plotly",
     "beautifulsoup4",
+    "pypdf",
+    "python-docx",
+    "python-pptx",
+    "openpyxl",
     "fastapi",
     "uvicorn",
 ]
@@ -29,6 +35,12 @@ dev = [
 
 [project.scripts]
 ai-agent = "agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent*", "prompts*", "tools*"]
+exclude = ["runtime*", "scripts*", "tests*"]
+namespaces = true
 
 [tool.ruff]
 exclude = ["runtime"]

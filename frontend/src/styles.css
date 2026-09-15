@@ -493,6 +493,23 @@ small {
   font-size: 12px;
 }
 
+.markdownBody .katex {
+  font-size: 1.05em;
+}
+
+.markdownBody .katex-display {
+  max-width: 100%;
+  margin: 12px 0;
+  padding: 4px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.markdownBody .katex-display > .katex {
+  min-width: max-content;
+  text-align: center;
+}
+
 .markdownBody table {
   width: 100%;
   border-collapse: collapse;
@@ -1122,6 +1139,109 @@ textarea:focus {
   grid-area: files;
 }
 
+.dataSidebarSection {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px 0;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.dataSidebarHeading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ragField {
+  display: grid;
+  gap: 6px;
+}
+
+.ragField > span {
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ragModeToggle {
+  width: 100%;
+  padding: 3px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #f7f7f5;
+}
+
+.ragModeToggle button {
+  flex: 1;
+  height: 30px;
+  font-size: 12px;
+}
+
+.ragField select {
+  width: 100%;
+}
+
+.ragHint {
+  margin: 0;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ragActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.ragActions .secondaryButton {
+  width: 100%;
+  min-width: 0;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.ragRefreshFeedback {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 8px 9px;
+  border: 1px solid #bfdbfe;
+  border-radius: 7px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.ragRefreshFeedback > svg,
+.ragRefreshFeedback > .spinner {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.ragRefreshFeedback.success {
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.ragRefreshFeedback.error {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #b42318;
+}
+
+.iconButton.danger {
+  color: #b42318;
+}
+
 .editorPane {
   grid-area: editor;
   display: grid;
@@ -1379,6 +1499,39 @@ textarea:focus {
 
 :root[data-theme="dark"] .attachmentAction:hover {
   background: #21262d;
+}
+
+:root[data-theme="dark"] .dataSidebarSection {
+  border-color: #30363d;
+}
+
+:root[data-theme="dark"] .dataSidebarHeading,
+:root[data-theme="dark"] .ragField > span,
+:root[data-theme="dark"] .ragHint {
+  color: #94a3b8;
+}
+
+:root[data-theme="dark"] .ragModeToggle {
+  border-color: #30363d;
+  background: #0d1117;
+}
+
+:root[data-theme="dark"] .ragRefreshFeedback {
+  border-color: #1d4ed8;
+  background: #0c1d3a;
+  color: #93c5fd;
+}
+
+:root[data-theme="dark"] .ragRefreshFeedback.success {
+  border-color: #065f46;
+  background: #052e24;
+  color: #6ee7b7;
+}
+
+:root[data-theme="dark"] .ragRefreshFeedback.error {
+  border-color: #7f1d1d;
+  background: #2a1215;
+  color: #fca5a5;
 }
 
 :root[data-theme="dark"] .event-tool_call.compact {

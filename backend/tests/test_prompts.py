@@ -5,6 +5,16 @@ from prompts.system import build_system_prompt
 from prompts.tools import build_tools_prompt
 
 
+def test_system_prompt_prefers_latex_for_formulas():
+    prompt = build_system_prompt()
+
+    assert "prefer standard LaTeX" in prompt
+    assert "$...$ for inline math" in prompt
+    assert "$$...$$ for display math" in prompt
+    assert "\\frac" in prompt
+    assert "Do not wrap LaTeX formulas in code fences" in prompt
+
+
 def test_rag_off_hides_rag_tool():
     prompt = build_tools_prompt(web_search_mode="auto", rag_mode="off")
 
@@ -175,3 +185,13 @@ def test_tool_rules_include_file_editor_anchor_guidance():
 
     assert "Use fileEditor for project file changes" in prompt
     assert 'fileEditor: {"action":"read"' in prompt
+
+
+def test_file_reader_auto_exposes_read_only_document_tool():
+    prompt = build_tools_prompt(file_reader_mode="auto")
+
+    assert 'available: ["fileReader"]' in prompt
+
+    detailed = build_tools_prompt(file_reader_mode="auto", include_rules=True)
+    assert "Use fileReader to extract text" in detailed
+    assert 'fileReader: {"path"' in detailed

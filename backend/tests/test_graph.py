@@ -62,6 +62,7 @@ def test_run_agent_calls_model_once(monkeypatch):
         rag_mode="auto",
         curl_mode="off",
         python_mode="off",
+        file_reader_mode="off",
         file_editor_mode="off",
         mcp_mode="off",
         conversation_summary="summary",

@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ROOT = PROJECT_ROOT / "backend"
 CONFIG_PATH = PROJECT_ROOT / "data" / "api_configs.json"
+CONFIG_EXAMPLE_PATH = PROJECT_ROOT / "data" / "api_configs.example.json"
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,8 @@ def load_environment() -> None:
 
 def load_config() -> dict[str, Any]:
     load_environment()
-    data = read_json_object(CONFIG_PATH, "data/api_configs.json")
+    base_path = CONFIG_PATH if CONFIG_PATH.exists() else CONFIG_EXAMPLE_PATH
+    data = read_json_object(base_path, str(base_path))
     local_path = local_config_path()
     if local_path.exists():
         data = deep_merge(data, read_json_object(local_path, "data/api_configs.local.json"))
@@ -139,6 +141,7 @@ def load_system_prompt(
     rag_mode: str = "off",
     curl_mode: str = "off",
     python_mode: str = "off",
+    file_reader_mode: str = "off",
     file_editor_mode: str = "off",
     mcp_mode: str = "off",
     history_mode: str = "off",
@@ -159,6 +162,7 @@ def load_system_prompt(
         rag_mode=rag_mode,
         curl_mode=curl_mode,
         python_mode=python_mode,
+        file_reader_mode=file_reader_mode,
         file_editor_mode=file_editor_mode,
         mcp_mode=mcp_mode,
         history_mode=history_mode,

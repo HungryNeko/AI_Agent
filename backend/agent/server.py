@@ -19,9 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from agent.automation_runner import list_run_records, start_runner, stop_runner
-from agent.app_settings import load_app_settings, patch_app_settings, save_app_settings
 from agent import session_store
+from agent.app_settings import load_app_settings, patch_app_settings, save_app_settings
+from agent.automation_runner import list_run_records, start_runner, stop_runner
 from agent.config import load_config, save_config
 from agent.debug_log import log_event, log_exception
 from agent.graph import ChatState, stream_turn
@@ -29,6 +29,7 @@ from agent.instructions import load_instruction, save_instruction
 from tools import mcp as mcp_tool
 from tools import rag
 from tools.mcp import McpRequest
+from tools.rag import RagRequest
 from tools.settings import McpSettings, make_tool_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -46,7 +47,6 @@ USER_DATA_ROOTS = {
 }
 ALLOWED_DATA_ROOTS = {kind: (SYSTEM_DATA_ROOTS[kind], USER_DATA_ROOTS[kind]) for kind in SYSTEM_DATA_ROOTS}
 MCP_CONFIG_PATH = DATA_ROOT / "mcp" / "servers.json"
-MCP_LOCAL_CONFIG_PATH = DATA_ROOT / "mcp" / "servers.local.json"
 TEXT_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml"}
 ARTIFACT_ROOTS = [
     PROJECT_ROOT / "backend" / "runtime" / "python_runs",
@@ -131,6 +131,7 @@ class ChatOptions(BaseModel):
     rag_include_skills: bool = True
     curl_mode: Literal["off", "auto"] = "auto"
     python_mode: Literal["off", "auto"] = "auto"
+    file_reader_mode: Literal["off", "auto"] = "auto"
     file_editor_mode: Literal["off", "auto"] = "auto"
     file_editor_approval: Literal["readOnly", "manual", "auto", "aiReview"] = "auto"
     mcp_mode: Literal["off", "auto"] = "auto"
@@ -164,6 +165,8 @@ class StopChatRequest(BaseModel):
 class DataFilePayload(BaseModel):
     path: str
     content: str
+    split_mode: Literal["simple", "llm"] | None = None
+    chunk_model: str = ""
 
 
 class InstructionPayload(BaseModel):
@@ -195,11 +198,29 @@ class DataImportPayload(BaseModel):
     kind: Literal["knowledge", "memory", "skills"]
     name: str
     content: str
+    split_mode: Literal["simple", "llm"] | None = None
+    chunk_model: str = ""
 
 
 class DataRenamePayload(BaseModel):
     path: str
     new_name: str
+    split_mode: Literal["simple", "llm"] | None = None
+    chunk_model: str = ""
+
+
+class RagReindexPayload(BaseModel):
+    split_mode: Literal["simple", "llm"] | None = None
+    chunk_model: str = ""
+    force: bool = False
+
+
+class RagIngestPayload(BaseModel):
+    path: str
+    name: str = ""
+    split_mode: Literal["simple", "llm"] | None = None
+    chunk_model: str = ""
+    overwrite: bool = False
 
 
 class AutomationPayload(BaseModel):
@@ -386,7 +407,13 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
             )
         except Exception as exc:  # noqa: BLE001
             log_exception("http.chat_stream_error", exc, message=payload.message)
-            error_event = {"type": "error", "text": str(exc), "conversation_id": conversation_id, "run_id": run_id}
+            error_event = {
+                "type": "error",
+                "text": str(exc),
+                "terminal": True,
+                "conversation_id": conversation_id,
+                "run_id": run_id,
+            }
             turn_events.append(error_event)
             session_store.save_turn(
                 conversation_id,
@@ -453,10 +480,62 @@ def delete_conversation(conversation_id: str) -> dict[str, str]:
     return {"status": "deleted"}
 
 
-@app.post("/api/rag/reindex")
-def reindex_rag() -> dict[str, Any]:
+def resolve_rag_ingestion_options(
+    split_mode: str | None,
+    chunk_model: str,
+) -> tuple[Literal["simple", "llm"], str]:
+    saved = load_app_settings().get("rag_ingestion", {})
+    saved_mode = saved.get("split_mode") if isinstance(saved, dict) else "simple"
+    saved_model = saved.get("model") if isinstance(saved, dict) else ""
+    mode = split_mode or str(saved_mode or "simple")
+    if mode not in {"simple", "llm"}:
+        mode = "simple"
+    return mode, chunk_model.strip() or str(saved_model or "").strip()
+
+
+def refresh_rag(split_mode: str | None = None, chunk_model: str = "") -> dict[str, Any]:
+    mode, model = resolve_rag_ingestion_options(split_mode, chunk_model)
     settings = make_tool_settings(rag_mode="auto")
-    return rag.index_status(settings.rag)
+    return rag.index_status(settings.rag, split_mode=mode, chunk_model=model)
+
+
+@app.post("/api/rag/reindex")
+def reindex_rag(payload: RagReindexPayload | None = None) -> dict[str, Any]:
+    request = payload or RagReindexPayload()
+    split_mode, chunk_model = resolve_rag_ingestion_options(
+        request.split_mode,
+        request.chunk_model,
+    )
+    settings = make_tool_settings(rag_mode="auto")
+    return rag.index_status(
+        settings.rag,
+        split_mode=split_mode,
+        chunk_model=chunk_model,
+        force=request.force,
+    )
+
+
+@app.post("/api/rag/ingest")
+def ingest_rag_document(payload: RagIngestPayload) -> dict[str, Any]:
+    split_mode, chunk_model = resolve_rag_ingestion_options(
+        payload.split_mode,
+        payload.chunk_model,
+    )
+    settings = make_tool_settings(rag_mode="auto")
+    try:
+        return rag.ingest_uploaded_file(
+            RagRequest(
+                action="ingest",
+                path=payload.path,
+                name=payload.name,
+                split_mode=split_mode,
+                chunk_model=chunk_model,
+                overwrite=payload.overwrite,
+            ),
+            settings.rag,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/uploads")
@@ -512,7 +591,7 @@ def read_data_file(path: str = Query(...)) -> dict[str, Any]:
 
 
 @app.put("/api/data/file")
-def write_data_file(payload: DataFilePayload) -> dict[str, str]:
+def write_data_file(payload: DataFilePayload) -> dict[str, Any]:
     resolved, _, writable = resolve_data_path(payload.path, allow_missing=True)
     if not writable:
         raise HTTPException(status_code=403, detail="system files are read-only")
@@ -520,11 +599,15 @@ def write_data_file(payload: DataFilePayload) -> dict[str, str]:
         raise HTTPException(status_code=400, detail="unsupported text file type")
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(payload.content, encoding="utf-8")
-    return {"path": relative_to_project(resolved), "status": "saved"}
+    return {
+        "path": relative_to_project(resolved),
+        "status": "saved",
+        "rag": refresh_rag(payload.split_mode, payload.chunk_model),
+    }
 
 
 @app.post("/api/data/import")
-def import_data_file(payload: DataImportPayload) -> dict[str, str]:
+def import_data_file(payload: DataImportPayload) -> dict[str, Any]:
     kind = payload.kind
     name = clean_import_name(payload.name)
     root = allowed_root(kind)
@@ -540,12 +623,12 @@ def import_data_file(payload: DataImportPayload) -> dict[str, str]:
         raise HTTPException(status_code=400, detail="unsupported text file type")
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(payload.content, encoding="utf-8")
-    rag.index_status(make_tool_settings(rag_mode="auto").rag)
-    return {"path": relative_to_project(resolved), "status": "saved"}
+    status = refresh_rag(payload.split_mode, payload.chunk_model)
+    return {"path": relative_to_project(resolved), "status": "saved", "rag": status}
 
 
 @app.post("/api/data/file/rename")
-def rename_data_file(payload: DataRenamePayload) -> dict[str, str]:
+def rename_data_file(payload: DataRenamePayload) -> dict[str, Any]:
     resolved, _, writable = resolve_data_path(payload.path)
     if not writable:
         raise HTTPException(status_code=403, detail="system files are read-only")
@@ -566,8 +649,22 @@ def rename_data_file(payload: DataRenamePayload) -> dict[str, str]:
     if target.exists():
         raise HTTPException(status_code=409, detail="target already exists")
     resolved.rename(target)
-    rag.index_status(make_tool_settings(rag_mode="auto").rag)
-    return {"path": relative_to_project(target), "status": "renamed"}
+    status = refresh_rag(payload.split_mode, payload.chunk_model)
+    return {"path": relative_to_project(target), "status": "renamed", "rag": status}
+
+
+@app.delete("/api/data/file")
+def delete_data_file(
+    path: str = Query(...),
+    split_mode: Literal["simple", "llm"] | None = Query(None),
+    chunk_model: str = Query(""),
+) -> dict[str, Any]:
+    resolved, _, writable = resolve_data_path(path)
+    if not writable:
+        raise HTTPException(status_code=403, detail="system files are read-only")
+    resolved.unlink()
+    status = refresh_rag(split_mode, chunk_model)
+    return {"path": relative_to_project(resolved), "status": "deleted", "rag": status}
 
 
 @app.get("/api/automations")
@@ -618,13 +715,13 @@ def delete_automation(automation_id: str) -> dict[str, str]:
 
 
 @app.post("/api/skills/import")
-def import_skill(payload: SkillPayload) -> dict[str, str]:
+def import_skill(payload: SkillPayload) -> dict[str, Any]:
     name = clean_single_name(payload.name)
     path = allowed_root("skills") / name / "SKILL.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(payload.content, encoding="utf-8")
-    rag.index_status(make_tool_settings(rag_mode="auto").rag)
-    return {"path": relative_to_project(path), "status": "saved"}
+    status = refresh_rag()
+    return {"path": relative_to_project(path), "status": "saved", "rag": status}
 
 
 @app.get("/api/mcp/servers")
@@ -703,6 +800,7 @@ def build_chat_state(payload: ChatRequest) -> ChatState:
         "rag_include_skills": options["rag_include_skills"],
         "curl_mode": options["curl_mode"],
         "python_mode": options["python_mode"],
+        "file_reader_mode": options["file_reader_mode"],
         "file_editor_mode": options["file_editor_mode"],
         "file_editor_approval": options["file_editor_approval"],
         "mcp_mode": options["mcp_mode"],
@@ -834,8 +932,9 @@ def load_mcp_config() -> dict[str, Any]:
     data: dict[str, Any] = {"servers": {}}
     if MCP_CONFIG_PATH.exists():
         data = json.loads(MCP_CONFIG_PATH.read_text(encoding="utf-8"))
-    if MCP_LOCAL_CONFIG_PATH.exists():
-        local = json.loads(MCP_LOCAL_CONFIG_PATH.read_text(encoding="utf-8"))
+    local_path = mcp_local_config_path()
+    if local_path.exists():
+        local = json.loads(local_path.read_text(encoding="utf-8"))
         base_servers = data.get("servers") if isinstance(data.get("servers"), dict) else {}
         local_servers = local.get("servers") if isinstance(local.get("servers"), dict) else {}
         data["servers"] = {**base_servers, **local_servers}
@@ -845,8 +944,13 @@ def load_mcp_config() -> dict[str, Any]:
 
 
 def save_mcp_config(config: dict[str, Any]) -> None:
-    MCP_LOCAL_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    MCP_LOCAL_CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    local_path = mcp_local_config_path()
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def mcp_local_config_path() -> Path:
+    return MCP_CONFIG_PATH.with_name(f"{MCP_CONFIG_PATH.stem}.local{MCP_CONFIG_PATH.suffix}")
 
 
 def mcp_server_config_from_payload(payload: McpServerPayload) -> dict[str, Any]:

@@ -1,14 +1,15 @@
 import pytest
 
+from tools.automation import AutomationRequest
+from tools.automation import execute as execute_automation
 from tools.executor import (
+    execute_tool,
     format_curl_result,
     format_file_editor_result,
     format_mcp_result,
     format_python_result,
     format_web_search_results,
-    execute_tool,
 )
-from tools.automation import AutomationRequest, execute as execute_automation
 from tools.request import build_openai_tools, parse_openai_tool_calls
 from tools.settings import make_tool_settings
 
@@ -273,6 +274,51 @@ def test_rag_request_requires_auto_mode():
             },
             settings,
         )
+
+
+def test_rag_tool_parses_search_and_ingest_actions():
+    settings = make_tool_settings(
+        web_search_mode="off",
+        rag_mode="auto",
+        curl_mode="off",
+        python_mode="off",
+        file_reader_mode="off",
+        file_editor_mode="off",
+        mcp_mode="off",
+    )
+    [tool] = build_openai_tools(settings)
+
+    search, ingest = parse_openai_tool_calls(
+        {
+            "tool_calls": [
+                {
+                    "id": "search-1",
+                    "type": "function",
+                    "function": {"name": "rag", "arguments": '{"query":"project notes"}'},
+                },
+                {
+                    "id": "ingest-1",
+                    "type": "function",
+                    "function": {
+                        "name": "rag",
+                        "arguments": (
+                            '{"action":"ingest","path":"backend/runtime/uploads/a/report.docx",'
+                            '"name":"report.md","splitMode":"llm","chunkModel":"chunker"}'
+                        ),
+                    },
+                },
+            ]
+        },
+        settings,
+    )
+
+    assert "action" in tool["function"]["parameters"]["properties"]
+    assert search.rag_request.action == "search"
+    assert search.rag_request.query == "project notes"
+    assert ingest.rag_request.action == "ingest"
+    assert ingest.rag_request.path.endswith("report.docx")
+    assert ingest.rag_request.split_mode == "llm"
+    assert ingest.rag_request.chunk_model == "chunker"
 
 
 def test_curl_request_requires_auto_mode():
@@ -696,3 +742,61 @@ def test_mcp_request_requires_auto_mode():
 def test_invalid_mcp_mode_is_rejected():
     with pytest.raises(ValueError, match="mcp_mode"):
         make_tool_settings(mcp_mode="on")
+
+
+def test_file_reader_schema_and_parser_when_enabled():
+    settings = make_tool_settings(
+        web_search_mode="off",
+        rag_mode="off",
+        curl_mode="off",
+        python_mode="off",
+        file_reader_mode="auto",
+        file_editor_mode="off",
+        mcp_mode="off",
+    )
+
+    [tool] = build_openai_tools(settings)
+    assert tool["function"]["name"] == "fileReader"
+
+    [request] = parse_openai_tool_calls(
+        {
+            "tool_calls": [
+                {
+                    "id": "call_reader",
+                    "type": "function",
+                    "function": {
+                        "name": "fileReader",
+                        "arguments": '{"path":"report.pdf","startPage":2,"endPage":4}',
+                    },
+                }
+            ]
+        },
+        settings,
+    )
+
+    assert request.name == "fileReader"
+    assert request.file_read is not None
+    assert request.file_read.path == "report.pdf"
+    assert request.file_read.start_page == 2
+    assert request.file_read.end_page == 4
+
+
+def test_file_reader_requires_auto_mode():
+    settings = make_tool_settings(file_reader_mode="off")
+
+    with pytest.raises(ValueError, match="fileReader can only be called"):
+        parse_openai_tool_calls(
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_reader",
+                        "type": "function",
+                        "function": {
+                            "name": "fileReader",
+                            "arguments": '{"path":"report.pdf"}',
+                        },
+                    }
+                ]
+            },
+            settings,
+        )

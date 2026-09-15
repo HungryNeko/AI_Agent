@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import rehypeKatex from "rehype-katex";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import {
   Archive,
   AtSign,
@@ -25,6 +27,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import "katex/dist/katex.min.css";
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
@@ -45,6 +48,7 @@ const emptyOptions = {
   rag_include_skills: true,
   curl_mode: "auto",
   python_mode: "auto",
+  file_reader_mode: "auto",
   file_editor_mode: "auto",
   file_editor_approval: "auto",
   mcp_mode: "auto",
@@ -170,7 +174,7 @@ function App() {
           onSettingsChanged={reloadSettings}
         />
       )}
-      {tab === "data" && <DataView text={text} />}
+      {tab === "data" && <DataView text={text} models={models} />}
       {tab === "config" && (
         <ConfigView text={text} onSaved={() => fetchJson("/api/models").then((data) => setModels(data.models || [])).catch(() => {})} />
       )}
@@ -301,6 +305,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
     setMentionOpen(false);
 
     try {
+      let streamCompleted = false;
       const response = await fetch(`${API_BASE}/api/chat/stream`, {
         method: "POST",
         signal: controller.signal,
@@ -318,14 +323,20 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
       if (!response.body) throw new Error("HTTP response has no stream body");
       await readSse(response.body, (eventData) => {
         setEvents((items) => [...items, eventData]);
+        if (["assistant", "stopped"].includes(eventData.type) || (eventData.type === "error" && eventData.terminal)) {
+          streamCompleted = true;
+        }
         if (eventData.conversation_id) setConversationId(eventData.conversation_id);
         if (eventData.type === "assistant" && eventData.state) setState(eventData.state);
         if (eventData.type === "settings_changed") onSettingsChanged?.().catch(() => {});
       });
+      if (!streamCompleted) {
+        throw new Error(text("响应流意外结束，后端没有返回最终结果。", "The response stream ended without a final result."));
+      }
       await refreshConversations();
     } catch (error) {
       if (!stopRequestedRef.current && error?.name !== "AbortError") {
-        setEvents((items) => [...items, { type: "error", text: String(error.message || error) }]);
+        setEvents((items) => [...items, { type: "error", terminal: true, text: String(error.message || error) }]);
       }
     } finally {
       if (activeRunIdRef.current === runId) {
@@ -506,7 +517,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
         </div>
         <div className="stream" ref={outputRef} onScroll={trackScroll}>
           {events.length === 0 && <div className="emptyState">输入消息，或用 @ 指定工具、历史、技能、记忆和知识。</div>}
-          <StreamEvents events={events} onPreviewImage={setPreviewImage} />
+          <StreamEvents events={events} busy={busy} onPreviewImage={setPreviewImage} />
         </div>
         <form className="composer" onSubmit={sendMessage}>
           {mentionOpen && filteredMentions.length > 0 && (
@@ -627,6 +638,7 @@ function SettingsPanel({ models, options, setOptions, clearState, text }) {
         <SelectField label="RAG" value={options.rag_mode} onChange={(value) => update("rag_mode", value)} values={["off", "on", "auto"]} />
         <SelectField label="HTTP" value={options.curl_mode} onChange={(value) => update("curl_mode", value)} values={["off", "auto"]} />
         <SelectField label="Python" value={options.python_mode} onChange={(value) => update("python_mode", value)} values={["off", "auto"]} />
+        <SelectField label={text("文件阅读", "File Reader")} value={options.file_reader_mode} onChange={(value) => update("file_reader_mode", value)} values={["off", "auto"]} />
         <SelectField label={text("文件", "File")} value={options.file_editor_mode} onChange={(value) => update("file_editor_mode", value)} values={["off", "auto"]} />
         <SelectField label={text("批准", "Approval")} value={options.file_editor_approval} onChange={(value) => update("file_editor_approval", value)} values={["manual", "auto", "aiReview", "readOnly"]} />
         <SelectField label="MCP" value={options.mcp_mode} onChange={(value) => update("mcp_mode", value)} values={["off", "auto"]} />
@@ -662,7 +674,7 @@ function SelectField({ label, value, onChange, values, icon = null }) {
   );
 }
 
-function StreamEvents({ events, onPreviewImage }) {
+function StreamEvents({ events, busy = false, onPreviewImage }) {
   const turns = [];
   let current = [];
   for (const event of events) {
@@ -673,13 +685,21 @@ function StreamEvents({ events, onPreviewImage }) {
     current.push(event);
   }
   if (current.length > 0) turns.push(current);
-  return turns.map((turn, index) => <StreamTurn key={index} events={turn} onPreviewImage={onPreviewImage} />);
+  return turns.map((turn, index) => (
+    <StreamTurn
+      key={index}
+      events={turn}
+      running={busy && index === turns.length - 1}
+      onPreviewImage={onPreviewImage}
+    />
+  ));
 }
 
-function StreamTurn({ events, onPreviewImage }) {
+function StreamTurn({ events, running = false, onPreviewImage }) {
   const assistantIndex = findLastIndex(events, (event) => event.type === "assistant");
   const stoppedIndex = findLastIndex(events, (event) => event.type === "stopped");
-  const finalIndex = Math.max(assistantIndex, stoppedIndex);
+  const errorIndex = findLastIndex(events, (event) => event.type === "error" && event.terminal);
+  const finalIndex = Math.max(assistantIndex, stoppedIndex, errorIndex);
   const completed = finalIndex >= 0;
   const userEvents = events.filter((event) => event.type === "user");
   const finalEvent = completed ? events[finalIndex] : null;
@@ -692,7 +712,7 @@ function StreamTurn({ events, onPreviewImage }) {
       {operationEvents.length > 0 && (
         <details className="operationDetails">
           <summary>
-            {!completed && <span className="runningDot" />}
+            {running && !completed && <span className="runningDot" />}
             <span>{currentWork}</span>
             <small>{operationEvents.length} steps</small>
           </summary>
@@ -769,7 +789,8 @@ function MarkdownText({ text, onPreviewImage }) {
   return (
     <div className="markdownBody">
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
         components={{
           a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
           img: ({ src, alt }) => <ImageCard src={src || ""} alt={alt || "image"} onPreviewImage={onPreviewImage} />,
@@ -841,7 +862,7 @@ function ImagePreview({ image, onClose }) {
   );
 }
 
-function DataView({ text }) {
+function DataView({ text, models }) {
   const [kind, setKind] = useState("instruction");
   const [files, setFiles] = useState([]);
   const [selected, setSelected] = useState("");
@@ -851,10 +872,32 @@ function DataView({ text }) {
   const [status, setStatus] = useState("");
   const [importName, setImportName] = useState("");
   const [importContent, setImportContent] = useState("# New Document\n\n");
+  const [splitMode, setSplitMode] = useState("simple");
+  const [chunkModel, setChunkModel] = useState("");
+  const [ingesting, setIngesting] = useState(false);
+  const [ragRefresh, setRagRefresh] = useState({ phase: "idle", message: "" });
+  const knowledgeUploadRef = useRef(null);
 
   useEffect(() => {
     refreshResourceList();
   }, [kind]);
+
+  useEffect(() => {
+    fetchJson("/api/settings").then((data) => {
+      const ingestion = data.settings?.rag_ingestion || {};
+      setSplitMode(ingestion.split_mode || "simple");
+      setChunkModel(ingestion.model || "");
+    }).catch(() => {});
+  }, []);
+
+  async function updateIngestionSettings(nextMode, nextModel = chunkModel) {
+    setSplitMode(nextMode);
+    setChunkModel(nextModel);
+    await fetchJson("/api/settings", {
+      method: "PATCH",
+      body: { patch: { rag_ingestion: { split_mode: nextMode, model: nextModel } } },
+    });
+  }
 
   async function refreshResourceList() {
     setStatus("");
@@ -895,11 +938,14 @@ function DataView({ text }) {
     if (kind === "instruction") {
       const data = await fetchJson("/api/instruction", { method: "PUT", body: { content } });
       setContent(data.content || content);
+      setStatus("已保存");
     } else {
-      await fetchJson("/api/data/file", { method: "PUT", body: { path: selected, content } });
+      const data = await fetchJson("/api/data/file", {
+        method: "PUT",
+        body: { path: selected, content, split_mode: splitMode, chunk_model: chunkModel },
+      });
+      setStatus(formatRagRefreshStatus("已保存", data.rag));
     }
-    const ragStatus = await fetchJson("/api/rag/reindex", { method: "POST" }).catch(() => null);
-    setStatus(ragStatus ? `已保存，向量索引已刷新：${ragStatus.chunk_count} 个片段` : "已保存");
     if (kind !== "instruction") await refreshListOnly();
   }
 
@@ -907,10 +953,24 @@ function DataView({ text }) {
     if (!selected || !selectedMeta.writable || !selected.toLowerCase().endsWith(".md")) return;
     const nextName = window.prompt(text("重命名 Markdown 文件", "Rename Markdown file"), selected.split("/").pop() || "");
     if (!nextName) return;
-    const data = await fetchJson("/api/data/file/rename", { method: "POST", body: { path: selected, new_name: nextName } });
+    const data = await fetchJson("/api/data/file/rename", {
+      method: "POST",
+      body: { path: selected, new_name: nextName, split_mode: splitMode, chunk_model: chunkModel },
+    });
     await refreshListOnly();
     await openFile(data.path);
-    setStatus(`已重命名：${data.path}`);
+    setStatus(formatRagRefreshStatus(`已重命名：${data.path}`, data.rag));
+  }
+
+  async function deleteSelected() {
+    if (!selected || !selectedMeta.writable || kind === "instruction") return;
+    if (!window.confirm(text("确认删除这个用户文件？", "Delete this user file?"))) return;
+    const query = new URLSearchParams({ path: selected, split_mode: splitMode, chunk_model: chunkModel });
+    const data = await fetchJson(`/api/data/file?${query.toString()}`, { method: "DELETE" });
+    setSelected("");
+    setContent("");
+    await refreshListOnly();
+    setStatus(formatRagRefreshStatus("已删除", data.rag));
   }
 
   async function refreshListOnly() {
@@ -928,16 +988,71 @@ function DataView({ text }) {
       setStatus("已导入指令");
       return;
     }
-    const data = await fetchJson("/api/data/import", { method: "POST", body: { kind, name: importName, content: importContent } });
+    const data = await fetchJson("/api/data/import", {
+      method: "POST",
+      body: { kind, name: importName, content: importContent, split_mode: splitMode, chunk_model: chunkModel },
+    });
     await refreshListOnly();
     await openFile(data.path);
     setImportName("");
-    setStatus(`已导入：${data.path}`);
+    setStatus(formatRagRefreshStatus(`已导入：${data.path}`, data.rag));
   }
 
   async function reindexRag() {
-    const data = await fetchJson("/api/rag/reindex", { method: "POST" });
-    setStatus(`向量索引已刷新：${data.chunk_count} 个片段`);
+    if (ragRefresh.phase === "loading") return;
+    setRagRefresh({
+      phase: "loading",
+      message: text("正在刷新 RAG 索引…", "Refreshing RAG index…"),
+    });
+    try {
+      const data = await fetchJson("/api/rag/reindex", {
+        method: "POST",
+        body: { split_mode: splitMode, chunk_model: chunkModel },
+      });
+      setRagRefresh({
+        phase: "success",
+        message: formatRagRefreshStatus(text("RAG 刷新成功", "RAG refresh succeeded"), data),
+      });
+    } catch (error) {
+      setRagRefresh({
+        phase: "error",
+        message: `${text("RAG 刷新失败", "RAG refresh failed")}: ${String(error.message || error)}`,
+      });
+    }
+  }
+
+  async function ingestKnowledgeFile(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setIngesting(true);
+    setStatus(text("正在读取并录入文档…", "Reading and ingesting document…"));
+    try {
+      const uploadedResponse = await fetch(`${API_BASE}/api/uploads?filename=${encodeURIComponent(file.name)}`, {
+        method: "POST",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      if (!uploadedResponse.ok) throw new Error(`HTTP ${uploadedResponse.status}: ${await uploadedResponse.text()}`);
+      const uploaded = await uploadedResponse.json();
+      const name = `${file.name.replace(/\.[^.]+$/, "") || "document"}.md`;
+      const data = await fetchJson("/api/rag/ingest", {
+        method: "POST",
+        body: { path: uploaded.path, name, split_mode: splitMode, chunk_model: chunkModel },
+      });
+      setKind("knowledge");
+      const listed = await fetchJson("/api/data/files?kind=knowledge");
+      setFiles(listed.items || []);
+      const opened = await fetchJson(`/api/data/file?path=${encodeURIComponent(data.path)}`);
+      setSelected(opened.path || data.path);
+      setContent(opened.content || "");
+      setSelectedMeta({ writable: Boolean(opened.writable), scope: opened.scope || "user" });
+      setStatus(formatRagRefreshStatus(`已通过 fileReader 录入：${data.path}`, data.index));
+    } catch (error) {
+      setStatus(`${text("录入失败", "Ingestion failed")}: ${error.message}`);
+    } finally {
+      setIngesting(false);
+    }
   }
 
   const resourceTabs = [
@@ -956,7 +1071,45 @@ function DataView({ text }) {
             <button key={value} className={kind === value ? "active" : ""} onClick={() => setKind(value)} type="button">{tabLabel}</button>
           ))}
         </div>
-        <button className="secondaryButton full" onClick={reindexRag} type="button"><RefreshCw size={16} /><span>{text("刷新 RAG", "Refresh RAG")}</span></button>
+        <section className="dataSidebarSection" aria-label={text("RAG 索引设置", "RAG index settings")}>
+          <div className="dataSidebarHeading">
+            <Database size={15} />
+            <span>{text("RAG 索引", "RAG INDEX")}</span>
+          </div>
+          <label className="ragField">
+            <span>{text("切分方式", "Chunking mode")}</span>
+            <div className="segmented ragModeToggle">
+              <button className={splitMode === "simple" ? "active" : ""} disabled={ragRefresh.phase === "loading"} onClick={() => updateIngestionSettings("simple")} type="button">{text("简单切分", "Simple")}</button>
+              <button className={splitMode === "llm" ? "active" : ""} disabled={ragRefresh.phase === "loading"} onClick={() => updateIngestionSettings("llm")} type="button">{text("LLM 切分", "LLM")}</button>
+            </div>
+          </label>
+          {splitMode === "llm" && (
+            <label className="ragField">
+              <span>{text("切分模型", "Chunking model")}</span>
+              <select value={chunkModel} disabled={ragRefresh.phase === "loading"} onChange={(event) => updateIngestionSettings("llm", event.target.value)}>
+                <option value="">{text("默认模型", "Default model")}</option>
+                {(models || []).map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            </label>
+          )}
+          <p className="ragHint">{splitMode === "llm" ? text("短文件免调用；超大文件自动回退，未变化内容复用缓存。", "Short files skip LLM; oversized files fall back; unchanged content is cached.") : text("本地段落切分，不消耗 LLM token。", "Local paragraph splitting uses no LLM tokens.")}</p>
+          <div className="ragActions">
+            <button className="secondaryButton" onClick={reindexRag} disabled={ragRefresh.phase === "loading"} type="button">
+              {ragRefresh.phase === "loading" ? <span className="spinner" /> : <RefreshCw size={16} />}
+              <span>{ragRefresh.phase === "loading" ? text("正在刷新…", "Refreshing…") : text("刷新 RAG", "Refresh RAG")}</span>
+            </button>
+            <button className="secondaryButton" onClick={() => knowledgeUploadRef.current?.click()} disabled={ingesting || ragRefresh.phase === "loading"} type="button"><Paperclip size={16} /><span>{ingesting ? text("正在录入…", "Ingesting…") : text("上传文档", "Upload document")}</span></button>
+          </div>
+          {ragRefresh.phase !== "idle" && (
+            <div className={`ragRefreshFeedback ${ragRefresh.phase}`} role={ragRefresh.phase === "error" ? "alert" : "status"}>
+              {ragRefresh.phase === "loading" && <span className="spinner" />}
+              {ragRefresh.phase === "success" && <Check size={15} />}
+              {ragRefresh.phase === "error" && <X size={15} />}
+              <span>{ragRefresh.message}</span>
+            </div>
+          )}
+        </section>
+        <input ref={knowledgeUploadRef} className="hiddenInput" type="file" onChange={ingestKnowledgeFile} />
         <div className="fileList">
           {files.map((file) => (
             <button key={file.path} className={selected === file.path ? "fileItem active" : "fileItem"} onClick={() => openFile(file)} type="button">
@@ -979,6 +1132,7 @@ function DataView({ text }) {
           <div className="rowActions">
             <button className="secondaryButton" onClick={() => setPreview((value) => !value)} disabled={!isMarkdown} type="button"><FileText size={16} /><span>{preview ? text("编辑", "Edit") : text("显示 MD", "Show MD")}</span></button>
             <button className="secondaryButton" onClick={renameSelected} disabled={!selectedMeta.writable || !isMarkdown} type="button"><AtSign size={16} /><span>{text("重命名", "Rename")}</span></button>
+            <button className="iconButton danger" onClick={deleteSelected} disabled={!selected || !selectedMeta.writable || kind === "instruction"} type="button" title={text("删除", "Delete")}><Trash2 size={16} /></button>
             <button className="primaryButton" onClick={saveFile} disabled={!selected || !selectedMeta.writable} type="button"><Save size={16} /><span>{text("保存", "Save")}</span></button>
           </div>
         </div>
@@ -997,6 +1151,15 @@ function DataView({ text }) {
       </form>
     </section>
   );
+}
+
+function formatRagRefreshStatus(prefix, ragStatus) {
+  if (!ragStatus) return prefix;
+  const details = [`${ragStatus.chunk_count || 0} 个片段`];
+  if (ragStatus.documents_reused) details.push(`复用 ${ragStatus.documents_reused} 个文件`);
+  if (ragStatus.llm_calls) details.push(`LLM ${ragStatus.llm_calls} 次 / 约 ${ragStatus.estimated_input_tokens || 0} 输入 token`);
+  if (ragStatus.llm_fallbacks) details.push(`回退 ${ragStatus.llm_fallbacks} 次`);
+  return `${prefix}：${details.join("，")}`;
 }
 
 function ConfigView({ onSaved, text }) {
@@ -1587,6 +1750,7 @@ function eventLabel(type) {
     curl: "HTTP",
     webSearch: "WEB",
     fileEditor: "FILE",
+    fileReader: "READER",
     settings_changed: "SETTINGS",
   };
   return labels[type] || String(type).toUpperCase();
@@ -1663,6 +1827,7 @@ function imageDownloadName(src) {
 function toolMentionOptions(text) {
   return [
     { label: text("工具 Python", "Tool Python"), token: "@tool:python" },
+    { label: text("工具 文件阅读", "Tool File Reader"), token: "@tool:fileReader" },
     { label: text("工具 RAG", "Tool RAG"), token: "@tool:rag" },
     { label: text("工具 Web", "Tool Web"), token: "@tool:webSearch" },
     { label: text("工具 HTTP", "Tool HTTP"), token: "@tool:curl" },
@@ -1849,4 +2014,3 @@ function useText(language) {
 
 
 createRoot(document.getElementById("root")).render(<App />);
-

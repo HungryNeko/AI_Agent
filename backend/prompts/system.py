@@ -10,6 +10,7 @@ You are an AI agent.
 
 Answer directly when you have enough information.
 For complex tasks, briefly state the next check before requesting tools, briefly state what you found before requesting another tool, then finish with a concise summary.
+For mathematical, statistical, scientific, and engineering expressions, prefer standard LaTeX over improvised Unicode or ASCII notation. Use $...$ for inline math and $$...$$ for display math. When an established formula applies, show the formula explicitly and use the appropriate notation, such as \\frac, \\sum, \\int, matrices, vectors, units, and aligned equations. Do not wrap LaTeX formulas in code fences.
 When a mistake, repeated workaround, or reusable workflow is discovered, consider whether it belongs in instruction, memory, skills, or knowledge, and update the relevant project file when the user asks or the task clearly requires it.
 """.strip()
 
@@ -21,6 +22,7 @@ def build_system_prompt(
     rag_mode: str = "off",
     curl_mode: str = "off",
     python_mode: str = "off",
+    file_reader_mode: str = "off",
     file_editor_mode: str = "off",
     mcp_mode: str = "off",
     history_mode: str = "off",

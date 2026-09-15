@@ -57,6 +57,8 @@ class ChatState(TypedDict):
     curl_mode: NotRequired[str]
     python: NotRequired[bool]
     python_mode: NotRequired[str]
+    file_reader: NotRequired[bool]
+    file_reader_mode: NotRequired[str]
     file_editor: NotRequired[bool]
     file_editor_mode: NotRequired[str]
     file_editor_approval: NotRequired[str]
@@ -99,6 +101,8 @@ def first_state(state: ChatState) -> dict[str, Any]:
         curl_mode=state.get("curl_mode", "auto"),
         python=state.get("python") if "python_mode" not in state else None,
         python_mode=state.get("python_mode", "auto"),
+        file_reader=state.get("file_reader") if "file_reader_mode" not in state else None,
+        file_reader_mode=state.get("file_reader_mode", "auto"),
         file_editor=state.get("file_editor") if "file_editor_mode" not in state else None,
         file_editor_mode=state.get("file_editor_mode", "auto"),
         file_editor_approval=state.get("file_editor_approval", "auto"),
@@ -118,6 +122,7 @@ def first_state(state: ChatState) -> dict[str, Any]:
         rag_mode=settings.rag.mode,
         curl_mode=settings.curl.mode,
         python_mode=settings.python.mode,
+        file_reader_mode=settings.file_reader.mode,
         file_editor_mode=settings.file_editor.mode,
         mcp_mode=settings.mcp.mode,
         history_mode=settings.history.mode,
@@ -459,6 +464,8 @@ def new_chat_state(
     curl_mode: str = "auto",
     python: bool = False,
     python_mode: str = "auto",
+    file_reader: bool = False,
+    file_reader_mode: str = "auto",
     file_editor: bool = False,
     file_editor_mode: str = "auto",
     file_editor_approval: str = "auto",
@@ -480,6 +487,7 @@ def new_chat_state(
     resolved_web_search_mode = "auto" if web_search and web_search_mode == "off" else web_search_mode
     resolved_curl_mode = "auto" if curl and curl_mode == "off" else curl_mode
     resolved_python_mode = "auto" if python and python_mode == "off" else python_mode
+    resolved_file_reader_mode = "auto" if file_reader and file_reader_mode == "off" else file_reader_mode
     resolved_file_editor_mode = "auto" if file_editor and file_editor_mode == "off" else file_editor_mode
     resolved_mcp_mode = "auto" if mcp and mcp_mode == "off" else mcp_mode
     resolved_history_mode = "auto" if history and history_mode == "off" else history_mode
@@ -498,6 +506,8 @@ def new_chat_state(
         "curl_mode": resolved_curl_mode,
         "python": python,
         "python_mode": resolved_python_mode,
+        "file_reader": file_reader,
+        "file_reader_mode": resolved_file_reader_mode,
         "file_editor": file_editor,
         "file_editor_mode": resolved_file_editor_mode,
         "file_editor_approval": file_editor_approval,
@@ -590,6 +600,8 @@ def run_agent(
     curl_mode: str = "auto",
     python: bool = False,
     python_mode: str = "auto",
+    file_reader: bool = False,
+    file_reader_mode: str = "auto",
     file_editor: bool = False,
     file_editor_mode: str = "auto",
     file_editor_approval: str = "auto",
@@ -621,6 +633,8 @@ def run_agent(
         curl_mode=curl_mode,
         python=python,
         python_mode=python_mode,
+        file_reader=file_reader,
+        file_reader_mode=file_reader_mode,
         file_editor=file_editor,
         file_editor_mode=file_editor_mode,
         file_editor_approval=file_editor_approval,
@@ -642,12 +656,18 @@ def run_agent(
 
 
 def tool_call_key(request: ToolRequest) -> str:
-    if request.name in {"webSearch", "rag"}:
+    if request.name == "webSearch":
         return f"{request.name}:{request.query}"
+    if request.name == "rag" and request.rag_request:
+        item = request.rag_request
+        return f"rag:{item.action}:{item.query}:{item.path}:{item.name}:{item.split_mode}:{item.chunk_model}:{item.overwrite}"
     if request.name == "curl":
         return f"{request.name}:{request.url}"
     if request.name == "python":
         return f"{request.name}:{request.code}"
+    if request.name == "fileReader" and request.file_read:
+        item = request.file_read
+        return f"{request.name}:{item.path}:{item.start_page}:{item.end_page}:{item.sheet}:{item.max_chars}"
     if request.name == "fileEditor" and request.file_edit:
         edit = request.file_edit
         return f"{request.name}:{edit.action}:{edit.path}:{edit.old_text}:{edit.new_text}:{edit.anchor}:{edit.content}"
@@ -695,6 +715,10 @@ def describe_tool_call_target(request: ToolRequest) -> str:
         return request.url
     if request.name == "python":
         return request.code
+    if request.name == "rag" and request.rag_request:
+        return request.rag_request.query or request.rag_request.path
+    if request.name == "fileReader" and request.file_read:
+        return request.file_read.path
     if request.name == "fileEditor":
         return describe_file_edit_target(request)
     if request.name == "mcp":
@@ -729,6 +753,8 @@ def reviewed_tool_settings(request: ToolRequest, settings: ToolSettings) -> Tool
 
 
 def is_high_risk_tool_request(request: ToolRequest) -> bool:
+    if request.name == "rag" and request.rag_request:
+        return request.rag_request.action == "ingest"
     if request.name == "fileEditor" and request.file_edit:
         return request.file_edit.action not in {"list", "read"}
     if request.name == "python":
@@ -772,11 +798,20 @@ def describe_tool_request(request: ToolRequest) -> AgentEvent:
             "text": f"webSearch: {request.query}",
         }
     if request.name == "rag":
+        item = request.rag_request
+        if item and item.action == "ingest":
+            return {
+                "type": "tool_call",
+                "tool": request.name,
+                "action": item.action,
+                "path": item.path,
+                "text": f"rag: ingest {item.path}",
+            }
         return {
             "type": "tool_call",
             "tool": request.name,
-            "query": request.query,
-            "text": f"rag: {request.query}",
+            "query": item.query if item else "",
+            "text": f"rag: {item.query if item else ''}",
         }
     if request.name == "curl":
         return {
@@ -792,6 +827,13 @@ def describe_tool_request(request: ToolRequest) -> AgentEvent:
             "tool": request.name,
             "code": request.code,
             "text": f"python: {first_line[:120]}",
+        }
+    if request.name == "fileReader" and request.file_read:
+        return {
+            "type": "tool_call",
+            "tool": request.name,
+            "path": request.file_read.path,
+            "text": f"fileReader: {request.file_read.path}",
         }
     if request.name == "fileEditor" and request.file_edit:
         edit = request.file_edit

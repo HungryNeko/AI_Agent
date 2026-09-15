@@ -28,12 +28,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "rag_include_skills": True,
         "curl_mode": "auto",
         "python_mode": "auto",
+        "file_reader_mode": "auto",
         "file_editor_mode": "auto",
         "file_editor_approval": "auto",
         "mcp_mode": "auto",
         "history_mode": "auto",
         "automation_mode": "auto",
         "max_tool_rounds": 20,
+    },
+    "rag_ingestion": {
+        "split_mode": "simple",
+        "model": "",
     },
 }
 
@@ -80,6 +85,7 @@ def normalize_app_settings(raw: dict[str, Any]) -> dict[str, Any]:
     settings = deep_merge(settings, raw)
     ui = settings["ui"]
     chat = settings["chat"]
+    rag_ingestion = settings["rag_ingestion"]
 
     if ui.get("theme") not in {"system", "light", "dark"}:
         ui["theme"] = DEFAULT_SETTINGS["ui"]["theme"]
@@ -97,6 +103,7 @@ def normalize_app_settings(raw: dict[str, Any]) -> dict[str, Any]:
         "rag_mode": {"off", "on", "auto"},
         "curl_mode": {"off", "auto"},
         "python_mode": {"off", "auto"},
+        "file_reader_mode": {"off", "auto"},
         "file_editor_mode": {"off", "auto"},
         "file_editor_approval": {"readOnly", "manual", "auto", "aiReview"},
         "mcp_mode": {"off", "auto"},
@@ -115,6 +122,10 @@ def normalize_app_settings(raw: dict[str, Any]) -> dict[str, Any]:
         chat["max_tool_rounds"] = DEFAULT_SETTINGS["chat"]["max_tool_rounds"]
     if chat["max_tool_rounds"] < -1:
         chat["max_tool_rounds"] = -1
+
+    if rag_ingestion.get("split_mode") not in {"simple", "llm"}:
+        rag_ingestion["split_mode"] = DEFAULT_SETTINGS["rag_ingestion"]["split_mode"]
+    rag_ingestion["model"] = str(rag_ingestion.get("model") or "")
 
     return settings
 

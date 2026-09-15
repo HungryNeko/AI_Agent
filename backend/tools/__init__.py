@@ -5,6 +5,7 @@ from tools.request import ToolRequest, build_openai_tools, parse_openai_tool_cal
 from tools.settings import (
     CurlSettings,
     FileEditorSettings,
+    FileReaderSettings,
     McpSettings,
     PythonSettings,
     RagSettings,
@@ -15,6 +16,7 @@ from tools.settings import (
 __all__ = [
     "CurlSettings",
     "FileEditorSettings",
+    "FileReaderSettings",
     "McpSettings",
     "PythonSettings",
     "RagSettings",

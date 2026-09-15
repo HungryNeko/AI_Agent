@@ -12,6 +12,7 @@ RagMode = Literal["off", "on", "auto"]
 WebSearchMode = Literal["off", "auto"]
 CurlMode = Literal["off", "auto"]
 PythonMode = Literal["off", "auto"]
+FileReaderMode = Literal["off", "auto"]
 FileEditorMode = Literal["off", "auto"]
 FileEditorApproval = Literal["readOnly", "manual", "auto", "aiReview"]
 McpMode = Literal["off", "auto"]
@@ -41,6 +42,7 @@ class WebSearchSettings:
 @dataclass(frozen=True)
 class RagSettings:
     mode: RagMode = "auto"
+    embedding_model: str = "intfloat/multilingual-e5-small"
     min_similarity: float = 0.05
     max_results: int = 5
     auto_include: bool = False
@@ -53,7 +55,7 @@ class RagSettings:
     user_knowledge_root: str = "backend/runtime/user_data/knowledge"
     user_memory_root: str = "backend/runtime/user_data/memory"
     user_skills_root: str = "backend/runtime/user_data/skills"
-    max_file_bytes: int = 200_000
+    max_file_bytes: int = 2_000_000
     max_chunk_chars: int = 2_000
     chunk_overlap_chars: int = 200
     index_path: str = "backend/runtime/rag_index/index.pkl"
@@ -86,6 +88,18 @@ class PythonSettings:
     artifact_root: str = "backend/runtime/python_runs"
     max_artifacts: int = 20
     max_artifact_bytes: int = 5_000_000
+
+    @property
+    def can_model_call(self) -> bool:
+        return self.mode == "auto"
+
+
+@dataclass(frozen=True)
+class FileReaderSettings:
+    mode: FileReaderMode = "off"
+    root: str = ""
+    max_file_bytes: int = 25_000_000
+    max_output_chars: int = 60_000
 
     @property
     def can_model_call(self) -> bool:
@@ -144,6 +158,7 @@ class ToolSettings:
     rag: RagSettings = RagSettings()
     curl: CurlSettings = CurlSettings()
     python: PythonSettings = PythonSettings()
+    file_reader: FileReaderSettings = FileReaderSettings()
     file_editor: FileEditorSettings = FileEditorSettings()
     mcp: McpSettings = McpSettings()
     history: HistorySettings = HistorySettings()
@@ -161,6 +176,8 @@ class ToolSettings:
             available.append("curl")
         if self.python.can_model_call:
             available.append("python")
+        if self.file_reader.can_model_call:
+            available.append("fileReader")
         if self.file_editor.can_model_call:
             available.append("fileEditor")
         if self.mcp.can_model_call:
@@ -178,10 +195,13 @@ def make_tool_settings(
     web_search: bool | None = None,
     web_search_mode: str = "auto",
     rag_mode: str = "auto",
+    rag_embedding_model: str = "intfloat/multilingual-e5-small",
     curl: bool | None = None,
     curl_mode: str = "auto",
     python: bool | None = None,
     python_mode: str = "auto",
+    file_reader: bool | None = None,
+    file_reader_mode: str = "off",
     file_editor: bool | None = None,
     file_editor_mode: str = "auto",
     file_editor_approval: str = "auto",
@@ -210,7 +230,7 @@ def make_tool_settings(
     rag_user_knowledge_root: str = "backend/runtime/user_data/knowledge",
     rag_user_memory_root: str = "backend/runtime/user_data/memory",
     rag_user_skills_root: str = "backend/runtime/user_data/skills",
-    rag_max_file_bytes: int = 200_000,
+    rag_max_file_bytes: int = 2_000_000,
     rag_max_chunk_chars: int = 2_000,
     rag_chunk_overlap_chars: int = 200,
     rag_index_path: str = "backend/runtime/rag_index/index.pkl",
@@ -221,6 +241,9 @@ def make_tool_settings(
     python_artifact_root: str = "backend/runtime/python_runs",
     python_max_artifacts: int = 20,
     python_max_artifact_bytes: int = 5_000_000,
+    file_reader_root: str = "",
+    file_reader_max_file_bytes: int = 25_000_000,
+    file_reader_max_output_chars: int = 60_000,
     file_editor_root: str = "",
     file_editor_max_file_bytes: int = 400_000,
     file_editor_max_read_chars: int = 60_000,
@@ -237,6 +260,8 @@ def make_tool_settings(
         curl_mode = "auto" if curl else "off"
     if python is not None:
         python_mode = "auto" if python else "off"
+    if file_reader is not None:
+        file_reader_mode = "auto" if file_reader else "off"
     if file_editor is not None:
         file_editor_mode = "auto" if file_editor else "off"
     if mcp is not None:
@@ -261,6 +286,7 @@ def make_tool_settings(
         ),
         rag=RagSettings(
             mode=normalize_rag_mode(rag_mode),
+            embedding_model=rag_embedding_model,
             min_similarity=rag_min_similarity,
             max_results=rag_max_results,
             include_knowledge=rag_include_knowledge,
@@ -289,6 +315,12 @@ def make_tool_settings(
             artifact_root=python_artifact_root,
             max_artifacts=max(1, int(python_max_artifacts)),
             max_artifact_bytes=max(1_000, int(python_max_artifact_bytes)),
+        ),
+        file_reader=FileReaderSettings(
+            mode=normalize_file_reader_mode(file_reader_mode),
+            root=file_reader_root,
+            max_file_bytes=max(1_000, int(file_reader_max_file_bytes)),
+            max_output_chars=max(1_000, int(file_reader_max_output_chars)),
         ),
         file_editor=FileEditorSettings(
             mode=normalize_file_editor_mode(file_editor_mode),
@@ -331,6 +363,13 @@ def normalize_python_mode(python_mode: str) -> PythonMode:
     mode = python_mode.strip().lower()
     if mode not in {"off", "auto"}:
         raise ValueError("python_mode must be one of: off, auto.")
+    return mode
+
+
+def normalize_file_reader_mode(file_reader_mode: str) -> FileReaderMode:
+    mode = file_reader_mode.strip().lower()
+    if mode not in {"off", "auto"}:
+        raise ValueError("file_reader_mode must be one of: off, auto.")
     return mode
 
 

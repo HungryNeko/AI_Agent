@@ -7,7 +7,7 @@ This backend is intentionally small while learning LangGraph.
 ```text
 backend/
   agent/
-    config.py      # load .env and data/api_configs.json
+    config.py      # load local model config with a public example fallback
     llm.py         # call OpenAI-compatible /chat/completions
     graph.py       # LangGraph state flow and tool loop
     cli.py         # plain argparse CLI and chat loop
@@ -23,6 +23,7 @@ backend/
     curl.py        # direct public HTTP API GET tool
     python.py      # Python analysis/plotting/local scripting tool
     fileEditor.py  # project-scoped anchor-based file editor
+    fileReader.py  # read-only PDF/Office/text extraction
     memory.py      # file-backed memory helpers
     skills.py      # file-backed skill helpers
     rag.py         # search data/knowledge, data/memory, data/skills
@@ -36,11 +37,16 @@ backend/
 
 ```text
 data/
-  api_configs.json
+  api_configs.example.json # tracked safe model/provider defaults
+  api_configs.json         # optional local base config, ignored by Git
+  api_configs.local.json   # UI-managed local override, ignored by Git
+  settings.example.json    # tracked safe application defaults
+  instruction.example.md   # tracked safe instruction template
   knowledge/       # local docs and reference notes for rag
-  memory/          # durable project memory files
+  memory/          # local durable project memory, ignored except README
   skills/          # skill folders, each with SKILL.md
-  mcp/servers.json # configured MCP servers
+  mcp/servers.example.json # tracked empty MCP template
+  mcp/servers.local.json   # configured MCP servers, ignored by Git
 ```
 
 `rag` searches `data/knowledge`, `data/memory`, and `data/skills`. When
@@ -54,7 +60,7 @@ Memory and skills are ordinary project files. To update them, let the model use
 python backend\scripts\simple_chat.py --rag-mode auto --file-editor-mode auto --file-editor-approval manual "Search project memory, then propose a memory update about today's decision."
 ```
 
-MCP servers are configured only in `data/mcp/servers.json`. The model can list
+MCP servers are stored locally in `data/mcp/servers.local.json`. The model can list
 servers, list tools, or call a configured tool, but it cannot provide a server
 command at runtime:
 
@@ -70,6 +76,16 @@ conda run --no-capture-output -n sde python backend\scripts\server.py
 ```
 
 The server exposes chat streaming, data file editing, skill import, and MCP configuration endpoints under `/api/*`.
+
+On macOS, start the backend and frontend together from the repo root:
+
+```bash
+./start_dev.sh
+```
+
+Press `Ctrl+C` or close the terminal to stop both services and their child processes.
+The script prefers `.venv/bin/python`, or you can set `AI_AGENT_PYTHON` to another
+Python 3.11+ interpreter with the backend dependencies installed.
 
 ## Run
 
@@ -139,6 +155,13 @@ The Python tool allows normal imports, local file reads, network access, and
 standard Python introspection. It still blocks obvious destructive operations
 and direct writes outside the artifact directory; use `fileEditor` for project
 file changes that should follow the editor approval policy.
+
+File reader mode extracts bounded text from uploaded or project files without
+modifying them. It supports PDF, DOCX, PPTX, XLSX, HTML, CSV, Markdown, source
+code, and other UTF-8 text formats. PDF/PowerPoint page ranges and a single
+Excel sheet can be selected for large documents. Legacy `.doc`, `.ppt`, and
+`.xls` files should be converted to their modern formats first; scanned PDFs
+need OCR before they contain extractable text.
 
 File editor mode lets the model inspect and edit project files with stable text
 anchors. It supports `list`, `read`, `write`, `replace`, `insertAfter`,
@@ -236,10 +259,17 @@ Later turns refresh current time, available tools, RAG context, and optional
 compressed summary, but they do not re-inject the instruction file. Conversation JSON is saved under
 `backend/runtime/conversations`; compression shortens active model context but
 does not delete the full saved history, which the `history` tool can read.
-RAG builds a local TF-IDF vector index at `backend/runtime/rag_index/index.pkl`
-and searches chunks with cosine similarity. The `/api/rag/reindex` endpoint
+RAG uses `intfloat/multilingual-e5-small` to build a local dense-vector index at
+`backend/runtime/rag_index/index.pkl` and searches normalized embeddings with cosine
+similarity. Documents use the E5 `passage:` prefix and searches use `query:`. The model
+is downloaded by Sentence Transformers on first use and runs on CPU for predictable
+local behavior. The `/api/rag/reindex` endpoint
 rebuilds that vector index after instruction, memory, skill, or knowledge files
-change.
+change. The Data page supports local simple splitting and bounded LLM-assisted
+splitting with a dedicated configured model. Upload ingestion uses `fileReader`, saves
+the extracted source as user-knowledge Markdown, and reuses per-document and per-unit
+chunk caches so small additions or deletions do not re-run unrelated LLM work. See
+`../docs/rag-ingestion.md` for the complete route and cost limits.
 
 Current chain:
 

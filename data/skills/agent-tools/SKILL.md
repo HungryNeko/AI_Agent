@@ -12,10 +12,11 @@ Use this skill when a task may need local tools, conversation history, RAG, MCP,
 
 ## Tool Use
 
-- `rag` searches knowledge, memory, and skills. Include source path and source type in results so the model can ask for more detail when needed.
+- `rag` action=search searches knowledge, memory, and skills using the multilingual E5 dense-vector index. For an uploaded document that the user wants in the knowledge base, inspect it with `fileReader`, then use `rag` action=ingest with the upload path; do not repeat the extracted source in tool arguments. Use simple splitting unless the user explicitly requests LLM splitting. Include source path and source type in search results so the model can ask for more detail when needed.
 - `history` reads saved JSON conversations under `backend/runtime/conversations`; use it when compressed context is missing older details.
 - `mcp` calls configured external services. Uploaded file paths may be passed to MCP tools when a server supports file input. If an MCP tool needs base64 file bytes, pass `content_base64_from_file`, `body_base64_from_file`, `image_base64_from_file`, or `file_base64_from_file` with a `backend/runtime/uploads/...` path or `/api/uploads/...` URL; the backend injects exact base64 bytes at call time.
 - `python` is for local analysis and artifact generation. Keep outputs bounded and save generated artifacts under backend runtime paths.
+- `fileReader` extracts bounded text from supported uploaded or project documents without modifying them. Use it for PDF, DOCX, PPTX, XLSX, HTML, CSV, Markdown, and source files.
 - `fileEditor` reads and writes workspace files according to the configured approval mode.
 - `webSearch` is for current or uncertain external facts.
 
