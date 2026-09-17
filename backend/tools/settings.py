@@ -42,7 +42,7 @@ class WebSearchSettings:
 @dataclass(frozen=True)
 class RagSettings:
     mode: RagMode = "auto"
-    embedding_model: str = "intfloat/multilingual-e5-small"
+    embedding_model: str = "tfidf-char-ngram"
     min_similarity: float = 0.05
     max_results: int = 5
     auto_include: bool = False
@@ -195,7 +195,7 @@ def make_tool_settings(
     web_search: bool | None = None,
     web_search_mode: str = "auto",
     rag_mode: str = "auto",
-    rag_embedding_model: str = "intfloat/multilingual-e5-small",
+    rag_embedding_model: str = "tfidf-char-ngram",
     curl: bool | None = None,
     curl_mode: str = "auto",
     python: bool | None = None,

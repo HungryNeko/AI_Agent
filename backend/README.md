@@ -259,11 +259,10 @@ Later turns refresh current time, available tools, RAG context, and optional
 compressed summary, but they do not re-inject the instruction file. Conversation JSON is saved under
 `backend/runtime/conversations`; compression shortens active model context but
 does not delete the full saved history, which the `history` tool can read.
-RAG uses `intfloat/multilingual-e5-small` to build a local dense-vector index at
-`backend/runtime/rag_index/index.pkl` and searches normalized embeddings with cosine
-similarity. Documents use the E5 `passage:` prefix and searches use `query:`. The model
-is downloaded by Sentence Transformers on first use and runs on CPU for predictable
-local behavior. The `/api/rag/reindex` endpoint
+RAG builds a local TF-IDF character n-gram index at
+`backend/runtime/rag_index/index.pkl` and searches it with cosine similarity. It has no
+model download or neural inference step, so searches remain fast on CPU-only servers.
+The `/api/rag/reindex` endpoint
 rebuilds that vector index after instruction, memory, skill, or knowledge files
 change. The Data page supports local simple splitting and bounded LLM-assisted
 splitting with a dedicated configured model. Upload ingestion uses `fileReader`, saves

@@ -8,11 +8,10 @@ import pickle
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 from tools import memory, skills
 from tools.fileReader import FileReadRequest
@@ -69,11 +68,13 @@ class VectorIndex:
     chunk_model: str
     chunking_report: dict[str, Any]
     chunks: list[RagChunk]
-    embeddings: Any
+    vectorizer: Any
+    matrix: Any
 
 
-INDEX_VERSION = 3
-INDEX_MAGIC = b"AI_AGENT_RAG_INDEX_V3\n"
+RETRIEVAL_MODEL = "tfidf-char-ngram"
+INDEX_VERSION = 4
+INDEX_MAGIC = b"AI_AGENT_RAG_INDEX_V4\n"
 CHUNK_CACHE_VERSION = 1
 MAX_INGESTED_CHARACTERS = 500_000
 
@@ -162,15 +163,11 @@ def search_chunks(query: str, settings: RagSettings) -> list[ScoredChunk]:
         return []
 
     index = load_or_rebuild_index(settings)
-    if not index.chunks or index.embeddings is None:
+    if not index.chunks or index.matrix is None or index.vectorizer is None:
         return []
 
-    query_vector = encode_texts(
-        [clean_query],
-        model_name=settings.embedding_model,
-        input_type="query",
-    )[0]
-    scores = np.asarray(index.embeddings) @ query_vector
+    query_vector = index.vectorizer.transform([clean_query])
+    scores = (index.matrix @ query_vector.T).toarray().ravel()
     min_score = max(0.0, float(settings.min_similarity))
     ranked: list[ScoredChunk] = []
     for position, score in enumerate(scores):
@@ -213,23 +210,28 @@ def rebuild_index(
         split_mode=split_mode,
         chunk_model=chunk_model,
     )
-    embeddings = None
+    vectorizer = None
+    matrix = None
     if chunks:
-        embeddings = encode_texts(
-            [vector_text(chunk) for chunk in chunks],
-            model_name=settings.embedding_model,
-            input_type="passage",
+        vectorizer = TfidfVectorizer(
+            analyzer="char_wb",
+            ngram_range=(2, 5),
+            lowercase=True,
+            sublinear_tf=True,
+            norm="l2",
         )
+        matrix = vectorizer.fit_transform(vector_text(chunk) for chunk in chunks)
     index = VectorIndex(
         version=INDEX_VERSION,
         built_at=utc_now(),
         signature=signature,
-        embedding_model=settings.embedding_model,
+        embedding_model=RETRIEVAL_MODEL,
         split_mode=split_mode,
         chunk_model=chunk_model,
         chunking_report=chunking_report,
         chunks=chunks,
-        embeddings=embeddings,
+        vectorizer=vectorizer,
+        matrix=matrix,
     )
     save_index(index, settings)
     return index
@@ -262,7 +264,7 @@ def load_or_rebuild_index(
         force
         or index is None
         or getattr(index, "version", None) != INDEX_VERSION
-        or getattr(index, "embedding_model", None) != settings.embedding_model
+        or getattr(index, "embedding_model", None) != RETRIEVAL_MODEL
         or getattr(index, "signature", None) != signature
     ):
         return rebuild_index(
@@ -283,8 +285,8 @@ def load_index(settings: RagSettings) -> VectorIndex | None:
             if file.read(len(INDEX_MAGIC)) != INDEX_MAGIC:
                 return None
             index = pickle.load(file)
-    # The index is a disposable cache. Old TF-IDF pickles may import sklearn while
-    # unpickling, so any incompatible or corrupt cache should be rebuilt in place.
+    # The index is a disposable cache. Any incompatible or corrupt cache should be
+    # rebuilt in place instead of blocking RAG.
     except Exception:  # noqa: BLE001 - incompatible caches must never block a rebuild
         return None
     if not isinstance(index, VectorIndex):
@@ -339,7 +341,7 @@ def index_status(
     return {
         "status": "ready",
         "index": "local-vector",
-        "embedding": settings.embedding_model,
+        "embedding": index.embedding_model,
         "split_mode": index.split_mode,
         "chunk_model": index.chunk_model,
         "document_count": len(iter_documents(settings)),
@@ -581,7 +583,7 @@ def documents_signature(
     digest.update(str(settings.include_knowledge).encode("utf-8"))
     digest.update(str(settings.include_memory).encode("utf-8"))
     digest.update(str(settings.include_skills).encode("utf-8"))
-    digest.update(settings.embedding_model.encode("utf-8"))
+    digest.update(RETRIEVAL_MODEL.encode("utf-8"))
     digest.update(split_mode.encode("ascii"))
     digest.update(chunk_model.encode("utf-8"))
     digest.update(str(settings.max_file_bytes).encode("utf-8"))
@@ -598,44 +600,6 @@ def documents_signature(
 
 def vector_text(chunk: RagChunk) -> str:
     return f"{chunk.source_type}\n{chunk.path}\n{chunk.text}"
-
-
-def encode_texts(
-    texts: list[str],
-    *,
-    model_name: str,
-    input_type: str,
-) -> np.ndarray:
-    """Encode normalized E5 query or passage vectors."""
-
-    if input_type not in {"query", "passage"}:
-        raise ValueError("input_type must be query or passage.")
-    prefixed = [f"{input_type}: {text.strip()}" for text in texts]
-    model = get_embedding_model(model_name)
-    embeddings = model.encode(
-        prefixed,
-        batch_size=32,
-        show_progress_bar=False,
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-    )
-    array = np.asarray(embeddings, dtype=np.float32)
-    if array.ndim != 2 or array.shape[0] != len(texts):
-        raise RuntimeError("embedding model returned an unexpected vector shape.")
-    return array
-
-
-@lru_cache(maxsize=2)
-def get_embedding_model(model_name: str) -> Any:
-    """Load and cache the local Sentence Transformers embedding model."""
-
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as exc:
-        raise RuntimeError(
-            "sentence-transformers is required for RAG embeddings; install backend dependencies."
-        ) from exc
-    return SentenceTransformer(model_name, device="cpu")
 
 
 def format_chunk(chunk: ScoredChunk) -> str:

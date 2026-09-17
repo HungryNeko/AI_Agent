@@ -13,8 +13,6 @@ dependencies = [
     "matplotlib",
     "scipy",
     "scikit-learn",
-    "sentence-transformers>=3,<6",
-    "transformers>=4.41,<5",
     "seaborn",
     "plotly",
     "beautifulsoup4",

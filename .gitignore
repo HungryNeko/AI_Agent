@@ -47,6 +47,9 @@ huggingface/
 *.safetensors
 *.gguf
 *.onnx
+*.pt
+*.pth
+*.ckpt
 pytorch_model*.bin
 
 # Private keys and certificate bundles

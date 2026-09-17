@@ -1,27 +1,32 @@
 # AI Agent Frontend
 
-Minimal React test panel for the backend agent.
+React/Vite interface for chat, data and RAG management, model configuration,
+automation, MCP, and system settings.
 
 ## Run
 
-Start the backend API from the repo root:
+The recommended command starts the frontend and backend together from the repository
+root:
 
-```powershell
-conda run --no-capture-output -n sde python backend\scripts\server.py
+```bash
+./start_dev.sh
 ```
 
-Start the React dev server:
+To run only the frontend:
 
-```powershell
-cd frontend
-npm install
-npm run dev
+```bash
+npm ci --prefix frontend
+npm --prefix frontend run dev
 ```
 
-Open http://127.0.0.1:5173.
+Open <http://127.0.0.1:5173>. The Vite development server proxies `/api` to the
+backend at `http://127.0.0.1:8012` by default.
 
-## Panels
+For project architecture, backend setup, and verification commands, see the root
+[`README.md`](../README.md).
 
-- Chat: stream assistant progress, tool calls, tool errors, approval previews, and final answers.
-- Data: import skills and edit `data/skills`, `data/memory`, and `data/knowledge` text files.
-- MCP: add/edit configured MCP stdio servers with form fields instead of editing JSON manually.
+## Source layout
+
+- `src/main.jsx`: React bootstrap only.
+- `src/App.jsx`: application state, API integration, and feature views.
+- `src/styles.css`: shared visual system and responsive layout.

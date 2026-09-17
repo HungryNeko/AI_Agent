@@ -12,7 +12,7 @@ PDF / DOCX / PPTX / XLSX / HTML / text upload
   -> POST /api/rag/ingest or rag action=ingest
   -> backend/runtime/user_data/knowledge/<name>.md
   -> simple or LLM chunk planner
-  -> multilingual-e5-small passage embeddings
+  -> local TF-IDF character n-gram index
   -> backend/runtime/rag_index/index.pkl
 ```
 
@@ -59,7 +59,7 @@ chunks, and reusable LLM unit plans. The cache is ignored by Git.
   affected cached plans.
 - `force=true` on `/api/rag/reindex` bypasses chunk-plan reuse.
 
-The E5 vector index has its own format/version marker. Old TF-IDF or incompatible
+The TF-IDF index has its own format/version marker. Old dense-vector or incompatible
 pickle files are never deserialized and are rebuilt safely.
 
 ## APIs

@@ -60,8 +60,9 @@ the server separately saves full conversation JSON.
 
 ### Frontend
 
-- `frontend/src/main.jsx`: the entire React UI, API calls, SSE parsing, conversation
-  state, uploads, mentions, settings, automation, and MCP configuration.
+- `frontend/src/main.jsx`: the small React application bootstrap.
+- `frontend/src/App.jsx`: the React UI, API calls, SSE parsing, conversation state,
+  uploads, mentions, settings, automation, and MCP configuration.
 - `frontend/src/styles.css`: all UI styling.
 - `frontend/vite.config.js`: Vite runs on `127.0.0.1:5173`; `/api` proxies to
   `http://127.0.0.1:8012` unless `VITE_BACKEND_PROXY` overrides it.
@@ -90,7 +91,7 @@ rebuild the RAG index so the new content is searchable.
 ## Built-in tools
 
 - `webSearch`: DuckDuckGo (`ddgs`) by default; optional SearXNG or Tavily.
-- `rag`: local `intfloat/multilingual-e5-small` dense-vector index with cosine-similarity
+- `rag`: local TF-IDF character n-gram index with cosine-similarity
   search across system and user knowledge, memory, and skills. Its upload-to-Markdown,
   simple/LLM chunking, token limits, and incremental cache route are documented in
   `docs/rag-ingestion.md`.
@@ -217,8 +218,8 @@ the matching frontend call. Preserve SSE event types already consumed by the UI:
   from a temporary Python 3.11 test environment. The remaining pre-existing MCP server
   assertion expects an omitted `headers` key, while the endpoint returns `headers: {}`;
   it is unrelated to `fileReader`.
-- The RAG index uses `intfloat/multilingual-e5-small`; real-model verification returns
-  normalized 384-dimensional vectors. The current simple-mode local index has 5
+- The RAG index uses local TF-IDF character n-grams without a model download or neural
+  inference step. The current simple-mode local index has 5
   documents and 7 chunks; an unchanged refresh reused all 5 documents with zero LLM
   calls. LLM chunking and ingestion behavior is covered in `docs/rag-ingestion.md`.
 - `npm --prefix frontend run build` passes with Vite 8.2.2.
