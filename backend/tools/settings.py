@@ -18,6 +18,8 @@ FileEditorApproval = Literal["readOnly", "manual", "auto", "aiReview"]
 McpMode = Literal["off", "auto"]
 HistoryMode = Literal["off", "auto"]
 AutomationMode = Literal["off", "auto"]
+QuestionMode = Literal["off", "light", "heavy"]
+ConversationMode = Literal["ask", "plan", "agent"]
 WebSearchProvider = Literal["duckduckgo", "searxng", "tavily"]
 
 
@@ -153,6 +155,15 @@ class AutomationSettings:
 
 
 @dataclass(frozen=True)
+class QuestionSettings:
+    mode: QuestionMode = "light"
+
+    @property
+    def can_model_call(self) -> bool:
+        return self.mode != "off"
+
+
+@dataclass(frozen=True)
 class ToolSettings:
     web_search: WebSearchSettings = WebSearchSettings()
     rag: RagSettings = RagSettings()
@@ -163,30 +174,50 @@ class ToolSettings:
     mcp: McpSettings = McpSettings()
     history: HistorySettings = HistorySettings()
     automation: AutomationSettings = AutomationSettings()
+    question: QuestionSettings = QuestionSettings()
+    conversation_mode: ConversationMode = "agent"
+
+    def allows(self, tool: str) -> bool:
+        if tool in {"model", "question"}:
+            return tool != "question" or self.question.can_model_call
+        read_tools = {"webSearch", "rag", "curl", "history", "fileReader", "fileEditor"}
+        if self.conversation_mode == "ask":
+            return tool in read_tools
+        if self.conversation_mode == "plan":
+            return tool in read_tools or tool == "plan"
+        return tool != "plan"
 
     def model_view(self) -> dict[str, list[str]]:
         """Return only what the model needs to know."""
 
         available = []
-        if self.web_search.can_model_call:
+        if self.web_search.can_model_call and self.allows("webSearch"):
             available.append("webSearch")
-        if self.rag.can_model_call:
+        if self.rag.can_model_call and self.allows("rag"):
             available.append("rag")
-        if self.curl.can_model_call:
+        if self.curl.can_model_call and self.allows("curl"):
             available.append("curl")
-        if self.python.can_model_call:
+        if self.python.can_model_call and self.allows("python"):
             available.append("python")
-        if self.file_reader.can_model_call:
+        if self.file_reader.can_model_call and self.allows("fileReader"):
             available.append("fileReader")
-        if self.file_editor.can_model_call:
+        if self.file_editor.can_model_call and self.allows("fileEditor"):
             available.append("fileEditor")
-        if self.mcp.can_model_call:
+        if self.mcp.can_model_call and self.allows("mcp"):
             available.append("mcp")
-        if self.history.can_model_call:
+        if self.history.can_model_call and self.allows("history"):
             available.append("history")
-        if self.automation.can_model_call:
+        if self.automation.can_model_call and self.allows("automation"):
             available.append("automation")
             available.append("settings")
+        if self.allows("plan"):
+            available.append("plan")
+        if self.allows("createTool"):
+            available.append("createTool")
+            available.append("custom__*")
+        available.append("model")
+        if self.question.can_model_call:
+            available.append("question")
         return {"available": available}
 
 
@@ -211,6 +242,8 @@ def make_tool_settings(
     history_mode: str = "off",
     automation: bool | None = None,
     automation_mode: str = "off",
+    question_mode: str = "light",
+    conversation_mode: str = "agent",
     web_search_provider: WebSearchProvider = "duckduckgo",
     web_search_auto_switch: bool = False,
     web_search_base_url: str | None = None,
@@ -342,6 +375,8 @@ def make_tool_settings(
             mode=normalize_automation_mode(automation_mode),
             root=automation_root,
         ),
+        question=QuestionSettings(mode=normalize_question_mode(question_mode)),
+        conversation_mode=normalize_conversation_mode(conversation_mode),
     )
 
 
@@ -415,6 +450,22 @@ def normalize_automation_mode(automation_mode: str) -> AutomationMode:
     mode = automation_mode.strip().lower()
     if mode not in {"off", "auto"}:
         raise ValueError("automation_mode must be one of: off, auto.")
+    return mode
+
+
+def normalize_question_mode(question_mode: str) -> QuestionMode:
+    mode = question_mode.strip().lower()
+    if mode not in {"off", "light", "heavy"}:
+        raise ValueError("question_mode must be one of: off, light, heavy.")
+    return mode
+
+
+def normalize_conversation_mode(conversation_mode: str) -> ConversationMode:
+    mode = conversation_mode.strip().lower()
+    if mode == "chat":
+        mode = "ask"
+    if mode not in {"ask", "plan", "agent"}:
+        raise ValueError("conversation_mode must be one of: ask, plan, agent.")
     return mode
 
 

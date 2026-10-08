@@ -11,6 +11,9 @@ backend/
     llm.py         # call OpenAI-compatible /chat/completions
     graph.py       # LangGraph state flow and tool loop
     cli.py         # plain argparse CLI and chat loop
+    server.py      # FastAPI routes and SSE delivery to React
+    session_store.py # saved conversations, branches, and context compression
+    app_settings.py  # persistent defaults
   prompts/
     context.py     # compressed context summary prompt
     system.py      # build the system prompt
@@ -27,7 +30,14 @@ backend/
     memory.py      # file-backed memory helpers
     skills.py      # file-backed skill helpers
     rag.py         # search data/knowledge, data/memory, data/skills
-    mcp.py         # configured MCP stdio client
+    mcp.py         # configured MCP stdio / Streamable HTTP / SSE client
+    plan.py        # session-plan validation and Markdown export
+    question.py    # ask the user a question and pause the turn
+    models.py      # provider model catalog (list/refresh/switch)
+    createTool.py  # create and run user-level custom Python tools
+    automation.py  # scheduled automation runner
+    history.py     # read saved conversation history
+    appSettings.py # persistent app settings storage
   scripts/
     simple_chat.py # run the CLI with python directly
 ```
@@ -47,6 +57,8 @@ data/
   skills/          # skill folders, each with SKILL.md
   mcp/servers.example.json # tracked empty MCP template
   mcp/servers.local.json   # configured MCP servers, ignored by Git
+  plans/           # saved plan Markdown exports
+  custom_tools/    # user-created custom Python tools (tool.json + tool.py)
 ```
 
 `rag` searches `data/knowledge`, `data/memory`, and `data/skills`. When
@@ -72,10 +84,14 @@ python backend\scripts\simple_chat.py --mcp-mode auto "Use mcp to list configure
 For the React frontend, start the FastAPI server from the repo root:
 
 ```powershell
+$env:AI_AGENT_BACKEND_PORT = "8012"
 conda run --no-capture-output -n sde python backend\scripts\server.py
 ```
 
 The server exposes chat streaming, data file editing, skill import, and MCP configuration endpoints under `/api/*`.
+
+Without `AI_AGENT_BACKEND_PORT`, the server uses `8010`, while Vite expects `8012`.
+On Windows, `powershell -ExecutionPolicy Bypass -File .\start_dev.ps1` starts both.
 
 On macOS, start the backend and frontend together from the repo root:
 
@@ -170,9 +186,12 @@ and it blocks paths outside the project root plus protected paths such as `.git`
 `.env`, `backend/runtime`, and `node_modules`.
 
 Write permission is controlled separately with `--file-editor-approval`:
-- `manual` is the default: validate the edit and return a diff preview, but do not write.
-- `auto` applies allowed writes immediately, like approving the agent to edit.
+- `manual` validates the edit and returns a diff preview, but does not write.
+- `auto` is the default and applies allowed writes immediately.
 - `readOnly` allows `list`/`read` but never applies writes.
+
+The frontend/backend also support `aiReview` for separate review of high-risk calls.
+Approval policy is independent of Ask/Plan/Agent tool availability.
 
 Read a file:
 
@@ -225,7 +244,8 @@ python backend\scripts\simple_chat.py --loop --web-search-mode auto --web-search
 python backend\scripts\simple_chat.py --loop --web-search-mode auto --web-search-provider tavily
 ```
 
-Normal turns keep dynamic prompt text small:
+Only the first turn announces the textual `available` list. Later turns keep dynamic
+context small; a tool request error supplies the allowed list again:
 
 ```text
 available: ["webSearch", "rag", "curl", "python", "fileEditor", "mcp"]
@@ -255,8 +275,10 @@ $env:AI_AGENT_LOG_DIR = "D:\tmp\ai-agent-logs"
 ```
 
 The first system prompt includes fixed rules plus `data/instruction.md`.
-Later turns refresh current time, available tools, RAG context, and optional
-compressed summary, but they do not re-inject the instruction file. Conversation JSON is saved under
+Later turns refresh current time, mode, RAG context, and optional
+compressed summary, but they do not re-inject the instruction file or textual tool
+list. Tool availability is enforced by the current OpenAI schemas and request parser.
+Conversation JSON is saved under
 `backend/runtime/conversations`; compression shortens active model context but
 does not delete the full saved history, which the `history` tool can read.
 RAG builds a local TF-IDF character n-gram index at
@@ -289,3 +311,39 @@ tool_error -> assistant_step
 
 `response` stores only the final answer. Tool-call prefaces and between-tool
 notes are streamed as `assistant_progress` events.
+
+## Conversation Modes and User Tools
+
+The UI selects `ask`, `plan`, or `agent`. Ask and Plan expose `fileReader`, read-only
+`fileEditor`, and retrieval tools, but disallow Python, MCP calls, custom tools, and RAG
+ingestion. Plan additionally exposes `plan` to update/finalize a session draft; explicit
+Save copy exports it to `data/plans`. Approve and implement switches the UI to Agent
+and sends an implementation request. A plan approval does not override file permissions.
+
+`question` returns a waiting event and ends the turn. The next user response resumes the
+conversation. Question strength is `off`, `light`, or `heavy`; the UI always offers free
+text, refusal, redirection, and minimize/restore. The CLI shows the question and accepts
+the response as the next normal input.
+
+`model` lists or refreshes configured model catalogs and switches the current conversation
+model. Provider keys remain backend-only. Refresh requires an OpenAI-compatible `/models`
+endpoint; manual configuration is available when a provider does not support it.
+
+`createTool` saves a user tool as `data/custom_tools/<name>/tool.py` plus `tool.json`.
+Code defines `run(arguments)` and uses an object JSON Schema. Saved functions are exposed
+as `custom__name`; built-in tools keep their names and MCP calls use `mcp`. These local
+execution helpers are not a hardened sandbox, so use trusted code.
+
+Branches summarize a selected history prefix into a new conversation. Pause/stop act
+at event boundaries and do not interrupt or roll back a tool already running. Queue
+and insertion are UI workflows; queued inputs are not durable across page reloads.
+
+## Verification
+
+From the repository root, using `sde`:
+
+```powershell
+conda run --no-capture-output -n sde python -m pytest backend/tests
+npm.cmd run build --prefix frontend
+git diff --check
+```

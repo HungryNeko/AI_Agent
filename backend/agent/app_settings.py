@@ -34,6 +34,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "mcp_mode": "auto",
         "history_mode": "auto",
         "automation_mode": "auto",
+        "question_mode": "light",
+        "developer_mode": False,
+        "conversation_mode": "agent",
         "max_tool_rounds": 20,
     },
     "rag_ingestion": {
@@ -109,11 +112,21 @@ def normalize_app_settings(raw: dict[str, Any]) -> dict[str, Any]:
         "mcp_mode": {"off", "auto"},
         "history_mode": {"off", "auto"},
         "automation_mode": {"off", "auto"},
+        "question_mode": {"off", "light", "heavy"},
+        "conversation_mode": {"ask", "plan", "agent"},
     }.items():
         value = str(chat.get(key, DEFAULT_SETTINGS["chat"][key]) or "")
+        if key == "conversation_mode" and value == "chat":
+            value = "ask"
         chat[key] = value if value in allowed else DEFAULT_SETTINGS["chat"][key]
 
-    for key in ["rag_include_knowledge", "rag_include_memory", "rag_include_skills", "web_search_auto_switch"]:
+    for key in [
+        "rag_include_knowledge",
+        "rag_include_memory",
+        "rag_include_skills",
+        "web_search_auto_switch",
+        "developer_mode",
+    ]:
         chat[key] = bool(chat.get(key, DEFAULT_SETTINGS["chat"][key]))
 
     try:

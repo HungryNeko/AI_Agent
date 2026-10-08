@@ -24,7 +24,7 @@ def test_model_view_is_small():
         mcp_mode="off",
     )
 
-    assert settings.model_view() == {"available": ["webSearch", "rag"]}
+    assert settings.model_view() == {"available": ["webSearch", "rag", "createTool", "custom__*", "model", "question"]}
 
 
 def test_model_view_includes_curl_only_when_enabled():
@@ -37,7 +37,7 @@ def test_model_view_includes_curl_only_when_enabled():
         mcp_mode="off",
     )
 
-    assert settings.model_view() == {"available": ["webSearch", "rag", "curl"]}
+    assert settings.model_view() == {"available": ["webSearch", "rag", "curl", "createTool", "custom__*", "model", "question"]}
 
 
 def test_build_openai_tools_from_enabled_settings():
@@ -52,7 +52,7 @@ def test_build_openai_tools_from_enabled_settings():
 
     tool_names = [tool["function"]["name"] for tool in build_openai_tools(settings)]
 
-    assert tool_names == ["webSearch", "rag"]
+    assert tool_names == ["webSearch", "rag", "model", "createTool", "question"]
 
 
 def test_build_openai_tools_includes_curl_when_enabled():
@@ -67,7 +67,7 @@ def test_build_openai_tools_includes_curl_when_enabled():
 
     tool_names = [tool["function"]["name"] for tool in build_openai_tools(settings)]
 
-    assert tool_names == ["curl"]
+    assert tool_names == ["curl", "model", "createTool", "question"]
 
 
 def test_build_openai_tools_includes_history_when_enabled():
@@ -83,7 +83,7 @@ def test_build_openai_tools_includes_history_when_enabled():
 
     tool_names = [tool["function"]["name"] for tool in build_openai_tools(settings)]
 
-    assert tool_names == ["history"]
+    assert tool_names == ["history", "model", "createTool", "question"]
 
 
 def test_settings_tool_is_available_with_automation_mode():
@@ -100,7 +100,151 @@ def test_settings_tool_is_available_with_automation_mode():
 
     tool_names = [tool["function"]["name"] for tool in build_openai_tools(settings)]
 
-    assert tool_names == ["automation", "settings"]
+    assert tool_names == ["automation", "settings", "model", "createTool", "question"]
+
+
+def test_question_tool_is_always_available_and_parses_choices():
+    settings = make_tool_settings(
+        web_search_mode="off",
+        rag_mode="off",
+        curl_mode="off",
+        python_mode="off",
+        file_editor_mode="off",
+        mcp_mode="off",
+        history_mode="off",
+        automation_mode="off",
+    )
+
+    tools = build_openai_tools(settings)
+    [request] = parse_openai_tool_calls(
+        {
+            "tool_calls": [
+                {
+                    "id": "call_question",
+                    "type": "function",
+                    "function": {
+                        "name": "question",
+                        "arguments": (
+                            '{"question":"Which environment?","options":["Development","Production"],'
+                            '"multiple":false,"title":"Choose","placeholder":"Add context"}'
+                        ),
+                    },
+                }
+            ]
+        },
+        settings,
+    )
+
+    assert [tool["function"]["name"] for tool in tools] == ["model", "createTool", "question"]
+    assert request.question_request is not None
+    assert request.question_request.options == ("Development", "Production")
+    assert request.question_request.multiple is False
+    assert execute_tool(request, settings).startswith("questionResult:\n")
+
+
+def test_question_must_be_the_only_tool_call():
+    settings = make_tool_settings(web_search_mode="auto")
+
+    with pytest.raises(ValueError, match="only tool call"):
+        parse_openai_tool_calls(
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_question",
+                        "type": "function",
+                        "function": {
+                            "name": "question",
+                            "arguments": '{"question":"Continue?","options":[],"multiple":false}',
+                        },
+                    },
+                    {
+                        "id": "call_search",
+                        "type": "function",
+                        "function": {"name": "webSearch", "arguments": '{"query":"news"}'},
+                    },
+                ]
+            },
+            settings,
+        )
+
+
+def test_question_tool_is_hidden_and_rejected_when_mode_is_off():
+    settings = make_tool_settings(
+        web_search_mode="off",
+        rag_mode="off",
+        curl_mode="off",
+        python_mode="off",
+        file_editor_mode="off",
+        mcp_mode="off",
+        history_mode="off",
+        automation_mode="off",
+        question_mode="off",
+    )
+
+    assert [tool["function"]["name"] for tool in build_openai_tools(settings)] == ["model", "createTool"]
+    with pytest.raises(ValueError, match="disabled"):
+        parse_openai_tool_calls(
+            {
+                "tool_calls": [
+                    {
+                        "id": "call_question",
+                        "type": "function",
+                        "function": {
+                            "name": "question",
+                            "arguments": '{"question":"Continue?","options":[],"multiple":false}',
+                        },
+                    }
+                ]
+            },
+            settings,
+        )
+
+
+def test_conversation_modes_limit_tool_capabilities():
+    common = dict(
+        web_search_mode="auto",
+        rag_mode="auto",
+        curl_mode="auto",
+        python_mode="auto",
+        file_editor_mode="auto",
+        mcp_mode="auto",
+        history_mode="auto",
+        automation_mode="auto",
+    )
+
+    ask_settings = make_tool_settings(**common, conversation_mode="ask")
+    ask_names = [item["function"]["name"] for item in build_openai_tools(ask_settings)]
+    plan_names = [item["function"]["name"] for item in build_openai_tools(make_tool_settings(**common, conversation_mode="plan"))]
+    agent_names = [item["function"]["name"] for item in build_openai_tools(make_tool_settings(**common, conversation_mode="agent"))]
+
+    assert ask_names == ["webSearch", "rag", "curl", "fileEditor", "history", "model", "question"]
+    assert plan_names == ["webSearch", "rag", "curl", "fileEditor", "history", "model", "plan", "question"]
+    assert "fileEditor" in agent_names
+    assert "createTool" in agent_names
+    assert "plan" not in agent_names
+    file_schema = next(item for item in build_openai_tools(ask_settings) if item["function"]["name"] == "fileEditor")
+    assert file_schema["function"]["parameters"]["properties"]["action"]["enum"] == ["list", "read"]
+
+
+def test_ask_and_plan_modes_reject_file_writes_even_if_manually_requested():
+    for mode in ["ask", "plan"]:
+        settings = make_tool_settings(file_editor_mode="auto", conversation_mode=mode)
+        with pytest.raises(ValueError, match="not available"):
+            parse_openai_tool_calls(
+                {
+                    "tool_calls": [
+                        {
+                            "id": f"call_{mode}",
+                            "type": "function",
+                            "function": {
+                                "name": "fileEditor",
+                                "arguments": '{"action":"write","path":"demo.txt","content":"no"}',
+                            },
+                        }
+                    ]
+                },
+                settings,
+            )
 
 
 def test_settings_tool_updates_persistent_json(tmp_path, monkeypatch):
@@ -179,7 +323,7 @@ def test_curl_tool_description_points_to_official_docs_when_uncertain():
         mcp_mode="off",
     )
 
-    [tool] = build_openai_tools(settings)
+    tool = next(item for item in build_openai_tools(settings) if item["function"]["name"] == "curl")
     description = tool["function"]["description"]
 
     assert "official API documentation" in description
@@ -196,7 +340,7 @@ def test_web_search_tool_description_mentions_image_markdown():
         mcp_mode="off",
     )
 
-    [tool] = build_openai_tools(settings)
+    tool = next(item for item in build_openai_tools(settings) if item["function"]["name"] == "webSearch")
     description = tool["function"]["description"]
 
     assert "image URLs" in description
@@ -286,7 +430,7 @@ def test_rag_tool_parses_search_and_ingest_actions():
         file_editor_mode="off",
         mcp_mode="off",
     )
-    [tool] = build_openai_tools(settings)
+    tool = next(item for item in build_openai_tools(settings) if item["function"]["name"] == "rag")
 
     search, ingest = parse_openai_tool_calls(
         {
@@ -440,7 +584,7 @@ def test_model_view_includes_python_only_when_enabled():
         mcp_mode="off",
     )
 
-    assert settings.model_view() == {"available": ["python"]}
+    assert settings.model_view() == {"available": ["python", "createTool", "custom__*", "model", "question"]}
 
 
 def test_build_openai_tools_includes_python_when_enabled():
@@ -453,7 +597,7 @@ def test_build_openai_tools_includes_python_when_enabled():
         mcp_mode="off",
     )
 
-    [tool] = build_openai_tools(settings)
+    tool = next(item for item in build_openai_tools(settings) if item["function"]["name"] == "python")
 
     assert tool["function"]["name"] == "python"
     assert "current working directory is the artifact directory" in tool["function"]["description"]
@@ -579,7 +723,7 @@ def test_model_view_includes_file_editor_only_when_enabled():
         mcp_mode="off",
     )
 
-    assert settings.model_view() == {"available": ["fileEditor"]}
+    assert settings.model_view() == {"available": ["fileEditor", "createTool", "custom__*", "model", "question"]}
 
 
 def test_build_openai_tools_includes_file_editor_when_enabled():
@@ -592,7 +736,7 @@ def test_build_openai_tools_includes_file_editor_when_enabled():
         mcp_mode="off",
     )
 
-    [tool] = build_openai_tools(settings)
+    tool = next(item for item in build_openai_tools(settings) if item["function"]["name"] == "fileEditor")
 
     assert tool["function"]["name"] == "fileEditor"
     assert "replace" in tool["function"]["description"]
@@ -670,7 +814,7 @@ def test_model_view_includes_mcp_only_when_enabled():
         mcp_mode="auto",
     )
 
-    assert settings.model_view() == {"available": ["mcp"]}
+    assert settings.model_view() == {"available": ["mcp", "createTool", "custom__*", "model", "question"]}
 
 
 def test_build_openai_tools_includes_mcp_when_enabled():
@@ -683,7 +827,7 @@ def test_build_openai_tools_includes_mcp_when_enabled():
         mcp_mode="auto",
     )
 
-    [tool] = build_openai_tools(settings)
+    tool = next(item for item in build_openai_tools(settings) if item["function"]["name"] == "mcp")
 
     assert tool["function"]["name"] == "mcp"
     assert "configured MCP servers" in tool["function"]["description"]
@@ -755,7 +899,7 @@ def test_file_reader_schema_and_parser_when_enabled():
         mcp_mode="off",
     )
 
-    [tool] = build_openai_tools(settings)
+    tool = next(item for item in build_openai_tools(settings) if item["function"]["name"] == "fileReader")
     assert tool["function"]["name"] == "fileReader"
 
     [request] = parse_openai_tool_calls(
@@ -798,5 +942,26 @@ def test_file_reader_requires_auto_mode():
                     }
                 ]
             },
+            settings,
+        )
+
+
+@pytest.mark.parametrize("mode", ["ask", "plan"])
+def test_read_only_modes_keep_file_reader_and_block_rag_ingestion(mode):
+    settings = make_tool_settings(conversation_mode=mode, file_reader_mode="auto")
+    schemas = {item["function"]["name"]: item["function"] for item in build_openai_tools(settings)}
+
+    assert "fileReader" in schemas
+    assert "fileReader" in settings.model_view()["available"]
+    assert schemas["rag"]["parameters"]["properties"]["action"]["enum"] == ["search"]
+    assert schemas["fileEditor"]["parameters"]["properties"]["action"]["enum"] == ["list", "read"]
+    assert "python" not in schemas
+    assert "createTool" not in schemas
+
+    with pytest.raises(ValueError, match=f"not available in {mode} mode"):
+        parse_openai_tool_calls(
+            {"tool_calls": [{"id": "ingest", "function": {
+                "name": "rag", "arguments": '{"action":"ingest","path":"report.docx"}',
+            }}]},
             settings,
         )

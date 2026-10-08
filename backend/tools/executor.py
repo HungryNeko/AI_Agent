@@ -11,11 +11,15 @@ from tools import (
     WebSearch,
     appSettings,
     automation,
+    createTool,
     curl,
     fileEditor,
     fileReader,
     history,
     mcp,
+    models,
+    plan,
+    question,
     rag,
 )
 from tools import python as python_tool
@@ -53,6 +57,8 @@ def execute_tool(request: ToolRequest, settings: ToolSettings) -> str:
 
 
 def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
+    if request.name.startswith("custom__"):
+        return createTool.execute_custom(request.name, request.custom_arguments or {}, settings.python)
     if request.name == "webSearch":
         results = WebSearch.search(request.query, settings.web_search)
         return format_web_search_results(results)
@@ -98,6 +104,22 @@ def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
         if request.settings_request is None:
             return 'toolError: "settings request is missing settings_request."'
         return "settingsResult:\n" + appSettings.execute(request.settings_request)
+    if request.name == "model":
+        if request.model_request is None:
+            return 'toolError: "model request is missing model_request."'
+        return models.execute(request.model_request)
+    if request.name == "plan":
+        if request.plan_request is None:
+            return 'toolError: "plan request is missing plan_request."'
+        return plan.execute(request.plan_request)
+    if request.name == "createTool":
+        if request.create_tool_request is None:
+            return 'toolError: "createTool request is missing create_tool_request."'
+        return createTool.execute(request.create_tool_request)
+    if request.name == "question":
+        if request.question_request is None:
+            return 'toolError: "question request is missing question_request."'
+        return question.waiting_result(request.question_request)
     return f'toolError: "unknown tool: {request.name}"'
 
 

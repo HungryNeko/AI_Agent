@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,7 +45,9 @@ def load_config() -> dict[str, Any]:
     data = read_json_object(base_path, str(base_path))
     local_path = local_config_path()
     if local_path.exists():
-        data = deep_merge(data, read_json_object(local_path, "data/api_configs.local.json"))
+        local = read_json_object(local_path, "data/api_configs.local.json")
+        replace_base = bool(local.pop("_replace_base", False))
+        data = local if replace_base else deep_merge(data, local)
     if not isinstance(data, dict):
         raise ValueError("data/api_configs.json must be a JSON object.")
     return data
@@ -55,8 +58,72 @@ def save_config(data: dict[str, Any], path: Path | None = None) -> dict[str, Any
         raise ValueError("model config must be a JSON object.")
     target = path or local_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    saved = copy.deepcopy(data)
+    if target.resolve() == local_config_path().resolve():
+        saved["_replace_base"] = True
+    target.write_text(json.dumps(saved, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return load_config()
+
+
+def public_config(data: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return model configuration that is safe to expose to the UI or model."""
+
+    public = copy.deepcopy(data if data is not None else load_config())
+    public.pop("_replace_base", None)
+    providers = public.get("providers", {})
+    if isinstance(providers, dict):
+        for provider in providers.values():
+            if not isinstance(provider, dict):
+                continue
+            direct_key = provider.pop("api_key", None)
+            env_name = optional_string(provider.get("api_key_env"))
+            provider["has_api_key"] = bool(direct_key or (env_name and os.getenv(env_name)))
+    return public
+
+
+def merge_config_secrets(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+    """Preserve stored API keys when a sanitized UI payload is saved."""
+
+    merged = copy.deepcopy(incoming)
+    current_providers = current.get("providers", {})
+    providers = merged.get("providers", {})
+    if not isinstance(providers, dict):
+        return merged
+    for name, provider in providers.items():
+        if not isinstance(provider, dict):
+            continue
+        provider.pop("has_api_key", None)
+        current_provider = current_providers.get(name, {}) if isinstance(current_providers, dict) else {}
+        incoming_key = optional_string(provider.get("api_key"))
+        if incoming_key:
+            provider["api_key"] = incoming_key
+        elif isinstance(current_provider, dict) and optional_string(current_provider.get("api_key")):
+            provider["api_key"] = current_provider["api_key"]
+        else:
+            provider.pop("api_key", None)
+    return merged
+
+
+def list_model_items(data: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    config = data if data is not None else load_config()
+    providers = config.get("providers", {})
+    items: list[dict[str, str]] = []
+    if not isinstance(providers, dict):
+        return items
+    for provider_name, provider in providers.items():
+        if not isinstance(provider, dict):
+            continue
+        raw_models = provider.get("models", [])
+        if not isinstance(raw_models, list):
+            continue
+        for item in raw_models:
+            if isinstance(item, str) and item:
+                items.append({"label": f"{provider_name}:{item}", "value": f"{provider_name}:{item}"})
+            elif isinstance(item, dict) and isinstance(item.get("id"), str):
+                model_id = item["id"]
+                alias = item.get("alias") if isinstance(item.get("alias"), str) else model_id
+                items.append({"label": f"{provider_name}:{alias}", "value": f"{provider_name}:{model_id}"})
+    return items
 
 
 def local_config_path() -> Path:

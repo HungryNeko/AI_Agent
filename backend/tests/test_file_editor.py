@@ -125,3 +125,11 @@ def test_file_editor_blocks_protected_env_write(tmp_path):
 
     with pytest.raises(ValueError, match="protected file"):
         fileEditor.execute(FileEditRequest(action="write", path=".env", content="x"), config)
+
+
+def test_file_editor_blocks_local_api_secret_read(tmp_path):
+    config = settings(tmp_path)
+    (tmp_path / "api_configs.local.json").write_text('{"api_key":"secret"}', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="protected file"):
+        fileEditor.execute(FileEditRequest(action="read", path="api_configs.local.json"), config)

@@ -56,7 +56,9 @@ SUPPORTED_SUFFIXES = TEXT_SUFFIXES | DOCUMENT_SUFFIXES
 PROTECTED_PARTS = {".git", "node_modules", "__pycache__", ".venv", ".conda"}
 PROTECTED_NAMES = {
     "api-key.txt",
+    "api_configs.json",
     "api_configs.local.json",
+    "servers.json",
     "servers.local.json",
     "settings.local.json",
 }
@@ -386,6 +388,8 @@ def resolve_path(path_text: str, settings: FileReaderSettings) -> Path:
 
 def normalize_upload_reference(value: str) -> str:
     clean = value.strip()
+    if Path(clean).is_absolute() and not clean.startswith("/api/uploads/"):
+        return clean
     parsed = urlparse(clean)
     if parsed.scheme in {"http", "https"}:
         clean = parsed.path

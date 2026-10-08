@@ -34,7 +34,7 @@ def test_rag_auto_exposes_rag_tool():
 def test_curl_auto_exposes_curl_tool():
     prompt = build_tools_prompt(curl_mode="auto")
 
-    assert 'available: ["curl"]' in prompt
+    assert 'available: ["curl", "createTool", "custom__*", "model", "question"]' in prompt
 
 
 
@@ -82,6 +82,20 @@ def test_injected_results_are_prefixed():
 
     assert 'webSearchResult: "Search says A."' in prompt
     assert 'ragResult: "RAG says B."' in prompt
+
+
+def test_available_tools_can_be_omitted_without_hiding_injected_results():
+    from prompts.tools import build_tools_prompt_from_settings
+    from tools.settings import make_tool_settings
+
+    prompt = build_tools_prompt_from_settings(
+        make_tool_settings(web_search_mode="auto"),
+        web_search_results=["Search says A."],
+        include_available=False,
+    )
+
+    assert "available:" not in prompt
+    assert 'webSearchResult: "Search says A."' in prompt
 
 
 def test_context_summary_without_rules_by_default():
@@ -144,7 +158,7 @@ def test_current_time_prompt_has_local_and_utc_reference():
 def test_python_auto_exposes_python_tool_without_rules():
     prompt = build_tools_prompt(python_mode="auto")
 
-    assert 'available: ["python"]' in prompt
+    assert 'available: ["python", "createTool", "custom__*", "model", "question"]' in prompt
     assert "artifact directory" not in prompt
 
 
@@ -176,21 +190,21 @@ def test_tool_rules_include_mcp_file_base64_guidance():
 def test_file_editor_auto_exposes_tool_without_rules():
     prompt = build_tools_prompt(file_editor_mode="auto")
 
-    assert 'available: ["fileEditor"]' in prompt
+    assert 'available: ["fileEditor", "createTool", "custom__*", "model", "question"]' in prompt
     assert "oldText" not in prompt
 
 
 def test_tool_rules_include_file_editor_anchor_guidance():
     prompt = build_tools_prompt(file_editor_mode="auto", include_rules=True)
 
-    assert "Use fileEditor for project file changes" in prompt
+    assert "Use fileEditor to inspect the project" in prompt
     assert 'fileEditor: {"action":"read"' in prompt
 
 
 def test_file_reader_auto_exposes_read_only_document_tool():
     prompt = build_tools_prompt(file_reader_mode="auto")
 
-    assert 'available: ["fileReader"]' in prompt
+    assert 'available: ["fileReader", "createTool", "custom__*", "model", "question"]' in prompt
 
     detailed = build_tools_prompt(file_reader_mode="auto", include_rules=True)
     assert "Use fileReader to extract text" in detailed

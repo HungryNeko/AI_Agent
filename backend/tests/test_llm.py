@@ -46,7 +46,7 @@ def test_chat_sends_openai_tools_and_returns_content(monkeypatch):
 
     assert result == "done"
     assert payloads[0]["tool_choice"] == "auto"
-    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["webSearch", "rag"]
+    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["webSearch", "rag", "model", "createTool", "question"]
     assert 'conversationSummary: "' not in payloads[0]["messages"][0]["content"]
 
 

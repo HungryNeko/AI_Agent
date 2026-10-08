@@ -6,16 +6,37 @@ import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from tools import createTool
 from tools.appSettings import SettingsRequest
 from tools.automation import AutomationRequest
+from tools.createTool import CreateToolRequest
 from tools.fileEditor import FileEditRequest
 from tools.fileReader import FileReadRequest
 from tools.history import HistoryRequest
 from tools.mcp import McpRequest
+from tools.models import ModelRequest
+from tools.plan import PlanRequest
+from tools.question import QuestionRequest
 from tools.rag import RagRequest
 from tools.settings import ToolSettings
 
-ToolName = Literal["webSearch", "rag", "curl", "python", "fileReader", "fileEditor", "mcp", "history", "automation", "settings"]
+ToolName = str
+SYSTEM_TOOL_NAMES = {
+    "webSearch",
+    "rag",
+    "curl",
+    "python",
+    "fileReader",
+    "fileEditor",
+    "mcp",
+    "history",
+    "automation",
+    "settings",
+    "question",
+    "model",
+    "plan",
+    "createTool",
+}
 
 
 @dataclass(frozen=True)
@@ -32,36 +53,49 @@ class ToolRequest:
     history_request: HistoryRequest | None = None
     automation_request: AutomationRequest | None = None
     settings_request: SettingsRequest | None = None
+    model_request: ModelRequest | None = None
+    plan_request: PlanRequest | None = None
+    create_tool_request: CreateToolRequest | None = None
+    custom_arguments: dict[str, Any] | None = None
+    question_request: QuestionRequest | None = None
 
 
 def build_openai_tools(settings: ToolSettings) -> list[dict[str, Any]]:
     """Build the `tools` payload for Chat Completions."""
 
     tools = []
-    if settings.web_search.can_model_call:
+    if settings.web_search.can_model_call and settings.allows("webSearch"):
         tools.append(
             query_tool(
                 name="webSearch",
                 description="Search the public web when current or external information is needed. If webSearchResult includes image URLs, include useful ones in the final answer as Markdown images using the exact URL.",
             )
         )
-    if settings.rag.can_model_call:
-        tools.append(rag_tool())
-    if settings.curl.can_model_call:
+    if settings.rag.can_model_call and settings.allows("rag"):
+        tools.append(rag_tool(read_only=settings.conversation_mode != "agent"))
+    if settings.curl.can_model_call and settings.allows("curl"):
         tools.append(curl_tool())
-    if settings.python.can_model_call:
+    if settings.python.can_model_call and settings.allows("python"):
         tools.append(python_tool())
-    if settings.file_reader.can_model_call:
+    if settings.file_reader.can_model_call and settings.allows("fileReader"):
         tools.append(file_reader_tool())
-    if settings.file_editor.can_model_call:
-        tools.append(file_editor_tool())
-    if settings.mcp.can_model_call:
+    if settings.file_editor.can_model_call and settings.allows("fileEditor"):
+        tools.append(file_editor_tool(read_only=settings.conversation_mode != "agent"))
+    if settings.mcp.can_model_call and settings.allows("mcp"):
         tools.append(mcp_tool())
-    if settings.history.can_model_call:
+    if settings.history.can_model_call and settings.allows("history"):
         tools.append(history_tool())
-    if settings.automation.can_model_call:
+    if settings.automation.can_model_call and settings.allows("automation"):
         tools.append(automation_tool())
         tools.append(settings_tool())
+    tools.append(model_tool())
+    if settings.allows("plan"):
+        tools.append(plan_tool())
+    if settings.allows("createTool"):
+        tools.append(create_tool())
+        tools.extend(createTool.openai_schemas())
+    if settings.question.can_model_call:
+        tools.append(question_tool())
     return tools
 
 
@@ -75,7 +109,10 @@ def parse_openai_tool_calls(
     if not isinstance(raw_tool_calls, list):
         raise ValueError("assistant tool_calls must be a list.")
 
-    return [parse_one_tool_call(raw_tool_call, settings) for raw_tool_call in raw_tool_calls]
+    requests = [parse_one_tool_call(raw_tool_call, settings) for raw_tool_call in raw_tool_calls]
+    if len(requests) > 1 and any(request.name == "question" for request in requests):
+        raise ValueError("question must be the only tool call in an assistant step.")
+    return requests
 
 
 def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRequest:
@@ -90,7 +127,7 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
         raise ValueError("tool_call.function is required.")
 
     name = function.get("name")
-    if name not in {"webSearch", "rag", "curl", "python", "fileReader", "fileEditor", "mcp", "history", "automation", "settings"}:
+    if name not in SYSTEM_TOOL_NAMES and not (isinstance(name, str) and name.startswith("custom__")):
         raise ValueError(f"Unknown tool: {name}")
 
     arguments = function.get("arguments") or "{}"
@@ -107,7 +144,12 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
 
     validate_tool_allowed(name, settings)
     if name == "rag":
-        return ToolRequest(id=call_id, name="rag", rag_request=parse_rag_request(parsed_arguments))
+        rag_request = parse_rag_request(parsed_arguments)
+        if settings.conversation_mode != "agent" and rag_request.action != "search":
+            raise ValueError(f"rag action {rag_request.action} is not available in {settings.conversation_mode} mode.")
+        return ToolRequest(id=call_id, name="rag", rag_request=rag_request)
+    if name.startswith("custom__"):
+        return ToolRequest(id=call_id, name=name, custom_arguments=parsed_arguments)
     if name == "curl":
         url = require_string(parsed_arguments, "url", "curl")
         return ToolRequest(id=call_id, name="curl", url=url)
@@ -117,7 +159,10 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
     if name == "fileReader":
         return ToolRequest(id=call_id, name="fileReader", file_read=parse_file_read(parsed_arguments))
     if name == "fileEditor":
-        return ToolRequest(id=call_id, name="fileEditor", file_edit=parse_file_edit(parsed_arguments))
+        file_edit = parse_file_edit(parsed_arguments)
+        if settings.conversation_mode != "agent" and file_edit.action not in {"list", "read"}:
+            raise ValueError(f"fileEditor action {file_edit.action} is not available in {settings.conversation_mode} mode.")
+        return ToolRequest(id=call_id, name="fileEditor", file_edit=file_edit)
     if name == "mcp":
         return ToolRequest(id=call_id, name="mcp", mcp_request=parse_mcp_request(parsed_arguments))
     if name == "history":
@@ -126,6 +171,14 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
         return ToolRequest(id=call_id, name="automation", automation_request=parse_automation_request(parsed_arguments))
     if name == "settings":
         return ToolRequest(id=call_id, name="settings", settings_request=parse_settings_request(parsed_arguments))
+    if name == "model":
+        return ToolRequest(id=call_id, name="model", model_request=parse_model_request(parsed_arguments))
+    if name == "plan":
+        return ToolRequest(id=call_id, name="plan", plan_request=parse_plan_request(parsed_arguments))
+    if name == "createTool":
+        return ToolRequest(id=call_id, name="createTool", create_tool_request=parse_create_tool_request(parsed_arguments))
+    if name == "question":
+        return ToolRequest(id=call_id, name="question", question_request=parse_question_request(parsed_arguments))
 
     query = require_string(parsed_arguments, "query", "tool")
     return ToolRequest(id=call_id, name=name, query=query)
@@ -260,6 +313,61 @@ def parse_settings_request(arguments: dict[str, Any]) -> SettingsRequest:
     return SettingsRequest(action=action, patch=raw_patch, settings=raw_settings)
 
 
+def parse_question_request(arguments: dict[str, Any]) -> QuestionRequest:
+    question = require_string(arguments, "question", "question")
+    raw_options = arguments.get("options", [])
+    if raw_options is None:
+        raw_options = []
+    if not isinstance(raw_options, list) or any(not isinstance(item, str) for item in raw_options):
+        raise ValueError("question options must be an array of strings.")
+    options = tuple(dict.fromkeys(item.strip() for item in raw_options if item.strip()))
+    return QuestionRequest(
+        question=question,
+        options=options,
+        multiple=optional_bool(arguments.get("multiple")),
+        title=optional_string(arguments.get("title")).strip(),
+        placeholder=optional_string(arguments.get("placeholder")).strip(),
+    )
+
+
+def parse_model_request(arguments: dict[str, Any]) -> ModelRequest:
+    action = require_string(arguments, "action", "model")
+    if action not in {"list", "refresh", "switch"}:
+        raise ValueError("model action must be one of: list, refresh, switch.")
+    return ModelRequest(
+        action=action,
+        provider=optional_string(arguments.get("provider")).strip(),
+        model=optional_string(arguments.get("model")).strip(),
+    )
+
+
+def parse_plan_request(arguments: dict[str, Any]) -> PlanRequest:
+    action = require_string(arguments, "action", "plan")
+    if action not in {"update", "finalize"}:
+        raise ValueError("plan action must be one of: update, finalize.")
+    return PlanRequest(
+        action=action,
+        name=optional_string(arguments.get("name")).strip(),
+        content=optional_string(arguments.get("content")),
+    )
+
+
+def parse_create_tool_request(arguments: dict[str, Any]) -> CreateToolRequest:
+    action = require_string(arguments, "action", "createTool")
+    if action not in {"list", "read", "save"}:
+        raise ValueError("createTool action must be one of: list, read, save.")
+    parameters = arguments.get("parameters", {})
+    if not isinstance(parameters, dict):
+        raise ValueError("createTool parameters must be an object")
+    return CreateToolRequest(
+        action=action,
+        name=optional_string(arguments.get("name")).strip(),
+        description=optional_string(arguments.get("description")),
+        parameters=parameters,
+        code=optional_string(arguments.get("code")),
+    )
+
+
 def require_string(arguments: dict[str, Any], key: str, tool_name: str) -> str:
     value = arguments.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -284,6 +392,11 @@ def optional_int(value: object) -> int | None:
 
 
 def validate_tool_allowed(name: str, settings: ToolSettings) -> None:
+    if name == "question" and not settings.question.can_model_call:
+        raise ValueError("question is disabled for this conversation.")
+    base_name = "custom__*" if name.startswith("custom__") else name
+    if not settings.allows(base_name):
+        raise ValueError(f"{name} is not available in {settings.conversation_mode} mode.")
     if name == "webSearch" and not settings.web_search.can_model_call:
         raise ValueError("webSearch can only be called when web_search_mode is auto.")
     if name == "rag" and not settings.rag.can_model_call:
@@ -320,17 +433,17 @@ def query_tool(*, name: Literal["webSearch", "rag"], description: str) -> dict[s
     )
 
 
-def rag_tool() -> dict[str, Any]:
+def rag_tool(*, read_only: bool = False) -> dict[str, Any]:
     return function_tool(
         name="rag",
-        description=(
+        description="Search local knowledge, memory, and skills. This mode is read-only." if read_only else (
             "Search local RAG data, or ingest an uploaded document into user knowledge as Markdown. "
             "For ingest, first inspect the upload with fileReader, then pass its path here; never copy "
             "the full extracted content into tool arguments. simple splitting is free and deterministic; "
             "llm splitting uses a dedicated model with strict token limits and incremental caching."
         ),
         properties={
-            "action": {"type": "string", "enum": ["search", "ingest"]},
+            "action": {"type": "string", "enum": ["search"] if read_only else ["search", "ingest"]},
             "query": {"type": "string", "description": "Required for search."},
             "path": {"type": "string", "description": "Uploaded file path required for ingest."},
             "name": {"type": "string", "description": "Optional destination Markdown filename."},
@@ -393,14 +506,20 @@ def file_reader_tool() -> dict[str, Any]:
     )
 
 
-def file_editor_tool() -> dict[str, Any]:
+def file_editor_tool(*, read_only: bool = False) -> dict[str, Any]:
+    actions = ["list", "read"] if read_only else ["list", "read", "write", "replace", "insertAfter", "insertBefore", "append"]
+    description = (
+        "Read project files and list directories for understanding or planning. This mode is read-only."
+        if read_only
+        else "Edit project files using stable text anchors. Memory lives under data/memory and skills live under data/skills/<name>/SKILL.md. Write-like actions may return approvalRequired instead of applying, depending on backend approval policy. Prefer replace with exact oldText, insertBefore/insertAfter with exact anchor, write for new files, and append for simple additions. No delete, move, rename, shell, or protected-file operations are available."
+    )
     return function_tool(
         name="fileEditor",
-        description="Edit project files using stable text anchors. Memory lives under data/memory and skills live under data/skills/<name>/SKILL.md. Write-like actions may return approvalRequired instead of applying, depending on backend approval policy. Prefer replace with exact oldText, insertBefore/insertAfter with exact anchor, write for new files, and append for simple additions. No delete, move, rename, shell, or protected-file operations are available.",
+        description=description,
         properties={
             "action": {
                 "type": "string",
-                "enum": ["list", "read", "write", "replace", "insertAfter", "insertBefore", "append"],
+                "enum": actions,
             },
             "path": {"type": "string", "description": "Project-relative file or directory path."},
             "content": {"type": "string", "description": "Content for write/append/insert operations."},
@@ -504,9 +623,80 @@ def settings_tool() -> dict[str, Any]:
     )
 
 
+def question_tool() -> dict[str, Any]:
+    return function_tool(
+        name="question",
+        description=(
+            "Ask the user one necessary clarification or confirmation and pause until they reply. "
+            "Use an empty options array for a free-text question. Choice questions still let the "
+            "user add text, change direction, or refuse. Call this tool alone, without other tools."
+        ),
+        properties={
+            "question": {"type": "string", "description": "The clear, specific question shown to the user."},
+            "options": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional choices. Leave empty for free text.",
+            },
+            "multiple": {
+                "type": "boolean",
+                "description": "Whether the user may select more than one option.",
+            },
+            "title": {"type": "string", "description": "Optional short dialog title."},
+            "placeholder": {"type": "string", "description": "Optional hint for the free-text field."},
+        },
+        required=["question", "options", "multiple"],
+    )
+
+
+def model_tool() -> dict[str, Any]:
+    return function_tool(
+        name="model",
+        description=(
+            "List configured models, refresh a provider's current model list from its standard "
+            "OpenAI-compatible /models endpoint, or switch this conversation to another configured model. "
+            "Provider API keys are private backend data and are never available through this tool."
+        ),
+        properties={
+            "action": {"type": "string", "enum": ["list", "refresh", "switch"]},
+            "provider": {"type": "string", "description": "Provider name for refresh or an unqualified model."},
+            "model": {"type": "string", "description": "Configured provider:model value for switch."},
+        },
+        required=["action"],
+    )
+
+
+def plan_tool() -> dict[str, Any]:
+    return function_tool(
+        name="plan",
+        description="Update the current session plan or mark it ready for user review. The plan remains in conversation state and does not change project files. Use finalize only after research and important clarifications are complete.",
+        properties={
+            "action": {"type": "string", "enum": ["update", "finalize"]},
+            "name": {"type": "string", "description": "Short plan name."},
+            "content": {"type": "string", "description": "Complete Markdown plan with scope, implementation steps, relevant files, risks, and verification."},
+        },
+        required=["action", "content"],
+    )
+
+
+def create_tool() -> dict[str, Any]:
+    return function_tool(
+        name="createTool",
+        description="Create or update a reusable user-level Python tool. The code must define run(arguments) and is stored separately from system tools. Use custom__name after saving it.",
+        properties={
+            "action": {"type": "string", "enum": ["list", "read", "save"]},
+            "name": {"type": "string"},
+            "description": {"type": "string"},
+            "parameters": {"type": "object", "description": "OpenAI function JSON Schema with type=object."},
+            "code": {"type": "string", "description": "Python source defining run(arguments)."},
+        },
+        required=["action"],
+    )
+
+
 def function_tool(
     *,
-    name: ToolName,
+    name: str,
     description: str,
     properties: dict[str, Any],
     required: list[str],

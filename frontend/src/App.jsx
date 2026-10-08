@@ -7,14 +7,20 @@ import {
   Archive,
   AtSign,
   Check,
+  Code2,
   Database,
   Download,
   FileText,
+  GitBranch,
   Image,
   Key,
   Languages,
+  Maximize2,
   MessageSquare,
+  Minus,
   Paperclip,
+  Pause,
+  Play,
   Plug,
   Plus,
   RefreshCw,
@@ -24,6 +30,7 @@ import {
   Square,
   Sun,
   Trash2,
+  Wrench,
   X,
 } from "lucide-react";
 import "katex/dist/katex.min.css";
@@ -53,6 +60,9 @@ const emptyOptions = {
   mcp_mode: "auto",
   history_mode: "auto",
   automation_mode: "auto",
+  question_mode: "light",
+  developer_mode: false,
+  conversation_mode: "agent",
   max_tool_rounds: 20,
 };
 
@@ -61,6 +71,7 @@ const TEXT = {
   data: ["数据", "Data"],
   config: ["模型", "Models"],
   mcp: ["MCP", "MCP"],
+  tools: ["工具", "Tools"],
   settings: ["设置", "Settings"],
   automation: ["自动化", "Automation"],
   history: ["历史", "History"],
@@ -91,12 +102,7 @@ function App() {
   }, [theme]);
 
   useEffect(() => {
-    fetchJson("/api/models")
-      .then((data) => {
-        setModels(data.models || []);
-        setOptionsState((current) => ({ ...current, model: current.model || data.defaultModel || "" }));
-      })
-      .catch(() => setModels([]));
+    reloadModels().catch(() => setModels([]));
   }, []);
 
   useEffect(() => {
@@ -116,6 +122,13 @@ function App() {
       model: savedChat.model || current.model || "",
     }));
     return saved;
+  }
+
+  async function reloadModels() {
+    const data = await fetchJson("/api/models");
+    setModels(data.models || []);
+    setOptionsState((current) => ({ ...current, model: current.model || data.defaultModel || "" }));
+    return data;
   }
 
   function scheduleSettingsPatch(patch) {
@@ -159,6 +172,7 @@ function App() {
           <TabButton active={tab === "config"} onClick={() => setTab("config")} icon={<Settings size={16} />} label={label("config")} />
           <TabButton active={tab === "automation"} onClick={() => setTab("automation")} icon={<RefreshCw size={16} />} label={label("automation")} />
           <TabButton active={tab === "mcp"} onClick={() => setTab("mcp")} icon={<Plug size={16} />} label={label("mcp")} />
+          <TabButton active={tab === "tools"} onClick={() => setTab("tools")} icon={<Wrench size={16} />} label={label("tools")} />
           <TabButton active={tab === "system"} onClick={() => setTab("system")} icon={<Sun size={16} />} label={label("system")} />
         </nav>
       </header>
@@ -171,14 +185,16 @@ function App() {
           label={label}
           text={text}
           onSettingsChanged={reloadSettings}
+          onModelsChanged={reloadModels}
         />
       )}
       {tab === "data" && <DataView text={text} models={models} />}
       {tab === "config" && (
-        <ConfigView text={text} onSaved={() => fetchJson("/api/models").then((data) => setModels(data.models || [])).catch(() => {})} />
+        <ConfigView text={text} onSaved={reloadModels} />
       )}
       {tab === "automation" && <AutomationView options={options} setOptions={setOptions} text={text} />}
       {tab === "mcp" && <McpView text={text} />}
+      {tab === "tools" && <CustomToolsView text={text} />}
       {tab === "system" && <SystemView theme={theme} setTheme={setTheme} language={language} setLanguage={setLanguage} text={text} />}
     </main>
   );
@@ -193,12 +209,13 @@ function TabButton({ active, onClick, icon, label }) {
   );
 }
 
-function ChatView({ models, options, setOptions, label, text, onSettingsChanged }) {
+function ChatView({ models, options, setOptions, label, text, onSettingsChanged, onModelsChanged }) {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [events, setEvents] = useState([]);
   const [state, setState] = useState(null);
   const [conversationId, setConversationId] = useState("");
+  const [conversationModel, setConversationModel] = useState("");
   const [conversations, setConversations] = useState([]);
   const [historyStatus, setHistoryStatus] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -206,7 +223,11 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionOpen, setMentionOpen] = useState(false);
   const [previewImage, setPreviewImage] = useState(null);
+  const [pendingQuestion, setPendingQuestion] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [inputMode, setInputMode] = useState("queue");
+  const [queuedMessages, setQueuedMessages] = useState([]);
   const outputRef = useRef(null);
   const composerRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -223,6 +244,13 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
   useEffect(() => {
     if (atBottomRef.current) outputRef.current?.scrollTo({ top: outputRef.current.scrollHeight });
   }, [events]);
+
+  useEffect(() => {
+    if (busy || pendingQuestion || queuedMessages.length === 0) return;
+    const [next, ...rest] = queuedMessages;
+    setQueuedMessages(rest);
+    runChatTurn(next.message, next.attachments, next.displayMessage);
+  }, [busy, pendingQuestion, queuedMessages]);
 
   function trackScroll() {
     const node = outputRef.current;
@@ -246,6 +274,8 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
     setConversationId(data.id || id);
     setEvents(data.events || []);
     setState(data.state || null);
+    setConversationModel(data.state?.model || "");
+    setPendingQuestion(data.state?.question_pending || null);
     setAttachments([]);
     setHistoryStatus("");
   }
@@ -269,8 +299,12 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
     setConversationId("");
     setEvents([]);
     setState(null);
+    setConversationModel("");
     setAttachments([]);
     setPreviewImage(null);
+    setPendingQuestion(null);
+    setQueuedMessages([]);
+    setPaused(false);
     setHistoryStatus("");
   }
 
@@ -288,7 +322,23 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
 
   async function sendMessage(event) {
     event.preventDefault();
-    if ((!message.trim() && attachments.length === 0) || busy) return;
+    if (!message.trim() && attachments.length === 0) return;
+    const nextMessage = message.trim() || "请读取这些附件。";
+    const nextAttachments = attachments;
+    setMessage("");
+    setAttachments([]);
+    setMentionOpen(false);
+    if (busy) {
+      const item = { id: createRunId(), message: nextMessage, attachments: nextAttachments, displayMessage: nextMessage };
+      setQueuedMessages((items) => inputMode === "insert" ? [item, ...items] : [...items, item]);
+      if (inputMode === "insert") stopOutput();
+      return;
+    }
+    await runChatTurn(nextMessage, nextAttachments, nextMessage);
+  }
+
+  async function runChatTurn(nextMessage, nextAttachments = [], displayMessage = nextMessage, overrides = {}) {
+    if (!nextMessage.trim() || busy) return;
     atBottomRef.current = true;
     setBusy(true);
     const runId = createRunId();
@@ -296,12 +346,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
     activeRunIdRef.current = runId;
     stopRequestedRef.current = false;
     abortRef.current = controller;
-    const nextMessage = message.trim() || "请读取这些附件。";
-    const nextAttachments = attachments;
-    setEvents((items) => [...items, { type: "user", text: nextMessage, attachments: nextAttachments }]);
-    setMessage("");
-    setAttachments([]);
-    setMentionOpen(false);
+    setEvents((items) => [...items, { type: "user", text: displayMessage, attachments: nextAttachments }]);
 
     try {
       let streamCompleted = false;
@@ -311,11 +356,16 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: nextMessage,
+          display_message: displayMessage,
           run_id: runId,
           attachments: nextAttachments,
           conversation_id: conversationId || null,
-          state,
-          options: normalizeOptions(options),
+          state: overrides.state === undefined ? state : overrides.state,
+          options: normalizeOptions({
+            ...options,
+            ...(overrides.options || {}),
+            model: conversationModel || overrides.options?.model || options.model,
+          }),
         }),
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
@@ -326,7 +376,14 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
           streamCompleted = true;
         }
         if (eventData.conversation_id) setConversationId(eventData.conversation_id);
-        if (eventData.type === "assistant" && eventData.state) setState(eventData.state);
+        if (eventData.type === "question_required") setPendingQuestion(eventData);
+        if (eventData.type === "model_changed") setConversationModel(eventData.text || "");
+        if (eventData.type === "models_changed") onModelsChanged?.().catch(() => {});
+        if (eventData.type === "assistant" && eventData.state) {
+          setState(eventData.state);
+          setConversationModel(eventData.state.model || conversationModel || "");
+          setPendingQuestion(eventData.state.question_pending || null);
+        }
         if (eventData.type === "settings_changed") onSettingsChanged?.().catch(() => {});
       });
       if (!streamCompleted) {
@@ -343,6 +400,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
         activeRunIdRef.current = "";
         stopRequestedRef.current = false;
         setBusy(false);
+        setPaused(false);
       }
     }
   }
@@ -360,6 +418,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
       return [...items, { type: "stopped", text: "AI output stopped.", run_id: runId, conversation_id: conversationId || undefined }];
     });
     setBusy(false);
+    setPaused(false);
     window.setTimeout(() => refreshConversations().catch(() => {}), 500);
   }
 
@@ -434,6 +493,74 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
     }
   }
 
+  async function togglePause() {
+    const runId = activeRunIdRef.current;
+    if (!busy || !runId) return;
+    const nextPaused = !paused;
+    await fetchJson(`/api/chat/${nextPaused ? "pause" : "resume"}`, { method: "POST", body: { run_id: runId } });
+    setPaused(nextPaused);
+  }
+
+  async function branchConversation(eventIndex) {
+    if (!conversationId || busy) return;
+    const data = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/branch`, {
+      method: "POST",
+      body: { event_index: eventIndex },
+    });
+    setConversationId(data.id);
+    setEvents(data.events || []);
+    setState(data.state || null);
+    setConversationModel(data.state?.model || conversationModel || "");
+    setHistoryStatus(text("已创建对话分支", "Conversation branch created"));
+    await refreshConversations();
+  }
+
+  async function respondToQuestion(response) {
+    if (!pendingQuestion || busy) return;
+    const payload = {
+      status: response.status,
+      question: pendingQuestion.question,
+      selected: response.selected || [],
+      text: response.text || "",
+      direction: response.direction || "",
+    };
+    const displayMessage = formatQuestionResponseForUser(payload, text);
+    setPendingQuestion(null);
+    await runChatTurn(`questionResponse:\n${JSON.stringify(payload)}`, [], displayMessage);
+  }
+
+  async function reviewPlan(decision) {
+    if (!conversationId || busy) return;
+    const data = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/plan/decision`, {
+      method: "POST",
+      body: { decision },
+    });
+    setState(data.state || null);
+    setEvents(data.events || []);
+    if (decision === "approved") {
+      const nextOptions = { ...options, conversation_mode: "agent" };
+      setOptions(nextOptions);
+      await runChatTurn(
+        "Implement the approved session plan. Verify repository facts as you work, test the result, and report any necessary deviation from the plan.",
+        [],
+        text("已批准计划，开始执行。", "Plan approved. Start implementation."),
+        { state: data.state || null, options: nextOptions },
+      );
+    }
+  }
+
+  function revisePlan() {
+    setOptions((current) => ({ ...current, conversation_mode: "plan" }));
+    setMessage(text("请根据以下反馈修改计划：", "Revise the plan using this feedback: "));
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
+  async function savePlanCopy() {
+    if (!conversationId || busy) return;
+    const result = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/plan/save-copy`, { method: "POST" });
+    setHistoryStatus(`${text("计划副本已保存：", "Plan copy saved: ")}${result.path}`);
+  }
+
   async function uploadOneFile(file) {
     const response = await fetch(`${API_BASE}/api/uploads?filename=${encodeURIComponent(file.name)}`, {
       method: "POST",
@@ -484,6 +611,8 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
             models={models}
             options={options}
             setOptions={setOptions}
+            currentModel={conversationModel || options.model}
+            setCurrentModel={setConversationModel}
             text={text}
             clearState={newConversation}
           />
@@ -507,7 +636,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
         <div className="chatHeader">
           <div>
             <h2>{conversationId ? "对话" : label("newChat")}</h2>
-            <span>{options.model || "默认模型"}</span>
+            <span>{conversationModel || options.model || "默认模型"}</span>
           </div>
           <button className="secondaryButton" onClick={compressConversation} disabled={!conversationId || busy} type="button">
             <Archive size={16} />
@@ -516,9 +645,11 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
         </div>
         <div className="stream" ref={outputRef} onScroll={trackScroll}>
           {events.length === 0 && <div className="emptyState">输入消息，或用 @ 指定工具、历史、技能、记忆和知识。</div>}
-          <StreamEvents events={events} busy={busy} onPreviewImage={setPreviewImage} />
+          <StreamEvents events={events} busy={busy} onPreviewImage={setPreviewImage} onBranch={branchConversation} />
+          <PlanReviewCard plan={state?.plan} busy={busy} onApprove={() => reviewPlan("approved")} onReject={() => reviewPlan("rejected")} onRevise={revisePlan} onSave={savePlanCopy} text={text} />
         </div>
         <form className="composer" onSubmit={sendMessage}>
+          {queuedMessages.length > 0 && <div className="queuedMessages">{queuedMessages.map((item, index) => <div key={item.id}><span>{index + 1}. {item.displayMessage}</span><button type="button" onClick={() => setQueuedMessages((items) => items.filter((entry) => entry.id !== item.id))}><X size={14} /></button></div>)}</div>}
           {mentionOpen && filteredMentions.length > 0 && (
             <div className="mentionMenu">
               {filteredMentions.map((item) => (
@@ -529,59 +660,30 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
               ))}
             </div>
           )}
-          {attachments.length > 0 && (
-            <div className="attachmentTray">
-              {attachments.map((item) => {
-                const isImage = item.content_type?.startsWith("image/");
-                const src = item.url || item.path;
-                const href = normalizeImageSrc(src);
-                return (
-                  <div
-                    className="attachmentChip"
-                    key={item.path}
-                  >
-                    {isImage ? (
-                      <button
-                        className="attachmentThumbButton"
-                        type="button"
-                        onClick={() => setPreviewImage({ src, alt: item.filename || "upload" })}
-                        title="View image"
-                      >
-                        <img className="attachmentThumb" src={href} alt={item.filename || "upload"} />
-                      </button>
-                    ) : (
-                      <Paperclip size={14} />
-                    )}
-                    <span>{item.filename}</span>
-                    {isImage && (
-                      <a className="attachmentAction" href={href} download={imageDownloadName(item.filename || src)} title="Download image">
-                        <Download size={13} />
-                      </a>
-                    )}
-                    <button
-                      className="attachmentAction"
-                      type="button"
-                      onClick={() => setAttachments((current) => current.filter((candidate) => candidate.path !== item.path))}
-                      title="Remove attachment"
-                    >
-                      <X size={13} />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          <div className="composerRow">
-            <button className="composerIcon" type="button" onClick={() => fileInputRef.current?.click()} title={label("uploadFile")}><Paperclip size={18} /></button>
-            <button className="composerIcon" type="button" onClick={() => imageInputRef.current?.click()} title={label("uploadImage")}><Image size={18} /></button>
-            <button
-              className={options.file_editor_approval === "auto" ? "composerIcon active" : "composerIcon"}
-              type="button"
-              onClick={() => setOptions((current) => ({ ...current, file_editor_approval: current.file_editor_approval === "auto" ? "manual" : "auto" }))}
-              title={label("autoApproval")}
-            >
-              <Check size={18} />
-            </button>
+          <div className="composerSurface">
+            {attachments.length > 0 && (
+              <div className="attachmentTray">
+                {attachments.map((item) => {
+                  const isImage = item.content_type?.startsWith("image/");
+                  const src = item.url || item.path;
+                  const href = normalizeImageSrc(src);
+                  return (
+                    <div className="attachmentChip" key={item.path}>
+                      {isImage ? (
+                        <button className="attachmentThumbButton" type="button" onClick={() => setPreviewImage({ src, alt: item.filename || "upload" })} title="View image">
+                          <img className="attachmentThumb" src={href} alt={item.filename || "upload"} />
+                        </button>
+                      ) : (
+                        <Paperclip size={14} />
+                      )}
+                      <span>{item.filename}</span>
+                      {isImage && <a className="attachmentAction" href={href} download={imageDownloadName(item.filename || src)} title="Download image"><Download size={13} /></a>}
+                      <button className="attachmentAction" type="button" onClick={() => setAttachments((current) => current.filter((candidate) => candidate.path !== item.path))} title="Remove attachment"><X size={13} /></button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
             <textarea
               ref={composerRef}
               value={message}
@@ -590,28 +692,49 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged 
               onFocus={loadMentionOptions}
               placeholder="输入消息，Enter 发送，Shift+Enter 换行..."
             />
-            {busy ? (
-              <button className="stopButton" type="button" onClick={stopOutput} title={label("stop")}>
-                <Square size={17} />
-                <span>{label("stop")}</span>
-              </button>
-            ) : (
-              <button className="primaryButton" type="submit" disabled={!message.trim() && attachments.length === 0} title="Send">
-                <Send size={18} />
-                <span>{label("send")}</span>
-              </button>
-            )}
+            <div className="composerFooter">
+              <div className="composerTools">
+                <button className="composerIcon" type="button" onClick={() => fileInputRef.current?.click()} title={label("uploadFile")}><Paperclip size={17} /></button>
+                <button className="composerIcon" type="button" onClick={() => imageInputRef.current?.click()} title={label("uploadImage")}><Image size={17} /></button>
+                <select className="composerPicker modePicker" value={normalizeConversationMode(options.conversation_mode)} onChange={(event) => setOptions((current) => ({ ...current, conversation_mode: event.target.value }))} title={text("对话模式", "Conversation mode")} aria-label={text("对话模式", "Conversation mode")}>
+                  <option value="ask">{text("问答", "Ask")}</option>
+                  <option value="plan">{text("计划", "Plan")}</option>
+                  <option value="agent">Agent</option>
+                </select>
+                <select className="composerPicker modelPicker" value={conversationModel || options.model || ""} onChange={(event) => setConversationModel(event.target.value)} title={text("当前模型", "Current model")} aria-label={text("当前模型", "Current model")}>
+                  <option value="">{text("默认模型", "Default model")}</option>
+                  {models.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
+                </select>
+                <button className={options.file_editor_approval === "auto" ? "composerIcon active" : "composerIcon"} type="button" onClick={() => setOptions((current) => ({ ...current, file_editor_approval: current.file_editor_approval === "auto" ? "manual" : "auto" }))} title={label("autoApproval")} aria-pressed={options.file_editor_approval === "auto"}><Check size={17} /></button>
+              </div>
+              <div className="composerActions">
+                <select className="composerPicker queuePicker" value={inputMode} onChange={(event) => setInputMode(event.target.value)} title={text("运行中发送方式", "Send while running")} aria-label={text("运行中发送方式", "Send while running")}>
+                  <option value="queue">{text("排队", "Queue")}</option>
+                  <option value="insert">{text("打断", "Interrupt")}</option>
+                </select>
+                {busy && <button className="composerIcon" type="button" onClick={togglePause} title={paused ? text("继续", "Resume") : text("暂停", "Pause")}>{paused ? <Play size={17} /> : <Pause size={17} />}</button>}
+                {busy && <button className="composerIcon dangerIcon" type="button" onClick={stopOutput} title={label("stop")}><Square size={15} /></button>}
+                <button className="composerSend" type="submit" disabled={!message.trim() && attachments.length === 0} title={busy ? (inputMode === "insert" ? text("打断并发送", "Interrupt and send") : text("加入队列", "Add to queue")) : label("send")} aria-label={label("send")}><Send size={17} /></button>
+              </div>
+            </div>
           </div>
           <input ref={fileInputRef} type="file" className="hiddenInput" onChange={uploadSelectedFile} multiple />
           <input ref={imageInputRef} type="file" accept="image/*" className="hiddenInput" onChange={uploadSelectedFile} multiple />
         </form>
+        <QuestionDialog
+          key={`${pendingQuestion?.run_id || "saved"}:${pendingQuestion?.question || ""}`}
+          question={pendingQuestion}
+          busy={busy}
+          onRespond={respondToQuestion}
+          text={text}
+        />
         <ImagePreview image={previewImage} onClose={() => setPreviewImage(null)} />
       </div>
     </section>
   );
 }
 
-function SettingsPanel({ models, options, setOptions, clearState, text }) {
+function SettingsPanel({ models, options, setOptions, currentModel, setCurrentModel, clearState, text }) {
   const update = (key, value) => setOptions((current) => ({ ...current, [key]: value }));
   return (
     <div className="settingsPane embeddedSettings">
@@ -621,11 +744,22 @@ function SettingsPanel({ models, options, setOptions, clearState, text }) {
       </div>
       <label>
         <span>{text("模型", "Model")}</span>
-        <select value={options.model} onChange={(event) => update("model", event.target.value)}>
+        <select value={currentModel || ""} onChange={(event) => setCurrentModel(event.target.value)}>
           <option value="">{text("默认", "Default")}</option>
           {models.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
         </select>
       </label>
+      <QuestionLevelControl value={options.question_mode} onChange={(value) => update("question_mode", value)} text={text} />
+      <button
+        className={options.developer_mode ? "developerToggle active" : "developerToggle"}
+        type="button"
+        onClick={() => update("developer_mode", !options.developer_mode)}
+        aria-pressed={options.developer_mode}
+      >
+        <Code2 size={16} />
+        <span>{text("开发者模式", "Developer mode")}</span>
+        <strong>{options.developer_mode ? "ON" : "OFF"}</strong>
+      </button>
       <label>
         <span>{text("额外提示", "Extra Prompt")}</span>
         <textarea className="smallTextArea" value={options.system_prompt} onChange={(event) => update("system_prompt", event.target.value)} placeholder={text("仅当前对话追加到首个 system prompt", "Append only to the first system prompt in this chat")} />
@@ -643,6 +777,14 @@ function SettingsPanel({ models, options, setOptions, clearState, text }) {
         <SelectField label="MCP" value={options.mcp_mode} onChange={(value) => update("mcp_mode", value)} values={["off", "auto"]} />
         <SelectField label={text("历史", "History")} value={options.history_mode} onChange={(value) => update("history_mode", value)} values={["off", "auto"]} />
         <SelectField label={text("自动化", "Automation")} value={options.automation_mode} onChange={(value) => update("automation_mode", value)} values={["off", "auto"]} />
+        <label>
+          <span>{text("对话模式", "Mode")}</span>
+          <select value={normalizeConversationMode(options.conversation_mode)} onChange={(event) => update("conversation_mode", event.target.value)}>
+            <option value="ask">{text("问答 - 只读理解与查询", "Ask - read-only answers")}</option>
+            <option value="plan">{text("计划 - 研究并等待批准", "Plan - research and review")}</option>
+            <option value="agent">{text("Agent - 执行、测试、迭代", "Agent - implement and verify")}</option>
+          </select>
+        </label>
       </div>
       <div className="checkGrid">
         <label className="checkLine"><input type="checkbox" checked={options.rag_include_memory} onChange={(event) => update("rag_include_memory", event.target.checked)} /><span>{text("RAG 记忆", "RAG Memory")}</span></label>
@@ -673,10 +815,11 @@ function SelectField({ label, value, onChange, values, icon = null }) {
   );
 }
 
-function StreamEvents({ events, busy = false, onPreviewImage }) {
+function StreamEvents({ events, busy = false, onPreviewImage, onBranch }) {
   const turns = [];
   let current = [];
-  for (const event of events) {
+  for (const [eventIndex, rawEvent] of events.entries()) {
+    const event = { ...rawEvent, eventIndex };
     if (event.type === "user" && current.length > 0) {
       turns.push(current);
       current = [];
@@ -690,11 +833,176 @@ function StreamEvents({ events, busy = false, onPreviewImage }) {
       events={turn}
       running={busy && index === turns.length - 1}
       onPreviewImage={onPreviewImage}
+      onBranch={onBranch}
     />
   ));
 }
 
-function StreamTurn({ events, running = false, onPreviewImage }) {
+function PlanReviewCard({ plan, busy, onApprove, onReject, onRevise, onSave, text }) {
+  if (!plan?.content || plan.status === "rejected") return null;
+  const ready = plan.status === "ready";
+  return (
+    <section className={`planReview plan-${plan.status || "draft"}`}>
+      <header>
+        <div>
+          <span>{text("会话计划", "SESSION PLAN")}</span>
+          <h3>{plan.name || text("实施计划", "Implementation plan")}</h3>
+        </div>
+        <strong>{String(plan.status || "draft").toUpperCase()}</strong>
+      </header>
+      <MarkdownText text={plan.content} />
+      <div className="planActions">
+        <button className="secondaryButton" type="button" onClick={onRevise} disabled={busy}>{text("继续修改", "Revise")}</button>
+        <button className="secondaryButton" type="button" onClick={onSave} disabled={busy}><Save size={15} /><span>{text("保存副本", "Save copy")}</span></button>
+        {ready && <button className="secondaryButton dangerButton" type="button" onClick={onReject} disabled={busy}>{text("拒绝", "Reject")}</button>}
+        {ready && <button className="primaryButton" type="button" onClick={onApprove} disabled={busy}><Check size={16} /><span>{text("批准并执行", "Approve and implement")}</span></button>}
+      </div>
+    </section>
+  );
+}
+
+function QuestionLevelControl({ value, onChange, text }) {
+  const levels = ["off", "light", "heavy"];
+  const index = Math.max(0, levels.indexOf(value));
+  return (
+    <label className="questionLevel">
+      <span>{text("提问强度", "Clarification")}</span>
+      <input
+        type="range"
+        min="0"
+        max="2"
+        step="1"
+        value={index}
+        onChange={(event) => onChange(levels[Number(event.target.value)])}
+      />
+      <div className="questionLevelLabels" aria-hidden="true">
+        <span>{text("跳过", "Skip")}</span>
+        <span>{text("轻度", "Light")}</span>
+        <span>{text("重度", "Heavy")}</span>
+      </div>
+    </label>
+  );
+}
+
+function QuestionDialog({ question, busy, onRespond, text }) {
+  const [selected, setSelected] = useState([]);
+  const [answer, setAnswer] = useState("");
+  const [redirecting, setRedirecting] = useState(false);
+  const [direction, setDirection] = useState("");
+  const [minimized, setMinimized] = useState(false);
+  if (!question) return null;
+
+  if (minimized) {
+    return (
+      <button className="questionMinimized" type="button" onClick={() => setMinimized(false)}>
+        <span><strong>{text("等待确认", "Input needed")}</strong>{question.question}</span>
+        <Maximize2 size={17} />
+      </button>
+    );
+  }
+
+  const options = Array.isArray(question.options) ? question.options : [];
+  const canAnswer = selected.length > 0 || answer.trim().length > 0;
+
+  function toggleOption(option) {
+    if (question.multiple) {
+      setSelected((items) => items.includes(option) ? items.filter((item) => item !== option) : [...items, option]);
+      return;
+    }
+    setSelected([option]);
+  }
+
+  function submitAnswer(event) {
+    event.preventDefault();
+    if (!canAnswer || busy) return;
+    onRespond({ status: "answered", selected, text: answer.trim() });
+  }
+
+  function submitDirection(event) {
+    event.preventDefault();
+    if (!direction.trim() || busy) return;
+    onRespond({ status: "redirected", direction: direction.trim() });
+  }
+
+  return (
+    <div className="questionBackdrop">
+      <section className="questionDialog" role="dialog" aria-modal="true" aria-labelledby="question-title">
+        <header className="questionHeader">
+          <div>
+            <span>{text("需要你的确认", "YOUR INPUT")}</span>
+            <h2 id="question-title">{redirecting ? text("改变方向", "Change direction") : (question.title || text("确认下一步", "Confirm next step"))}</h2>
+          </div>
+          <div className="questionHeaderActions">
+            <button className="iconButton neutral" type="button" onClick={() => setMinimized(true)} title={text("缩小", "Minimize")}>
+              <Minus size={17} />
+            </button>
+            <button
+              className="iconButton neutral"
+              type="button"
+              onClick={() => onRespond({ status: "declined" })}
+              disabled={busy}
+              title={text("拒绝回答", "Decline")}
+            >
+              <X size={17} />
+            </button>
+          </div>
+        </header>
+
+        {redirecting ? (
+          <form onSubmit={submitDirection}>
+            <p className="questionText">{text("这个问题不适用，或你希望任务改走另一条路线。", "Explain the new direction or why this question does not apply.")}</p>
+            <textarea
+              autoFocus
+              value={direction}
+              onChange={(event) => setDirection(event.target.value)}
+              placeholder={text("告诉 AI 接下来应该怎么做…", "Tell the AI what to do instead...")}
+            />
+            <div className="questionActions">
+              <button className="secondaryButton" type="button" onClick={() => setRedirecting(false)} disabled={busy}>{text("返回问题", "Back")}</button>
+              <button className="secondaryButton" type="button" onClick={() => onRespond({ status: "declined" })} disabled={busy}>{text("拒绝回答", "Decline")}</button>
+              <button className="primaryButton" type="submit" disabled={!direction.trim() || busy}>{text("提交新方向", "Submit direction")}</button>
+            </div>
+          </form>
+        ) : (
+          <form onSubmit={submitAnswer}>
+            <p className="questionText">{question.question}</p>
+            {options.length > 0 && (
+              <div className="questionOptions">
+                {options.map((option) => (
+                  <label className={selected.includes(option) ? "questionOption selected" : "questionOption"} key={option}>
+                    <input
+                      type={question.multiple ? "checkbox" : "radio"}
+                      name="agent-question"
+                      checked={selected.includes(option)}
+                      onChange={() => toggleOption(option)}
+                    />
+                    <span>{option}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            <label className="questionAnswer">
+              <span>{options.length > 0 ? text("补充说明或填写其他答案", "Add details or another answer") : text("你的回答", "Your answer")}</span>
+              <textarea
+                autoFocus={options.length === 0}
+                value={answer}
+                onChange={(event) => setAnswer(event.target.value)}
+                placeholder={question.placeholder || text("输入内容…", "Type your answer...")}
+              />
+            </label>
+            <div className="questionActions">
+              <button className="secondaryButton" type="button" onClick={() => onRespond({ status: "declined" })} disabled={busy}>{text("拒绝回答", "Decline")}</button>
+              <button className="secondaryButton" type="button" onClick={() => setRedirecting(true)} disabled={busy}>{text("改变方向", "Change direction")}</button>
+              <button className="primaryButton" type="submit" disabled={!canAnswer || busy}>{text("提交回答", "Submit answer")}</button>
+            </div>
+          </form>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function StreamTurn({ events, running = false, onPreviewImage, onBranch }) {
   const assistantIndex = findLastIndex(events, (event) => event.type === "assistant");
   const stoppedIndex = findLastIndex(events, (event) => event.type === "stopped");
   const errorIndex = findLastIndex(events, (event) => event.type === "error" && event.terminal);
@@ -718,19 +1026,19 @@ function StreamTurn({ events, running = false, onPreviewImage }) {
           {operationEvents.map((event, index) => <StreamEvent key={`${event.type}-${index}`} event={event} compact onPreviewImage={onPreviewImage} />)}
         </details>
       )}
-      {finalEvent && <StreamEvent event={finalEvent} onPreviewImage={onPreviewImage} />}
+      {finalEvent && String(finalEvent.text || "").trim() && <StreamEvent event={finalEvent} onPreviewImage={onPreviewImage} onBranch={onBranch} />}
     </div>
   );
 }
 
-function StreamEvent({ event, compact = false, onPreviewImage }) {
+function StreamEvent({ event, compact = false, onPreviewImage, onBranch }) {
   const type = event.type || "event";
-  const fallback = event.text || event.query || event.url || "";
+  const fallback = event.text || event.query || event.url || event.question || "";
   const body = stringifyEventText(event, fallback);
   const images = extractLooseImages(body);
   return (
     <article className={`event event-${type}${compact ? " compact" : ""}`}>
-      <div className="eventType">{eventLabel(type)}</div>
+      <div className="eventType">{eventLabel(type)}{type === "assistant" && onBranch && <button className="branchButton" type="button" onClick={() => onBranch(event.eventIndex)} title="Branch conversation"><GitBranch size={13} /></button>}</div>
       <MarkdownText text={body} onPreviewImage={onPreviewImage} />
       {event.attachments?.length > 0 && <AttachmentList attachments={event.attachments} onPreviewImage={onPreviewImage} />}
       {images.length > 0 && <ImageStrip images={images} onPreviewImage={onPreviewImage} />}
@@ -1165,16 +1473,20 @@ function ConfigView({ onSaved, text }) {
   const [config, setConfig] = useState({ providers: {} });
   const [selectedProvider, setSelectedProvider] = useState("");
   const [status, setStatus] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [newModel, setNewModel] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     refreshConfig();
   }, []);
 
-  async function refreshConfig() {
+  async function refreshConfig(preferredProvider = "") {
     const data = await fetchJson("/api/config");
     const nextConfig = data.config || { providers: {} };
     setConfig(nextConfig);
-    setSelectedProvider(nextConfig.default_provider || Object.keys(nextConfig.providers || {})[0] || "");
+    setSelectedProvider(preferredProvider || nextConfig.default_provider || Object.keys(nextConfig.providers || {})[0] || "");
+    setApiKey("");
     setStatus("");
   }
 
@@ -1196,11 +1508,12 @@ function ConfigView({ onSaved, text }) {
     if (!name) return;
     updateConfig((draft) => {
       draft.providers ||= {};
-      draft.providers[name] ||= { base_url: "", api_key_env: "", api_key: "", models: [] };
+      draft.providers[name] ||= { base_url: "", api_key_env: "", models: [] };
       draft.default_provider ||= name;
       return draft;
     });
     setSelectedProvider(name);
+    setApiKey("");
   }
 
   function renameProvider() {
@@ -1215,6 +1528,7 @@ function ConfigView({ onSaved, text }) {
       return draft;
     });
     setSelectedProvider(nextName);
+    setApiKey("");
   }
 
   function deleteProvider() {
@@ -1229,26 +1543,56 @@ function ConfigView({ onSaved, text }) {
     setSelectedProvider("");
   }
 
-  function setDefaultProvider() {
-    if (!selectedProvider) return;
-    updateConfig((draft) => ({ ...draft, default_provider: selectedProvider }));
+  async function saveConfig(showStatus = true) {
+    try {
+      const payload = structuredClone(config);
+      if (selectedProvider && apiKey.trim()) payload.providers[selectedProvider].api_key = apiKey.trim();
+      const data = await fetchJson("/api/config", { method: "PUT", body: { config: payload } });
+      setConfig(data.config || config);
+      setApiKey("");
+      if (showStatus) setStatus(text("模型 API 配置已保存", "Model API configuration saved"));
+      await onSaved?.();
+      return true;
+    } catch (error) {
+      setStatus(`${text("保存失败", "Save failed")}: ${String(error.message || error)}`);
+      return false;
+    }
   }
 
-  async function saveConfig() {
+  async function refreshModels() {
+    if (!selectedProvider || refreshing) return;
+    setRefreshing(true);
     try {
-      await fetchJson("/api/config", { method: "PUT", body: { config } });
-      setStatus("模型 API 配置已保存");
-      onSaved?.();
+      if (!(await saveConfig(false))) return;
+      const data = await fetchJson(`/api/config/providers/${encodeURIComponent(selectedProvider)}/models/refresh`, { method: "POST" });
+      setConfig(data.config || config);
+      setStatus(text(`已刷新 ${data.count || 0} 个模型`, `Refreshed ${data.count || 0} models`));
+      await onSaved?.();
     } catch (error) {
-      setStatus(`保存失败: ${String(error.message || error)}`);
+      setStatus(`${text("刷新失败", "Refresh failed")}: ${String(error.message || error)}`);
+    } finally {
+      setRefreshing(false);
     }
+  }
+
+  function addManualModel() {
+    const value = newModel.trim();
+    if (!value) return;
+    updateProvider("models", [...(Array.isArray(provider.models) ? provider.models : []), value]);
+    setNewModel("");
+  }
+
+  function removeModel(modelId) {
+    updateProvider("models", (Array.isArray(provider.models) ? provider.models : []).filter((item) => modelValue(item) !== modelId));
+  }
+
+  function setDefaultModel(modelId) {
+    updateConfig((draft) => ({ ...draft, default_provider: selectedProvider, default_model: modelId }));
   }
 
   const providers = config.providers || {};
   const provider = selectedProvider ? providers[selectedProvider] || {} : {};
-  const modelLines = Array.isArray(provider.models)
-    ? provider.models.map((item) => (typeof item === "string" ? item : item.alias || item.id || "")).join("\n")
-    : "";
+  const providerModels = Array.isArray(provider.models) ? provider.models : [];
 
   return (
     <section className="configLayout">
@@ -1271,27 +1615,116 @@ function ConfigView({ onSaved, text }) {
             <span>{text("选择左侧供应商后填写 Base URL、API Key 或环境变量，以及模型列表。", "Choose a provider, then fill in Base URL, API Key or env var, and model list.")}</span>
           </div>
           <div className="rowActions">
-            <button className="secondaryButton" onClick={setDefaultProvider} disabled={!selectedProvider} type="button"><Check size={16} /><span>{text("设为默认", "Set Default")}</span></button>
             <button className="secondaryButton" onClick={renameProvider} disabled={!selectedProvider} type="button"><AtSign size={16} /><span>{text("重命名", "Rename")}</span></button>
             <button className="dangerButton" onClick={deleteProvider} disabled={!selectedProvider} type="button"><Trash2 size={16} /><span>{text("删除", "Delete")}</span></button>
-            <button className="secondaryButton" onClick={refreshConfig} type="button"><RefreshCw size={16} /><span>{text("刷新", "Refresh")}</span></button>
-            <button className="primaryButton" onClick={saveConfig} type="button"><Save size={16} /><span>{text("保存", "Save")}</span></button>
+            <button className="secondaryButton" onClick={refreshModels} disabled={!selectedProvider || refreshing} type="button"><RefreshCw size={16} /><span>{refreshing ? text("刷新中", "Refreshing") : text("刷新模型", "Refresh models")}</span></button>
+            <button className="primaryButton" onClick={() => saveConfig()} type="button"><Save size={16} /><span>{text("保存", "Save")}</span></button>
           </div>
         </div>
         {selectedProvider ? (
           <div className="modelForm">
             <label><span>{text("当前供应商", "Current Provider")}</span><input value={selectedProvider} readOnly /></label>
-            <label><span>{text("默认模型", "Default Model")}</span><input value={config.default_model || ""} onChange={(event) => updateConfig((draft) => ({ ...draft, default_model: event.target.value }))} placeholder={`${selectedProvider}:deepseek-chat`} /></label>
             <label><span>Base URL</span><input value={provider.base_url || ""} onChange={(event) => updateProvider("base_url", event.target.value)} placeholder="https://api.deepseek.com/v1" /></label>
-            <label><span>API Key</span><input value={provider.api_key || ""} onChange={(event) => updateProvider("api_key", event.target.value)} placeholder="直接保存 API Key" /></label>
+            <label><span>API Key</span><input type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={provider.has_api_key ? text("已保存，留空则保持不变", "Saved; leave blank to keep") : text("输入 API Key", "Enter API Key")} /></label>
             <label><span>API Key Env</span><input value={provider.api_key_env || ""} onChange={(event) => updateProvider("api_key_env", event.target.value)} placeholder="DEEPSEEK_API_KEY" /></label>
             <label><span>{text("默认供应商", "Default Provider")}</span><input value={config.default_provider || ""} readOnly /></label>
-            <label className="fullWidth"><span>{text("模型列表，每行一个", "Models, one per line")}</span><textarea value={modelLines} onChange={(event) => updateProvider("models", event.target.value.split("\n").map((line) => line.trim()).filter(Boolean))} placeholder={"deepseek-chat\ndeepseek-reasoner"} /></label>
+            <div className="fullWidth modelCatalog">
+              <div className="modelCatalogHeader">
+                <span>{text("支持的模型", "Supported models")}</span>
+                <small>{text("优先使用刷新按钮从 API 获取，也可以手动添加", "Refresh from the API or add one manually")}</small>
+              </div>
+              <div className="manualModelRow">
+                <input value={newModel} onChange={(event) => setNewModel(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addManualModel(); } }} placeholder="model-id" />
+                <button className="secondaryButton" type="button" onClick={addManualModel}><Plus size={16} /><span>{text("添加", "Add")}</span></button>
+              </div>
+              <div className="modelList">
+                {providerModels.map((item) => {
+                  const id = modelValue(item);
+                  const isDefault = config.default_provider === selectedProvider && config.default_model === id;
+                  return (
+                    <div className="modelRow" key={id}>
+                      <button className={isDefault ? "modelName active" : "modelName"} type="button" onClick={() => setDefaultModel(id)} title={text("设为默认模型", "Set as default model")}>
+                        {isDefault && <Check size={14} />}{id}
+                      </button>
+                      <button className="iconButton neutral" type="button" onClick={() => removeModel(id)} title={text("移除", "Remove")}><X size={15} /></button>
+                    </div>
+                  );
+                })}
+                {providerModels.length === 0 && <div className="emptyState">{text("尚未加载模型，请填写 API 后刷新。", "No models loaded. Configure the API and refresh.")}</div>}
+              </div>
+            </div>
           </div>
         ) : (
           <div className="emptyState">{text("左侧新增或选择一个 Provider。", "Add or choose a provider on the left.")}</div>
         )}
         {status && <p className="statusLine"><Check size={15} />{status}</p>}
+      </div>
+    </section>
+  );
+}
+
+function CustomToolsView({ text }) {
+  const emptyTool = {
+    name: "",
+    description: "",
+    parametersText: '{\n  "type": "object",\n  "properties": {},\n  "required": []\n}',
+    code: "def run(arguments):\n    return arguments\n",
+  };
+  const [tools, setTools] = useState([]);
+  const [selected, setSelected] = useState("");
+  const [form, setForm] = useState(emptyTool);
+  const [status, setStatus] = useState("");
+
+  useEffect(() => { refreshTools(); }, []);
+
+  async function refreshTools() {
+    const data = await fetchJson("/api/custom-tools");
+    setTools(data.tools || []);
+  }
+
+  async function openTool(name) {
+    const data = await fetchJson(`/api/custom-tools/${encodeURIComponent(name)}`);
+    setSelected(name);
+    setForm({
+      name: data.name || name,
+      description: data.description || "",
+      parametersText: JSON.stringify(data.parameters || { type: "object", properties: {} }, null, 2),
+      code: data.code || "",
+    });
+    setStatus("");
+  }
+
+  async function saveTool() {
+    try {
+      const parameters = JSON.parse(form.parametersText);
+      const name = form.name.trim();
+      await fetchJson(`/api/custom-tools/${encodeURIComponent(name)}`, {
+        method: "PUT",
+        body: { name, description: form.description, parameters, code: form.code },
+      });
+      setSelected(name);
+      setStatus(text("自建工具已保存，可在 Agent 模式中作为 custom__名称 调用。", "Custom tool saved and available as custom__name in Agent mode."));
+      await refreshTools();
+    } catch (error) {
+      setStatus(`${text("保存失败", "Save failed")}: ${String(error.message || error)}`);
+    }
+  }
+
+  return (
+    <section className="configLayout">
+      <aside className="providerPane">
+        <div className="editorHeader"><h2>{text("自建工具", "CUSTOM TOOLS")}</h2><button className="iconButton neutral" type="button" onClick={() => { setSelected(""); setForm(emptyTool); setStatus(""); }}><Plus size={16} /></button></div>
+        {tools.map((item) => <button className={selected === item.name ? "providerItem active" : "providerItem"} key={item.name} type="button" onClick={() => openTool(item.name)}><span><Wrench size={15} />custom__{item.name}</span></button>)}
+      </aside>
+      <div className="modelEditor">
+        <div className="editorHeader"><div><h2>{text("工具代码", "TOOL CODE")}</h2><span>{text("用户级工具与 backend/tools 系统工具分开保存。代码必须定义 run(arguments)。", "User tools are separate from system tools and must define run(arguments).")}</span></div><button className="primaryButton" type="button" onClick={saveTool}><Save size={16} /><span>{text("保存", "Save")}</span></button></div>
+        <div className="customToolForm">
+          <label><span>{text("名称", "Name")}</span><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="my_tool" /></label>
+          <label><span>{text("描述", "Description")}</span><input value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></label>
+          <label><span>Parameters JSON Schema</span><textarea value={form.parametersText} onChange={(event) => setForm((current) => ({ ...current, parametersText: event.target.value }))} /></label>
+          <label><span>Python</span><textarea className="codeEditor" value={form.code} onChange={(event) => setForm((current) => ({ ...current, code: event.target.value }))} /></label>
+        </div>
+        {status && <p className="statusLine">{status}</p>}
       </div>
     </section>
   );
@@ -1715,20 +2148,38 @@ async function fetchJson(path, options = {}) {
 }
 
 function normalizeOptions(options) {
-  return { ...options, model: options.model || null, system_prompt: options.system_prompt || null };
+  return { ...options, conversation_mode: normalizeConversationMode(options.conversation_mode), model: options.model || null, system_prompt: options.system_prompt || null };
+}
+
+function normalizeConversationMode(mode) {
+  return mode === "chat" ? "ask" : (mode || "agent");
+}
+
+function modelValue(item) {
+  if (typeof item === "string") return item;
+  return item?.id || item?.alias || "";
 }
 
 function stringifyEventText(event, fallback) {
-  if (["tool_call", "assistant_progress", "approval_required", "ai_review", "error", "stopped", "user", "assistant"].includes(event.type)) {
+  if (["tool_call", "assistant_progress", "question_required", "approval_required", "ai_review", "plan_updated", "plan_ready", "plan_decision", "error", "stopped", "user", "assistant"].includes(event.type)) {
     return fallback;
   }
   return JSON.stringify(event, null, 2);
 }
 
+function formatQuestionResponseForUser(response, text) {
+  if (response.status === "declined") return text("我选择不回答这个问题。", "I declined to answer this question.");
+  if (response.status === "redirected") return `${text("改变方向：", "Change direction: ")}${response.direction}`;
+  const parts = [];
+  if (response.selected.length > 0) parts.push(response.selected.join(text("、", ", ")));
+  if (response.text) parts.push(response.text);
+  return parts.join("\n") || text("已回答。", "Answered.");
+}
+
 function summarizeOperation(event, completed) {
   if (!event) return completed ? "已完成" : "正在准备";
   const name = event.tool || event.type || "step";
-  const detail = event.query || event.url || event.text || "";
+  const detail = event.query || event.url || event.question || event.text || "";
   const clean = String(detail).replace(/\s+/g, " ").slice(0, 90);
   return `${completed ? "已执行" : "正在"} ${eventLabel(name)}${clean ? `: ${clean}` : ""}`;
 }
@@ -1739,6 +2190,7 @@ function eventLabel(type) {
     assistant: "ASSISTANT",
     assistant_progress: "THINKING",
     tool_call: "TOOL",
+    question_required: "QUESTION",
     approval_required: "APPROVAL",
     ai_review: "AI REVIEW",
     error: "ERROR",
@@ -1751,6 +2203,9 @@ function eventLabel(type) {
     fileEditor: "FILE",
     fileReader: "READER",
     settings_changed: "SETTINGS",
+    plan_updated: "PLAN DRAFT",
+    plan_ready: "PLAN READY",
+    plan_decision: "PLAN REVIEW",
   };
   return labels[type] || String(type).toUpperCase();
 }

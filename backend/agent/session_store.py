@@ -119,10 +119,61 @@ def rename_conversation(conversation_id: str, title: str) -> dict[str, Any]:
     return conversation
 
 
+def set_plan_decision(conversation_id: str, decision: str) -> dict[str, Any]:
+    if decision not in {"approved", "rejected"}:
+        raise ValueError("plan decision must be approved or rejected")
+    conversation = read_conversation(conversation_id)
+    state = dict(conversation.get("state") or {})
+    plan = dict(state.get("plan") or {})
+    if not plan.get("content"):
+        raise ValueError("conversation has no plan to review")
+    plan["status"] = decision
+    state["plan"] = plan
+    now = utc_now()
+    events = list(conversation.get("events") or [])
+    events.append(
+        {
+            "type": "plan_decision",
+            "decision": decision,
+            "text": "Plan approved for Agent mode." if decision == "approved" else "Plan rejected.",
+            "ts": now,
+        }
+    )
+    conversation.update({"state": state, "events": events, "updated_at": now})
+    write_conversation(conversation)
+    return conversation
+
+
 def delete_conversation(conversation_id: str) -> None:
     path = conversation_path(conversation_id)
     if path.exists():
         path.unlink()
+
+
+def branch_conversation(conversation_id: str, event_index: int) -> dict[str, Any]:
+    source = read_conversation(conversation_id)
+    events = list(source.get("events") or [])
+    if event_index < 0 or event_index >= len(events):
+        raise ValueError("branch event index is out of range")
+    branch_events = events[: event_index + 1]
+    branch_id = create_conversation_id()
+    source_state = dict(source.get("state") or {})
+    source_state["conversation_summary"] = ""
+    state = compact_state(source_state, branch_events)
+    now = utc_now()
+    branch = {
+        "id": branch_id,
+        "title": f"Branch: {source.get('title') or 'Untitled'}",
+        "created_at": now,
+        "updated_at": now,
+        "summary": state.get("conversation_summary", ""),
+        "events": branch_events,
+        "state": state,
+        "parent_id": conversation_id,
+        "parent_event_index": event_index,
+    }
+    write_conversation(branch)
+    return branch
 
 
 def compress_conversation(conversation_id: str) -> dict[str, Any]:
@@ -163,9 +214,18 @@ def events_to_transcript(events: list[dict[str, Any]]) -> str:
     lines = []
     for event in events:
         event_type = str(event.get("type") or "event")
-        if event_type not in {"user", "assistant", "assistant_progress", "tool_call", "error", "approval_required", "ai_review"}:
+        if event_type not in {
+            "user",
+            "assistant",
+            "assistant_progress",
+            "tool_call",
+            "question_required",
+            "error",
+            "approval_required",
+            "ai_review",
+        }:
             continue
-        text = str(event.get("text") or "").strip()
+        text = str(event.get("text") or event.get("question") or "").strip()
         if not text:
             continue
         lines.append(f"{event_type}: {text}")

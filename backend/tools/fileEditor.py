@@ -13,7 +13,13 @@ from tools.settings import FileEditorSettings
 Action = Literal["list", "read", "write", "replace", "insertAfter", "insertBefore", "append"]
 WRITE_ACTIONS = {"write", "replace", "insertAfter", "insertBefore", "append"}
 PROTECTED_PARTS = {".git", "backend/runtime", "node_modules", "__pycache__", ".venv", ".conda"}
-PROTECTED_NAMES = {".env", ".env.local", ".env.production"}
+PROTECTED_NAMES = {
+    ".env",
+    ".env.local",
+    ".env.production",
+    "api_configs.local.json",
+    "servers.local.json",
+}
 MAX_DIFF_CHARS = 20_000
 
 

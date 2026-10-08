@@ -19,8 +19,9 @@ from agent.llm import complete_chat_once
 from agent.references import resolve_reference_context
 from agent.reviewer import ReviewDecision, review_tool_request
 from prompts.context import build_context_prompt, format_current_time
-from prompts.tools import build_tool_usage_reminder, build_tools_prompt_from_settings
+from prompts.tools import build_tools_prompt_from_settings, format_available
 from tools import rag
+from tools import models as model_tool
 from tools.executor import execute_tool
 from tools.request import ToolRequest, build_openai_tools, parse_openai_tool_calls
 from tools.settings import ToolSettings, make_tool_settings
@@ -36,6 +37,14 @@ class AgentEvent(TypedDict, total=False):
     query: str
     url: str
     code: str
+    question: str
+    options: list[str]
+    multiple: bool
+    title: str
+    placeholder: str
+    name: str
+    content: str
+    status: str
     state: ChatState
 
 
@@ -68,6 +77,9 @@ class ChatState(TypedDict):
     history_mode: NotRequired[str]
     automation: NotRequired[bool]
     automation_mode: NotRequired[str]
+    question_mode: NotRequired[str]
+    developer_mode: NotRequired[bool]
+    conversation_mode: NotRequired[str]
     attachments: NotRequired[list[dict[str, Any]]]
     rag_context: NotRequired[str]
     web_search_results: NotRequired[list[str]]
@@ -82,6 +94,9 @@ class ChatState(TypedDict):
     max_tool_rounds: NotRequired[int]
     response: NotRequired[str]
     tool_events: NotRequired[list[AgentEvent]]
+    question_pending: NotRequired[dict[str, Any] | None]
+    plan: NotRequired[dict[str, str] | None]
+    tools_announced: NotRequired[bool]
 
 
 def first_state(state: ChatState) -> dict[str, Any]:
@@ -112,10 +127,12 @@ def first_state(state: ChatState) -> dict[str, Any]:
         history_mode=state.get("history_mode", "off"),
         automation=state.get("automation") if "automation_mode" not in state else None,
         automation_mode=state.get("automation_mode", "off"),
+        question_mode=state.get("question_mode", "light"),
+        conversation_mode=state.get("conversation_mode", "agent"),
     )
 
     if state.get("initialized") and state.get("messages"):
-        return {"settings": settings}
+        return {"settings": settings, "conversation_mode": settings.conversation_mode}
 
     system_prompt = load_system_prompt(
         web_search_mode=settings.web_search.mode,
@@ -140,6 +157,8 @@ def first_state(state: ChatState) -> dict[str, Any]:
         "tool_rounds": 0,
         "response": "",
         "tool_events": [],
+        "question_pending": None,
+        "tools_announced": False,
     }
 
 
@@ -167,18 +186,32 @@ def conversation_begin(state: ChatState) -> dict[str, Any]:
         rag_context=state.get("rag_context"),
         web_search_results=state.get("web_search_results"),
         rag_results=rag_results,
+        include_available=not state.get("tools_announced", False),
     )
     time_text = format_current_time()
     reference_text = resolve_reference_context(state["message"])
     attachment_text, image_parts = build_attachment_context(state.get("attachments") or [])
+    active_plan = state.get("plan") or {}
+    plan_text = ""
+    if active_plan and settings.conversation_mode in {"plan", "agent"}:
+        plan_text = (
+            "activePlan:\n"
+            f"name: {active_plan.get('name', 'implementation-plan')}\n"
+            f"status: {active_plan.get('status', 'draft')}\n"
+            f"content:\n{active_plan.get('content', '')}"
+        )
     user_parts = [
         part
         for part in [
             time_text,
+            f'conversationMode: "{settings.conversation_mode}"',
+            f'questionMode: "{state.get("question_mode", "light")}"',
+            'developerMode: "enabled"' if state.get("developer_mode") else "",
             context_text,
             tool_text,
             reference_text,
             attachment_text,
+            plan_text,
             f'userMessage: "{state["message"]}"',
         ]
         if part
@@ -199,6 +232,9 @@ def conversation_begin(state: ChatState) -> dict[str, Any]:
         "tool_rounds": 0,
         "response": "",
         "tool_events": [],
+        "question_pending": None,
+        "tools_announced": True,
+        "conversation_mode": settings.conversation_mode,
     }
 
 
@@ -339,6 +375,9 @@ def tool_call(state: ChatState) -> dict[str, Any]:
     web_search_results = list(state.get("web_search_results") or [])
     rag_results = list(state.get("rag_results") or [])
     tool_events: list[AgentEvent] = []
+    question_pending: dict[str, Any] | None = None
+    active_model = state.get("model")
+    active_plan = dict(state.get("plan") or {})
 
     for request in tool_requests:
         review_decision = maybe_review_tool_request(request, state)
@@ -362,23 +401,55 @@ def tool_call(state: ChatState) -> dict[str, Any]:
             rag_results.append(result)
         if result.startswith("toolError:"):
             tool_events.append({"type": "error", "text": result})
+        elif request.name == "question" and request.question_request:
+            item = request.question_request
+            question_pending = {
+                "question": item.question,
+                "options": list(item.options),
+                "multiple": item.multiple,
+                "title": item.title,
+                "placeholder": item.placeholder,
+            }
+            tool_events.append({"type": "question_required", "tool": "question", **question_pending})
         elif request.name == "settings":
             tool_events.append({"type": "settings_changed", "tool": "settings", "text": result})
+        elif request.name == "model" and request.model_request:
+            if request.model_request.action == "switch":
+                active_model = model_tool.resolve_model_selection(request.model_request)
+                tool_events.append({"type": "model_changed", "tool": "model", "text": active_model})
+            elif request.model_request.action == "refresh":
+                tool_events.append({"type": "models_changed", "tool": "model", "text": result})
+        elif request.name == "plan" and request.plan_request:
+            item = request.plan_request
+            active_plan = {
+                "name": item.name.strip() or active_plan.get("name") or "implementation-plan",
+                "content": item.content.strip(),
+                "status": "ready" if item.action == "finalize" else "draft",
+            }
+            event_type = "plan_ready" if item.action == "finalize" else "plan_updated"
+            tool_events.append({"type": event_type, "tool": "plan", **active_plan})
         elif request.name == "fileEditor" and file_editor_approval_required(result):
             tool_events.append({"type": "approval_required", "tool": "fileEditor", "text": result})
 
-    return {
+    update: dict[str, Any] = {
         "messages": messages,
         "web_search_results": web_search_results,
         "rag_results": rag_results,
         "tool_events": tool_events,
         "tool_rounds": state.get("tool_rounds", 0) + 1,
         "tool_error": "",
+        "question_pending": question_pending,
+        "plan": active_plan or None,
     }
+    if active_model:
+        update["model"] = active_model
+    return update
 
 def route_after_tool_call(state: ChatState) -> Route:
     if state.get("tool_error"):
         return "tool_error"
+    if state.get("question_pending"):
+        return "conversation_end"
     return "assistant_step"
 
 
@@ -387,7 +458,7 @@ def tool_error(state: ChatState) -> dict[str, Any]:
 
     error = state.get("tool_error") or "unknown tool error"
     log_event("tool.error_prompt", error=error)
-    reminder = build_tool_usage_reminder(error)
+    reminder = f"toolError: {error}\n{format_available(state['settings'])}"
     messages = list(state["messages"])
     tool_call_ids = read_last_tool_call_ids(state)
 
@@ -440,6 +511,7 @@ def build_graph():
         {
             "assistant_step": "assistant_step",
             "tool_error": "tool_error",
+            "conversation_end": "conversation_end",
         },
     )
     graph.add_edge("tool_error", "assistant_step")
@@ -475,6 +547,9 @@ def new_chat_state(
     history_mode: str = "off",
     automation: bool = False,
     automation_mode: str = "off",
+    question_mode: str = "light",
+    developer_mode: bool = False,
+    conversation_mode: str = "agent",
     rag_context: str | None = None,
     web_search_results: list[str] | None = None,
     rag_results: list[str] | None = None,
@@ -517,6 +592,9 @@ def new_chat_state(
         "history_mode": resolved_history_mode,
         "automation": automation,
         "automation_mode": resolved_automation_mode,
+        "question_mode": question_mode,
+        "developer_mode": developer_mode,
+        "conversation_mode": conversation_mode,
         "max_tool_rounds": max_tool_rounds,
     }
     if web_search_base_url:
@@ -609,6 +687,9 @@ def run_agent(
     mcp_mode: str = "auto",
     history: bool = False,
     history_mode: str = "off",
+    question_mode: str = "light",
+    developer_mode: bool = False,
+    conversation_mode: str = "agent",
     rag_context: str | None = None,
     web_search_results: list[str] | None = None,
     rag_results: list[str] | None = None,
@@ -642,6 +723,9 @@ def run_agent(
         mcp_mode=mcp_mode,
         history=history,
         history_mode=history_mode,
+        question_mode=question_mode,
+        developer_mode=developer_mode,
+        conversation_mode=conversation_mode,
         rag_context=rag_context,
         web_search_results=web_search_results,
         rag_results=rag_results,
@@ -674,6 +758,9 @@ def tool_call_key(request: ToolRequest) -> str:
     if request.name == "mcp" and request.mcp_request:
         mcp_request = request.mcp_request
         return f"{request.name}:{mcp_request.action}:{mcp_request.server}:{mcp_request.tool}:{mcp_request.arguments}"
+    if request.name == "question" and request.question_request:
+        item = request.question_request
+        return f"{request.name}:{item.question}:{item.options}:{item.multiple}"
     return request.name
 
 
@@ -723,6 +810,8 @@ def describe_tool_call_target(request: ToolRequest) -> str:
         return describe_file_edit_target(request)
     if request.name == "mcp":
         return describe_mcp_target(request)
+    if request.name == "question" and request.question_request:
+        return request.question_request.question
     return request.query
 
 
@@ -870,6 +959,12 @@ def describe_tool_request(request: ToolRequest) -> AgentEvent:
             "tool": request.name,
             "action": item.action,
             "text": f"automation: {item.action} {target}".strip(),
+        }
+    if request.name == "question" and request.question_request:
+        return {
+            "type": "tool_call",
+            "tool": request.name,
+            "text": f"question: {request.question_request.question}",
         }
     return {
         "type": "tool_call",

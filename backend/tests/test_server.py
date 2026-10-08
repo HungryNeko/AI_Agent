@@ -186,6 +186,63 @@ def test_conversation_can_be_renamed_and_deleted(tmp_path, monkeypatch):
     assert server.session_store.list_conversations() == []
 
 
+def test_conversation_can_branch_from_an_event(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.session_store, "CONVERSATION_ROOT", tmp_path / "conversations")
+    conversation_id = "source-chat"
+    server.session_store.write_conversation(
+        {
+            "id": conversation_id,
+            "title": "Source",
+            "events": [
+                {"type": "user", "text": "first"},
+                {"type": "assistant", "text": "answer"},
+                {"type": "user", "text": "later"},
+            ],
+            "state": {"messages": [{"role": "system", "content": "rules"}]},
+        }
+    )
+    client = TestClient(server.app)
+
+    response = client.post(f"/api/conversations/{conversation_id}/branch", json={"event_index": 1})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["parent_id"] == conversation_id
+    assert [item["text"] for item in data["events"]] == ["first", "answer"]
+
+
+def test_conversation_plan_requires_explicit_approval_and_export(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.session_store, "CONVERSATION_ROOT", tmp_path / "conversations")
+    monkeypatch.setattr(server.plan_tool, "PLAN_ROOT", tmp_path / "plans")
+    conversation_id = "plan-chat"
+    server.session_store.write_conversation(
+        {
+            "id": conversation_id,
+            "title": "Plan",
+            "events": [],
+            "state": {"plan": {"name": "demo", "content": "# Demo", "status": "ready"}},
+        }
+    )
+    client = TestClient(server.app)
+
+    approved = client.post(f"/api/conversations/{conversation_id}/plan/decision", json={"decision": "approved"})
+    exported = client.post(f"/api/conversations/{conversation_id}/plan/save-copy")
+
+    assert approved.status_code == 200
+    assert approved.json()["state"]["plan"]["status"] == "approved"
+    assert exported.status_code == 200
+    assert (tmp_path / "plans" / "demo.md").read_text(encoding="utf-8") == "# Demo\n"
+
+
+def test_pause_and_resume_endpoints_track_run_state():
+    client = TestClient(server.app)
+
+    assert client.post("/api/chat/pause", json={"run_id": "run-1"}).status_code == 200
+    assert server.is_paused_run("run-1") is True
+    assert client.post("/api/chat/resume", json={"run_id": "run-1"}).status_code == 200
+    assert server.is_paused_run("run-1") is False
+
+
 def test_config_endpoint_reads_and_writes(tmp_path, monkeypatch):
     config_path = tmp_path / "api_configs.json"
     config_path.write_text('{"default_provider":"demo","default_model":"m","providers":{"demo":{"base_url":"http://x","models":["m"]}}}', encoding="utf-8")
@@ -416,6 +473,59 @@ def test_chat_stream_marks_backend_failure_as_terminal(tmp_path, monkeypatch):
     assert events[-1]["type"] == "error"
     assert events[-1]["terminal"] is True
     assert "Missing API key" in events[-1]["text"]
+
+
+def test_chat_stream_saves_display_message_for_question_response(tmp_path, monkeypatch):
+    monkeypatch.setattr(server.session_store, "CONVERSATION_ROOT", tmp_path / "conversations")
+    saved = {}
+
+    def fake_stream_turn(state, message):
+        assert message.startswith("questionResponse:")
+        yield {"type": "assistant", "text": "continuing", "state": state}
+
+    def fake_save_turn(conversation_id, *, user_text, turn_events, state, attachments=None):
+        saved["user_text"] = user_text
+        return {}
+
+    monkeypatch.setattr(server, "stream_turn", fake_stream_turn)
+    monkeypatch.setattr(server.session_store, "save_turn", fake_save_turn)
+    client = TestClient(server.app)
+
+    response = client.post(
+        "/api/chat/stream",
+        json={
+            "message": 'questionResponse:\n{"status":"answered","selected":["Development"]}',
+            "display_message": "Development",
+        },
+    )
+
+    assert response.status_code == 200
+    assert saved["user_text"] == "Development"
+
+
+def test_chat_stream_preserves_first_turn_tool_announcement(tmp_path, monkeypatch):
+    from agent import graph
+
+    monkeypatch.setattr(server.session_store, "CONVERSATION_ROOT", tmp_path / "conversations")
+    prompts = []
+
+    def fake_stream_turn(state, message):
+        state["message"] = message
+        state.update(graph.first_state(state))
+        state.update(graph.conversation_begin(state))
+        prompts.append(state["messages"][-1]["content"])
+        yield {"type": "assistant", "text": "hello", "state": state}
+
+    monkeypatch.setattr(server, "stream_turn", fake_stream_turn)
+    client = TestClient(server.app)
+    first = client.post("/api/chat/stream", json={"message": "first"})
+    events = [json.loads(line[6:]) for line in first.text.splitlines() if line.startswith("data: ")]
+    state = next(event["state"] for event in events if event["type"] == "assistant")
+    second = client.post("/api/chat/stream", json={"message": "second", "state": state})
+
+    assert second.status_code == 200
+    assert "available:" in prompts[0]
+    assert "available:" not in prompts[1]
 
 
 def test_automation_endpoints_manage_runtime_json(tmp_path, monkeypatch):

@@ -70,13 +70,97 @@ def test_run_agent_calls_model_once(monkeypatch):
 
     assert result == "hi"
     assert payloads[0]["model"] == "deepseek-chat"
-    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["webSearch", "rag"]
+    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["webSearch", "rag", "model", "createTool", "question"]
     assert payloads[0]["messages"][0]["role"] == "system"
     assert "Tool request format reminder:" in payloads[0]["messages"][0]["content"]
     assert payloads[0]["messages"][-1]["role"] == "user"
     assert 'currentTime: "2026-09-02T12:00:00-07:00"' in payloads[0]["messages"][-1]["content"]
     assert 'conversationSummary: "summary"' in payloads[0]["messages"][-1]["content"]
-    assert 'available: ["webSearch", "rag"]' in payloads[0]["messages"][-1]["content"]
+    assert 'available: ["webSearch", "rag", "createTool", "custom__*", "model", "question"]' in payloads[0]["messages"][-1]["content"]
+
+
+def test_turn_context_includes_question_and_developer_modes(monkeypatch):
+    payloads = []
+
+    def fake_complete_chat_once(messages, *, model=None, tools=None):
+        payloads.append(messages)
+        return {"role": "assistant", "content": "ok"}
+
+    monkeypatch.setattr(graph, "complete_chat_once", fake_complete_chat_once)
+    graph.run_agent("inspect prompts", question_mode="heavy", developer_mode=True)
+
+    content = payloads[0][-1]["content"]
+    assert 'questionMode: "heavy"' in content
+    assert 'developerMode: "enabled"' in content
+
+
+def test_model_tool_switches_the_following_assistant_step(monkeypatch):
+    used_models = []
+
+    def fake_complete_chat_once(messages, *, model=None, tools=None):
+        used_models.append(model)
+        if len(used_models) == 1:
+            return {
+                "role": "assistant",
+                "content": "I will switch models.",
+                "tool_calls": [
+                    {
+                        "id": "call_model",
+                        "type": "function",
+                        "function": {
+                            "name": "model",
+                            "arguments": '{"action":"switch","model":"deepseek:deepseek-chat"}',
+                        },
+                    }
+                ],
+            }
+        return {"role": "assistant", "content": "switched"}
+
+    monkeypatch.setattr(graph, "complete_chat_once", fake_complete_chat_once)
+    monkeypatch.setattr(graph, "execute_tool", lambda request, settings: 'modelResult:\n{"selected":"deepseek:deepseek-chat"}')
+    monkeypatch.setattr(graph.model_tool, "resolve_model_selection", lambda request: "deepseek:deepseek-chat")
+    result = graph.run_turn(
+        graph.new_chat_state(model="deepseek:deepseek-reasoner"),
+        "switch to chat",
+    )
+
+    assert used_models == ["deepseek:deepseek-reasoner", "deepseek:deepseek-chat"]
+    assert result["model"] == "deepseek:deepseek-chat"
+    assert result["response"] == "switched"
+
+
+def test_plan_mode_keeps_finalized_plan_in_conversation_state(monkeypatch):
+    calls = []
+
+    def fake_complete_chat_once(messages, *, model=None, tools=None):
+        calls.append(messages)
+        if len(calls) == 1:
+            return {
+                "role": "assistant",
+                "content": "I prepared a reviewable plan.",
+                "tool_calls": [
+                    {
+                        "id": "call_plan",
+                        "type": "function",
+                        "function": {
+                            "name": "plan",
+                            "arguments": '{"action":"finalize","name":"demo","content":"# Goal\\nShip it\\n# Verification\\nRun tests"}',
+                        },
+                    }
+                ],
+            }
+        return {"role": "assistant", "content": "The plan is ready for review."}
+
+    monkeypatch.setattr(graph, "complete_chat_once", fake_complete_chat_once)
+    result = graph.run_turn(graph.new_chat_state(conversation_mode="plan"), "Plan this change")
+
+    assert result["plan"] == {
+        "name": "demo",
+        "content": "# Goal\nShip it\n# Verification\nRun tests",
+        "status": "ready",
+    }
+    assert result["conversation_mode"] == "plan"
+    assert result["response"] == "The plan is ready for review."
 
 
 def test_assistant_step_keeps_tool_call_content_out_of_final_response(monkeypatch):
@@ -144,7 +228,10 @@ def test_graph_executes_tool_call_and_loops_to_final_answer(monkeypatch):
 
 
 def test_run_turn_keeps_previous_messages(monkeypatch):
+    payloads = []
+
     def fake_complete_chat_once(messages, *, model=None, tools=None):
+        payloads.append(messages)
         return {"role": "assistant", "content": f"seen {len(messages)}"}
 
     monkeypatch.setattr(graph, "complete_chat_once", fake_complete_chat_once)
@@ -161,6 +248,9 @@ def test_run_turn_keeps_previous_messages(monkeypatch):
         "user",
         "assistant",
     ]
+    assert "available:" in payloads[0][-1]["content"]
+    assert "available:" not in payloads[1][-1]["content"]
+    assert state["tools_announced"] is True
 
 
 def test_instruction_is_only_in_initial_system_prompt(monkeypatch):
@@ -217,6 +307,61 @@ def test_stream_turn_emits_tool_call_before_final_answer(monkeypatch):
     assert events[-1]["type"] == "assistant"
     assert events[-1]["text"] == "final answer"
     assert events[-1]["state"]["response"] == "final answer"
+
+
+def test_question_pauses_then_resumes_on_the_next_user_turn(monkeypatch):
+    calls = []
+
+    def fake_complete_chat_once(messages, *, model=None, tools=None):
+        calls.append(messages)
+        if len(calls) == 1:
+            return {
+                "role": "assistant",
+                "content": "I need one decision before I continue.",
+                "tool_calls": [
+                    {
+                        "id": "call_question",
+                        "type": "function",
+                        "function": {
+                            "name": "question",
+                            "arguments": (
+                                '{"question":"Which environment?","options":["Development","Production"],'
+                                '"multiple":false,"title":"Choose environment","placeholder":"Add context"}'
+                            ),
+                        },
+                    }
+                ],
+            }
+        return {"role": "assistant", "content": "I will use Development."}
+
+    monkeypatch.setattr(graph, "complete_chat_once", fake_complete_chat_once)
+
+    first_events = list(graph.stream_turn(graph.new_chat_state(), "prepare the deployment"))
+
+    assert [event["type"] for event in first_events] == [
+        "assistant_progress",
+        "tool_call",
+        "question_required",
+        "assistant",
+    ]
+    question_event = first_events[2]
+    assert question_event["question"] == "Which environment?"
+    assert question_event["options"] == ["Development", "Production"]
+    assert first_events[-1]["state"]["question_pending"]["multiple"] is False
+    assert len(calls) == 1
+
+    second_events = list(
+        graph.stream_turn(
+            first_events[-1]["state"],
+            'questionResponse:\n{"status":"answered","selected":["Development"]}',
+        )
+    )
+
+    assert second_events[-1]["text"] == "I will use Development."
+    assert second_events[-1]["state"]["question_pending"] is None
+    assert calls[1][-2]["role"] == "tool"
+    assert calls[1][-2]["content"].startswith("questionResult:\n")
+    assert calls[1][-1]["role"] == "user"
 
 
 def test_stream_turn_emits_settings_changed_event(monkeypatch):
@@ -491,6 +636,12 @@ def test_stream_turn_emits_tool_error_event(monkeypatch):
         event.get("type") == "error" and "curl can only be called" in event.get("text", "")
         for event in events
     )
+    correction = calls[1][-1]["content"]
+    assert "toolError: curl can only be called" in correction
+    assert "available:" in correction
+    assert '"webSearch"' in correction
+    assert '"curl"' not in correction
+    assert "Tool request format reminder:" not in correction
     assert events[-1]["text"] == "fixed answer"
 
 

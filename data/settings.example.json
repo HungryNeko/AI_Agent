@@ -21,6 +21,9 @@
     "mcp_mode": "auto",
     "history_mode": "auto",
     "automation_mode": "auto",
+    "question_mode": "light",
+    "developer_mode": false,
+    "conversation_mode": "agent",
     "max_tool_rounds": 20
   },
   "rag_ingestion": {

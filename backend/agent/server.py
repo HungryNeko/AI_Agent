@@ -22,11 +22,14 @@ from pydantic import BaseModel, Field
 from agent import session_store
 from agent.app_settings import load_app_settings, patch_app_settings, save_app_settings
 from agent.automation_runner import list_run_records, start_runner, stop_runner
-from agent.config import load_config, save_config
+from agent.config import list_model_items, load_config, merge_config_secrets, public_config, save_config
 from agent.debug_log import log_event, log_exception
 from agent.graph import ChatState, stream_turn
 from agent.instructions import load_instruction, save_instruction
 from tools import mcp as mcp_tool
+from tools import models as model_tool
+from tools import createTool as custom_tool
+from tools import plan as plan_tool
 from tools import rag
 from tools.mcp import McpRequest
 from tools.rag import RagRequest
@@ -55,6 +58,7 @@ ARTIFACT_ROOTS = [
 ]
 _CANCELLED_RUNS: set[str] = set()
 _CANCELLED_RUNS_LOCK = Lock()
+_PAUSED_RUNS: set[str] = set()
 
 
 def mark_cancelled_run(run_id: str) -> None:
@@ -70,6 +74,19 @@ def is_cancelled_run(run_id: str) -> bool:
 def clear_cancelled_run(run_id: str) -> None:
     with _CANCELLED_RUNS_LOCK:
         _CANCELLED_RUNS.discard(run_id)
+
+
+def set_run_paused(run_id: str, paused: bool) -> None:
+    with _CANCELLED_RUNS_LOCK:
+        if paused:
+            _PAUSED_RUNS.add(run_id)
+        else:
+            _PAUSED_RUNS.discard(run_id)
+
+
+def is_paused_run(run_id: str) -> bool:
+    with _CANCELLED_RUNS_LOCK:
+        return run_id in _PAUSED_RUNS
 
 
 @asynccontextmanager
@@ -137,6 +154,9 @@ class ChatOptions(BaseModel):
     mcp_mode: Literal["off", "auto"] = "auto"
     history_mode: Literal["off", "auto"] = "auto"
     automation_mode: Literal["off", "auto"] = "off"
+    question_mode: Literal["off", "light", "heavy"] = "light"
+    developer_mode: bool = False
+    conversation_mode: Literal["ask", "plan", "agent"] = "agent"
     max_tool_rounds: int = Field(default=20, ge=-1)
 
 
@@ -151,6 +171,7 @@ class AttachmentPayload(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    display_message: str | None = None
     run_id: str | None = None
     conversation_id: str | None = None
     state: dict[str, Any] | None = None
@@ -160,6 +181,14 @@ class ChatRequest(BaseModel):
 
 class StopChatRequest(BaseModel):
     run_id: str
+
+
+class BranchPayload(BaseModel):
+    event_index: int = Field(ge=0)
+
+
+class PlanDecisionPayload(BaseModel):
+    decision: Literal["approved", "rejected"]
 
 
 class DataFilePayload(BaseModel):
@@ -175,6 +204,13 @@ class InstructionPayload(BaseModel):
 
 class ConfigPayload(BaseModel):
     config: dict[str, Any]
+
+
+class CustomToolPayload(BaseModel):
+    name: str
+    description: str
+    parameters: dict[str, Any]
+    code: str
 
 
 class SettingsPayload(BaseModel):
@@ -281,39 +317,38 @@ def artifact(path: str = Query(...)) -> FileResponse:
 @app.get("/api/models")
 def models() -> dict[str, Any]:
     config = load_config()
-    providers = config.get("providers", {})
-    items: list[dict[str, str]] = []
-    if isinstance(providers, dict):
-        for provider_name, provider in providers.items():
-            if not isinstance(provider, dict):
-                continue
-            raw_models = provider.get("models", [])
-            if not isinstance(raw_models, list):
-                continue
-            for item in raw_models:
-                if isinstance(item, str):
-                    items.append({"label": f"{provider_name}:{item}", "value": f"{provider_name}:{item}"})
-                elif isinstance(item, dict) and isinstance(item.get("id"), str):
-                    alias = item.get("alias") if isinstance(item.get("alias"), str) else item["id"]
-                    items.append({"label": f"{provider_name}:{alias}", "value": f"{provider_name}:{alias}"})
+    default_provider = str(config.get("default_provider") or "")
+    default_model = str(config.get("default_model") or "")
+    if default_model and ":" not in default_model and default_provider:
+        default_model = f"{default_provider}:{default_model}"
     return {
-        "defaultProvider": config.get("default_provider"),
-        "defaultModel": config.get("default_model"),
-        "models": items,
+        "defaultProvider": default_provider,
+        "defaultModel": default_model,
+        "models": list_model_items(config),
     }
 
 
 @app.get("/api/config")
 def get_config() -> dict[str, Any]:
-    return {"path": "data/api_configs.json", "config": load_config()}
+    return {"path": "data/api_configs.local.json", "config": public_config()}
 
 
 @app.put("/api/config")
 def put_config(payload: ConfigPayload) -> dict[str, Any]:
     if not isinstance(payload.config.get("providers"), dict):
         raise HTTPException(status_code=400, detail="config.providers must be an object")
-    merged = save_config(payload.config, DATA_ROOT / "api_configs.local.json")
-    return {"path": "data/api_configs.local.json", "status": "saved", "config": merged}
+    private_config = merge_config_secrets(load_config(), payload.config)
+    merged = save_config(private_config, DATA_ROOT / "api_configs.local.json")
+    return {"path": "data/api_configs.local.json", "status": "saved", "config": public_config(merged)}
+
+
+@app.post("/api/config/providers/{provider}/models/refresh")
+def refresh_provider_models(provider: str) -> dict[str, Any]:
+    try:
+        result = model_tool.refresh_models(provider)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"status": "refreshed", **result, "config": public_config()}
 
 
 @app.get("/api/settings")
@@ -343,6 +378,30 @@ def patch_settings(payload: SettingsPatchPayload) -> dict[str, Any]:
     return {"path": "data/settings.local.json", "status": "saved", "settings": settings}
 
 
+@app.get("/api/custom-tools")
+def list_custom_tools() -> dict[str, Any]:
+    return {"tools": custom_tool.list_tools()}
+
+
+@app.get("/api/custom-tools/{name}")
+def get_custom_tool(name: str) -> dict[str, Any]:
+    try:
+        return custom_tool.read_tool(name, include_code=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.put("/api/custom-tools/{name}")
+def put_custom_tool(name: str, payload: CustomToolPayload) -> dict[str, Any]:
+    if custom_tool.clean_name(name) != custom_tool.clean_name(payload.name):
+        raise HTTPException(status_code=400, detail="path name and body name must match")
+    try:
+        item = custom_tool.save_tool(payload.name, payload.description, payload.parameters, payload.code)
+    except (ValueError, SyntaxError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "saved", **item}
+
+
 @app.post("/api/chat/stop")
 def stop_chat(payload: StopChatRequest) -> dict[str, str]:
     run_id = payload.run_id.strip()
@@ -351,6 +410,18 @@ def stop_chat(payload: StopChatRequest) -> dict[str, str]:
     mark_cancelled_run(run_id)
     log_event("http.chat_stop", run_id=run_id)
     return {"status": "stopping", "run_id": run_id}
+
+
+@app.post("/api/chat/pause")
+def pause_chat(payload: StopChatRequest) -> dict[str, str]:
+    set_run_paused(payload.run_id, True)
+    return {"status": "paused", "run_id": payload.run_id}
+
+
+@app.post("/api/chat/resume")
+def resume_chat(payload: StopChatRequest) -> dict[str, str]:
+    set_run_paused(payload.run_id, False)
+    return {"status": "running", "run_id": payload.run_id}
 
 
 @app.post("/api/chat/stream")
@@ -373,6 +444,8 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
         final_state: dict[str, Any] = {}
         try:
             for event in stream_turn(state, payload.message):
+                while is_paused_run(run_id) and not is_cancelled_run(run_id):
+                    time.sleep(0.1)
                 if is_cancelled_run(run_id):
                     stopped_event = {
                         "type": "stopped",
@@ -400,7 +473,7 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
                     break
             session_store.save_turn(
                 conversation_id,
-                user_text=payload.message,
+                user_text=payload.display_message or payload.message,
                 turn_events=turn_events,
                 state=final_state or public_state(state),
                 attachments=[model_to_dict(item) for item in payload.attachments],
@@ -417,13 +490,14 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
             turn_events.append(error_event)
             session_store.save_turn(
                 conversation_id,
-                user_text=payload.message,
+                user_text=payload.display_message or payload.message,
                 turn_events=turn_events,
                 state=final_state or public_state(state),
                 attachments=[model_to_dict(item) for item in payload.attachments],
             )
             yield encode_sse(error_event)
         finally:
+            set_run_paused(run_id, False)
             clear_cancelled_run(run_id)
 
     return StreamingResponse(events(), media_type="text/event-stream")
@@ -460,6 +534,35 @@ def compress_conversation(conversation_id: str) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "compressed", **conversation}
+
+
+@app.post("/api/conversations/{conversation_id}/branch")
+def branch_conversation(conversation_id: str, payload: BranchPayload) -> dict[str, Any]:
+    try:
+        conversation = session_store.branch_conversation(conversation_id, payload.event_index)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "branched", **conversation}
+
+
+@app.post("/api/conversations/{conversation_id}/plan/decision")
+def decide_conversation_plan(conversation_id: str, payload: PlanDecisionPayload) -> dict[str, Any]:
+    try:
+        conversation = session_store.set_plan_decision(conversation_id, payload.decision)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": payload.decision, **conversation}
+
+
+@app.post("/api/conversations/{conversation_id}/plan/save-copy")
+def save_conversation_plan_copy(conversation_id: str) -> dict[str, Any]:
+    try:
+        conversation = session_store.read_conversation(conversation_id)
+        active_plan = dict((conversation.get("state") or {}).get("plan") or {})
+        result = plan_tool.save_copy(str(active_plan.get("name") or "implementation-plan"), str(active_plan.get("content") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result
 
 
 @app.patch("/api/conversations/{conversation_id}")
@@ -806,10 +909,13 @@ def build_chat_state(payload: ChatRequest) -> ChatState:
         "mcp_mode": options["mcp_mode"],
         "history_mode": options["history_mode"],
         "automation_mode": options["automation_mode"],
+        "question_mode": options["question_mode"],
+        "developer_mode": options["developer_mode"],
+        "conversation_mode": options["conversation_mode"],
         "max_tool_rounds": options["max_tool_rounds"],
         "attachments": [model_to_dict(item) for item in payload.attachments],
     }
-    for key in ["messages", "initialized", "conversation_summary", "web_search_results", "rag_results"]:
+    for key in ["messages", "initialized", "tools_announced", "conversation_summary", "web_search_results", "rag_results", "plan"]:
         if key in previous:
             state[key] = previous[key]  # type: ignore[literal-required]
     if options.get("model"):
@@ -959,11 +1065,12 @@ def mcp_server_config_from_payload(payload: McpServerPayload) -> dict[str, Any]:
         server_config.update(
             {
                 "url": clean_url(payload.url),
-                "headers": payload.headers,
                 "timeout": payload.timeout,
                 "sse_read_timeout": payload.sse_read_timeout,
             }
         )
+        if payload.headers:
+            server_config["headers"] = payload.headers
     else:
         server_config.update(
             {

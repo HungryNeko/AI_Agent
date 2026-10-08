@@ -458,6 +458,54 @@ small {
   margin: 10px;
 }
 
+.planReview {
+  width: min(100%, 820px);
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #cbd5e1;
+  border-left: 4px solid #2563eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.planReview > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.planReview > header span,
+.planReview > header strong {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.planReview > header h3 {
+  margin: 3px 0 0;
+  font-size: 16px;
+}
+
+.planActions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.plan-draft {
+  border-left-color: #64748b;
+}
+
+.plan-approved {
+  border-left-color: #16a34a;
+}
+
 .markdownBody {
   overflow-wrap: anywhere;
   line-height: 1.55;
@@ -649,26 +697,348 @@ small {
   position: sticky;
   bottom: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
-  padding: 12px;
+  padding: 10px max(12px, calc((100% - 860px) / 2));
   border-top: 1px solid #e5e7eb;
   background: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(10px);
   z-index: 5;
 }
 
-.composerRow {
-  display: grid;
-  grid-template-columns: 54px 54px 54px minmax(0, 1fr) 104px;
-  gap: 8px;
-  align-items: stretch;
+.composerSurface {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #c8c8c8;
+  border-radius: 7px;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
-.composer textarea {
-  min-height: 54px;
-  max-height: 180px;
+.composerSurface:focus-within {
+  border-color: #0078d4;
+  box-shadow: 0 0 0 1px #0078d4;
+}
+
+.composerSurface textarea {
+  width: 100%;
+  min-height: 68px;
+  max-height: 220px;
+  display: block;
+  padding: 12px 14px 6px;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
   resize: vertical;
+}
+
+.composerFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  min-height: 40px;
+  gap: 10px;
+  padding: 4px 6px 6px;
+}
+
+.composerTools,
+.composerActions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.composerTools {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.composerTools::-webkit-scrollbar {
+  display: none;
+}
+
+.composerActions {
+  flex: 0 0 auto;
+}
+
+.composerPicker {
+  width: auto;
+  height: 30px;
+  margin: 0;
+  padding: 0 24px 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background-color: transparent;
+  color: #374151;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.composerPicker:hover,
+.composerIcon:hover {
+  background-color: #f3f4f6;
+}
+
+.modePicker {
+  max-width: 92px;
+}
+
+.modelPicker {
+  max-width: 190px;
+  text-overflow: ellipsis;
+}
+
+.queuePicker {
+  max-width: 104px;
+}
+
+.queuedMessages {
+  width: 100%;
+  display: grid;
+  gap: 5px;
+}
+
+.queuedMessages > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #dbe3ec;
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.queuedMessages span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queuedMessages button,
+.branchButton {
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 2px;
+}
+
+.eventType {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.customToolForm {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.customToolForm textarea {
+  min-height: 170px;
+}
+
+.customToolForm .codeEditor {
+  min-height: 300px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+}
+
+.questionBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(17, 24, 39, 0.48);
+}
+
+.questionDialog {
+  width: min(100%, 560px);
+  max-height: min(760px, calc(100vh - 40px));
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 20px 55px rgba(17, 24, 39, 0.22);
+}
+
+.questionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.questionHeaderActions {
+  display: flex;
+  gap: 6px;
+}
+
+.questionMinimized {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 40;
+  width: min(420px, calc(100vw - 36px));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f2937;
+  padding: 11px 13px;
+  box-shadow: 0 12px 34px rgba(17, 24, 39, 0.2);
+  text-align: left;
+}
+
+.questionMinimized span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.questionMinimized strong {
+  margin-right: 8px;
+  color: #2563eb;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.questionHeader span {
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.questionHeader h2 {
+  margin: 3px 0 0;
+  font-size: 18px;
+}
+
+.questionText {
+  margin: 18px 0 12px;
+  color: #1f2937;
+  font-size: 15px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.questionOptions {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.questionOption {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 11px;
+  border: 1px solid #d1d5db;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #374151;
+  cursor: pointer;
+}
+
+.questionOption.selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.questionOption input {
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+
+.questionAnswer {
+  margin-top: 10px;
+}
+
+.questionAnswer textarea,
+.questionDialog > form > textarea {
+  min-height: 96px;
+}
+
+.questionActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.questionLevel {
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  background: #fbfbfa;
+}
+
+.questionLevel input {
+  padding: 0;
+  accent-color: #2563eb;
+}
+
+.questionLevelLabels {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  color: #6b7280;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.questionLevelLabels span:nth-child(2) {
+  text-align: center;
+}
+
+.questionLevelLabels span:last-child {
+  text-align: right;
+}
+
+.developerToggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #374151;
+  padding: 10px;
+}
+
+.developerToggle span {
+  flex: 1;
+  text-align: left;
+}
+
+.developerToggle strong {
+  font-size: 11px;
+}
+
+.developerToggle.active {
+  border-color: #047857;
+  background: #ecfdf5;
+  color: #047857;
 }
 
 label {
@@ -736,13 +1106,6 @@ textarea:focus {
   font-weight: 800;
 }
 
-.composer .primaryButton,
-.composer .stopButton {
-  width: 100%;
-  height: 54px;
-  padding: 0 14px;
-}
-
 .primaryButton {
   background: #111827;
   color: #ffffff;
@@ -755,15 +1118,40 @@ textarea:focus {
 }
 
 .composerIcon {
-  width: 54px;
-  height: 54px;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid #d1d5db;
-  border-radius: 7px;
-  background: #ffffff;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
   color: #374151;
+  padding: 0;
+}
+
+.composerSend {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #111827;
+  border-radius: 6px;
+  background: #111827;
+  color: #ffffff;
+}
+
+.composerSend:disabled {
+  border-color: #d1d5db;
+  background: #e5e7eb;
+  color: #9ca3af;
+}
+
+.dangerIcon {
+  color: #be123c;
 }
 
 .systemLayout {
@@ -784,7 +1172,6 @@ textarea:focus {
 
 .composerIcon.active {
   background: #ecfdf5;
-  border-color: #34d399;
   color: #047857;
 }
 
@@ -794,8 +1181,10 @@ textarea:focus {
 
 .mentionMenu {
   position: absolute;
-  left: 12px;
-  right: 12px;
+  left: 50%;
+  right: auto;
+  width: min(860px, calc(100% - 24px));
+  transform: translateX(-50%);
   bottom: calc(100% - 4px);
   max-height: 280px;
   overflow: auto;
@@ -928,6 +1317,10 @@ textarea:focus {
   padding: 5px 8px;
   font-size: 12px;
   font-weight: 700;
+}
+
+.composerSurface .attachmentTray {
+  padding: 10px 10px 0;
 }
 
 .attachmentChip span,
@@ -1396,7 +1789,6 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
-  .composerRow,
   .settingGrid,
   .headerRow,
   .modelForm,
@@ -1407,6 +1799,102 @@ textarea:focus {
   .event-user {
     max-width: 92%;
   }
+
+  .questionBackdrop {
+    align-items: end;
+    padding: 10px;
+  }
+
+  .questionDialog {
+    max-height: calc(100vh - 20px);
+  }
+
+  .questionActions {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .composer {
+    padding: 8px;
+  }
+
+  .composerFooter {
+    gap: 4px;
+  }
+
+  .modelPicker {
+    max-width: 124px;
+  }
+
+  .queuePicker {
+    max-width: 86px;
+  }
+}
+
+.modelCatalog {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  min-height: 0;
+}
+
+.modelCatalogHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modelCatalogHeader span {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.modelCatalogHeader small {
+  color: #6b7280;
+}
+
+.manualModelRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.modelList {
+  min-height: 80px;
+  max-height: 360px;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.modelRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  padding: 6px;
+}
+
+.modelName {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  color: #374151;
+  padding: 5px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.modelName.active {
+  color: #047857;
+  font-weight: 800;
 }
 
 :root[data-theme="dark"] {
@@ -1450,6 +1938,41 @@ textarea:focus {
   background: rgba(22, 27, 34, 0.94);
 }
 
+:root[data-theme="dark"] .composerSurface {
+  background: #161b22;
+  border-color: #3f4752;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="dark"] .composerSurface:focus-within {
+  border-color: #3794ff;
+  box-shadow: 0 0 0 1px #3794ff;
+}
+
+:root[data-theme="dark"] .composerSurface textarea,
+:root[data-theme="dark"] .composerPicker,
+:root[data-theme="dark"] .composerIcon {
+  background-color: transparent;
+  color: #c9d1d9;
+}
+
+:root[data-theme="dark"] .composerPicker:hover,
+:root[data-theme="dark"] .composerIcon:hover {
+  background-color: #21262d;
+}
+
+:root[data-theme="dark"] .composerSend {
+  border-color: #e5e7eb;
+  background: #e5e7eb;
+  color: #111827;
+}
+
+:root[data-theme="dark"] .composerSend:disabled {
+  border-color: #30363d;
+  background: #21262d;
+  color: #6e7681;
+}
+
 :root[data-theme="dark"] .tab,
 :root[data-theme="dark"] .segmented button,
 :root[data-theme="dark"] .historyItem,
@@ -1481,6 +2004,7 @@ textarea:focus {
 
 :root[data-theme="dark"] .event.compact,
 :root[data-theme="dark"] .operationDetails,
+:root[data-theme="dark"] .planReview,
 :root[data-theme="dark"] .markdownPreview,
 :root[data-theme="dark"] .serverItem,
 :root[data-theme="dark"] .automationMeta div,
@@ -1490,6 +2014,46 @@ textarea:focus {
 :root[data-theme="dark"] .attachmentList > span {
   background: #0d1117;
   border-color: #30363d;
+}
+
+:root[data-theme="dark"] .planActions {
+  border-top-color: #30363d;
+}
+
+:root[data-theme="dark"] .questionDialog,
+:root[data-theme="dark"] .questionOption,
+:root[data-theme="dark"] .questionMinimized,
+:root[data-theme="dark"] .questionLevel,
+:root[data-theme="dark"] .developerToggle,
+:root[data-theme="dark"] .modelRow {
+  background: #161b22;
+  color: #e5e7eb;
+  border-color: #30363d;
+}
+
+:root[data-theme="dark"] .queuedMessages > div {
+  background: #0d1117;
+  border-color: #30363d;
+}
+
+:root[data-theme="dark"] .questionText {
+  color: #e5e7eb;
+}
+
+:root[data-theme="dark"] .developerToggle.active {
+  background: #06281d;
+  border-color: #047857;
+  color: #34d399;
+}
+
+:root[data-theme="dark"] .modelName {
+  color: #e5e7eb;
+}
+
+:root[data-theme="dark"] .questionOption.selected {
+  border-color: #60a5fa;
+  background: #172554;
+  color: #bfdbfe;
 }
 
 :root[data-theme="dark"] .imageCardActions,
@@ -1548,7 +2112,6 @@ textarea:focus {
 
 :root[data-theme="dark"] .composerIcon.active {
   background: #06281d;
-  border-color: #047857;
   color: #34d399;
 }
 
@@ -1594,6 +2157,23 @@ textarea:focus {
     background: rgba(22, 27, 34, 0.94);
   }
 
+  .composerSurface {
+    background: #161b22;
+    border-color: #3f4752;
+  }
+
+  .composerSurface textarea,
+  .composerPicker,
+  .composerIcon {
+    background-color: transparent;
+    color: #c9d1d9;
+  }
+
+  .composerPicker:hover,
+  .composerIcon:hover {
+    background-color: #21262d;
+  }
+
   .tab,
   .segmented button,
   .historyItem,
@@ -1635,6 +2215,40 @@ textarea:focus {
     border-color: #30363d;
   }
 
+  :root[data-theme="system"] .questionDialog,
+  :root[data-theme="system"] .questionOption,
+  :root[data-theme="system"] .questionMinimized,
+  :root[data-theme="system"] .questionLevel,
+  :root[data-theme="system"] .developerToggle,
+  :root[data-theme="system"] .modelRow {
+    background: #161b22;
+    color: #e5e7eb;
+    border-color: #30363d;
+  }
+
+  :root[data-theme="system"] .queuedMessages > div {
+    background: #0d1117;
+    color: #e5e7eb;
+    border-color: #30363d;
+  }
+
+  :root[data-theme="system"] .questionText,
+  :root[data-theme="system"] .modelName {
+    color: #e5e7eb;
+  }
+
+  :root[data-theme="system"] .questionOption.selected {
+    border-color: #60a5fa;
+    background: #172554;
+    color: #bfdbfe;
+  }
+
+  :root[data-theme="system"] .developerToggle.active {
+    background: #06281d;
+    border-color: #047857;
+    color: #34d399;
+  }
+
   .imageCardActions,
   .attachmentAction {
     color: #c9d1d9;
@@ -1658,7 +2272,6 @@ textarea:focus {
 
   .composerIcon.active {
     background: #06281d;
-    border-color: #047857;
     color: #34d399;
   }
 
@@ -1720,6 +2333,17 @@ textarea:focus {
 
 :root[data-theme="light"] .composer {
   background: rgba(255, 255, 255, 0.94);
+}
+
+:root[data-theme="light"] .composerSurface {
+  background: #ffffff;
+}
+
+:root[data-theme="light"] .composerSurface textarea,
+:root[data-theme="light"] .composerPicker,
+:root[data-theme="light"] .composerIcon {
+  background-color: transparent;
+  color: #374151;
 }
 
 :root[data-theme="light"] .tab,

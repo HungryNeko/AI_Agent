@@ -113,6 +113,23 @@ def test_local_upload_url_maps_to_upload_directory(tmp_path):
     assert result["content"] == "uploaded content"
 
 
+def test_absolute_local_paths_are_not_treated_as_url_schemes(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("local content", encoding="utf-8")
+
+    result = fileReader.read(FileReadRequest(path=str(path)), settings(tmp_path))
+
+    assert result["content"] == "local content"
+    with pytest.raises(ValueError, match="configured file reader root"):
+        fileReader.resolve_path(str(tmp_path.parent / "outside.txt"), settings(tmp_path))
+
+
+@pytest.mark.parametrize("url", ["file:///notes.txt", "ftp://example.com/notes.txt"])
+def test_non_http_url_schemes_remain_blocked(url):
+    with pytest.raises(ValueError, match="local project paths"):
+        fileReader.normalize_upload_reference(url)
+
+
 def test_blocks_secret_and_non_upload_runtime_files(tmp_path):
     secret = tmp_path / ".env"
     secret.write_text("TOKEN=secret", encoding="utf-8")
@@ -127,6 +144,13 @@ def test_blocks_secret_and_non_upload_runtime_files(tmp_path):
             FileReadRequest(path="backend/runtime/conversations/one.json"),
             settings(tmp_path),
         )
+
+
+@pytest.mark.parametrize("name", ["api_configs.json", "api_configs.local.json", "servers.json", "servers.local.json"])
+def test_blocks_local_provider_and_mcp_configuration(tmp_path, name):
+    (tmp_path / name).write_text('{"api_key":"private-value"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="secret-bearing"):
+        fileReader.read(FileReadRequest(path=name), settings(tmp_path))
 
 
 def test_rejects_legacy_word_format_with_conversion_hint(tmp_path):

@@ -139,6 +139,9 @@ def _audit(event, args):
         if isinstance(target, int):
             return
         target_text = os.fspath(target)
+        protected_names = {{".env", ".env.local", ".env.production", "api_configs.local.json", "servers.local.json"}}
+        if os.path.basename(os.path.realpath(target_text)).lower() in protected_names:
+            raise RuntimeError("protected secret file cannot be opened")
         is_write = any(flag in mode for flag in ("w", "a", "+", "x"))
         if is_write and not _inside(target_text, _ARTIFACT_DIR):
             raise RuntimeError("file writes are only allowed inside AI_AGENT_PYTHON_ARTIFACT_DIR")

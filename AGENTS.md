@@ -15,8 +15,8 @@ This is a learning-oriented but fairly complete local AI agent application. It c
 - persistent conversations, uploads, local RAG, MCP connections, configurable tools,
   scheduled automations, and project-scoped file editing.
 
-The product UI has six main areas: Chat, Data, Model Config, Automation, MCP, and
-System Settings. Chinese is the default UI language.
+The product UI has seven main areas: Chat, Data, Model Config, Automation, MCP, Tools,
+and System Settings. Chinese is the default UI language.
 
 ## High-level request flow
 
@@ -111,6 +111,18 @@ rebuild the RAG index so the new content is searchable.
 - `history`: lists, searches, and reads saved conversation JSON.
 - `automation`: creates/updates scheduled reminder, LLM, Python, or MCP work.
 - `settings`: lets an enabled automation-capable agent update application settings.
+- `question`: requests clarification and ends the turn until the user responds.
+- `model`: lists/refreshes provider catalogs or switches the current conversation model,
+  without exposing backend credentials.
+- `plan`: updates/finalizes a session plan for review; explicit exports use `data/plans`.
+- `createTool`: manages user-level Python tools under `data/custom_tools`, exposed as
+  `custom__name` functions in Agent mode.
+
+Ask and Plan are read-only: keep `fileReader`, fileEditor list/read, and RAG search
+available, but block RAG ingestion and execution tools. Plan additionally allows session
+plan updates. Preserve `tools_announced` when rebuilding state: inject the textual
+available list on the first turn and after tool request errors, not every turn. Native
+OpenAI schemas still accompany every model request.
 
 Tool availability is controlled by `ToolSettings`, not only prompts. A per-turn
 `max_tool_rounds` of `0` disables calls, a positive value limits rounds, and `-1` is
@@ -180,13 +192,14 @@ It prefers `.venv/bin/python` and supports an explicit `AI_AGENT_PYTHON` overrid
 `backend/agent/server.py` is the source of truth. Major endpoint groups are:
 
 - health/version/models/config/settings;
-- streaming chat and stop;
-- instruction and saved conversations (list/read/rename/delete/compress);
+- streaming chat, pause/resume, and stop;
+- instruction and saved conversations (list/read/rename/delete/compress/branch/plan);
 - uploads and allowed artifact serving;
 - system/user data listing, import, edit, and rename;
 - RAG reindex;
 - automation definitions and run history;
 - MCP list/test/upsert/import/delete.
+- provider model refresh and user-created tool management.
 
 When adding an API capability, update both the Pydantic request model/server route and
 the matching frontend call. Preserve SSE event types already consumed by the UI:

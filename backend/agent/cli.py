@@ -145,6 +145,11 @@ def run_streamed_turn(state: ChatState, message: str, *, assistant_prefix: str) 
             print(f"[tool error] {event.get('text', '')}")
         elif event_type == "approval_required":
             print(f"[approval] {event.get('text', '')}")
+        elif event_type == "question_required":
+            print(f"[question] {event.get('question', '')}")
+            for index, option in enumerate(event.get("options") or [], start=1):
+                print(f"  {index}. {option}")
+            print("Answer in the next input, change direction, or type that you decline.")
         elif event_type == "assistant":
             next_state = event.get("state", next_state)
             print(f"{assistant_prefix}{event.get('text', '')}")
