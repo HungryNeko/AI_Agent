@@ -1,0 +1,189 @@
+name: Deploy AI agent to server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ai-agent-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile backend
+        run: python -m compileall -q backend/agent backend/prompts backend/tools
+
+      - name: Check deployment config
+        run: |
+          python -m pip install pytest
+          python -m pytest -q backend/tests/test_deploy_config.py
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: npm test
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build -- --base=/ai-agent/
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+      SERVER_USER: ${{ secrets.SERVER_USER || 'root' }}
+      SERVER_PORT: ${{ secrets.SERVER_PORT || '22' }}
+      SERVER_APP_DIR: ${{ secrets.SERVER_APP_DIR || '/root/github/AI_Agent' }}
+      REPO_URL: ${{ secrets.REPO_CLONE_URL || format('https://github.com/{0}.git', github.repository) }}
+
+    steps:
+      - name: Validate secrets
+        run: |
+          set -eu
+          if [ -z "$SERVER_HOST" ]; then
+            echo "SERVER_HOST secret is required." >&2
+            exit 1
+          fi
+          if [ -z "$SERVER_PASSWORD" ]; then
+            echo "SERVER_PASSWORD secret is required." >&2
+            exit 1
+          fi
+
+      - name: Install SSH password helper
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y sshpass
+
+      - name: Trust server host key
+        run: |
+          set -eu
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          ssh-keyscan -p "$SERVER_PORT" -H "$SERVER_HOST" >> "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Run server update script
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "### Deploy output" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          sshpass -e ssh \
+            -p "$SERVER_PORT" \
+            -o BatchMode=no \
+            -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
+            -o TCPKeepAlive=yes \
+            "$SERVER_USER@$SERVER_HOST" \
+            "if [ ! -d '$SERVER_APP_DIR/.git' ]; then git clone '$REPO_URL' '$SERVER_APP_DIR'; fi && cd '$SERVER_APP_DIR' && git fetch --all --prune && git pull --ff-only && exec sh scripts/update_server.sh" \
+            2>&1 | tee deploy.log
+          cat deploy.log >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          if grep -q "Deploy update complete." deploy.log; then
+            echo "✅ Update script completed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Update script did not print success marker: Deploy update complete." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Verify containers and health check
+        env:
+          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "### Verification output" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          set +e
+          sshpass -e ssh \
+            -p "$SERVER_PORT" \
+            -o BatchMode=no \
+            -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
+            -o TCPKeepAlive=yes \
+            "$SERVER_USER@$SERVER_HOST" \
+            "APP_DIR='$SERVER_APP_DIR' GATEWAY_URL='${{ vars.GATEWAY_URL || 'http://127.0.0.1:5050' }}' sh -s" 2>&1 <<'REMOTE_VERIFY' | tee verify.log
+          set -eu
+
+          cd "$APP_DIR"
+          docker compose -f docker-compose.yml ps
+
+          wait_backend() {
+            attempt=1
+            while [ "$attempt" -le 60 ]; do
+              if body="$(docker compose -f docker-compose.yml exec -T ai-agent-backend python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8010/api/health', timeout=5).read().decode())" 2>/dev/null)"; then
+                printf 'ai backend ready: %s\n' "$body"
+                return 0
+              fi
+              printf 'ai backend not ready yet (%s/60)\n' "$attempt"
+              attempt=$((attempt + 1))
+              sleep 2
+            done
+            printf 'ai backend did not become ready\n' >&2
+            docker compose -f docker-compose.yml logs --tail=120 ai-agent-backend ai-agent-frontend >&2
+            return 1
+          }
+
+          wait_gateway() {
+            url="$GATEWAY_URL/ai-agent/api/health"
+            attempt=1
+            while [ "$attempt" -le 30 ]; do
+              if body="$(curl -fsS "$url" 2>/dev/null || wget -qO- "$url" 2>/dev/null)"; then
+                printf 'ai via gateway ready: %s\n' "$body"
+                return 0
+              fi
+              printf 'ai via gateway not ready yet (%s/30)\n' "$attempt"
+              attempt=$((attempt + 1))
+              sleep 2
+            done
+            printf 'ai via gateway did not become ready: %s (is the Lease-Management-System gateway running on lease-ai-net?)\n' "$url" >&2
+            docker network inspect lease-ai-net --format '{{range .Containers}}{{.Name}} {{end}}' >&2 || true
+            return 1
+          }
+
+          wait_backend
+          wait_gateway
+          REMOTE_VERIFY
+          verify_status="${PIPESTATUS[0]}"
+          set -e
+          cat verify.log >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$verify_status" -eq 0 ] && grep -q "ai backend ready" verify.log && grep -q "ai via gateway ready" verify.log; then
+            echo "✅ Deployment verified: agent healthy and reachable through the lease gateway." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Deployment verification failed." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

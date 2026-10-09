@@ -86,6 +86,32 @@ Run the checks separately:
 npm --prefix frontend run build
 ```
 
+## Server deployment (Docker)
+
+On push to `main`, `.github/workflows/deploy.yml` checks the code, SSHes to the server and
+runs `scripts/update_server.sh`, which builds and restarts `ai-agent-backend` and
+`ai-agent-frontend` via `docker-compose.yml`. This is independent of the
+Lease-Management-System deployment:
+
+- The agent publishes **no host port**. It joins the external docker network
+  `lease-ai-net`; the lease system's nginx gateway is the only public entry and proxies
+  `/ai-agent/` (UI) and `/ai-agent/api/` (API) to these containers after its login check.
+- The backend reaches the lease MCP endpoint at `http://web:5000/mcp` on that network.
+- Server-side config and state live in `docker-data/` (git-ignored):
+  `docker-data/local-data` → `/app/local-data` (`*.local.json`, `mcp/servers.local.json`),
+  `docker-data/runtime` → `/app/backend/runtime` (conversations, uploads, ...).
+- Provider keys and `RENT_MCP_TOKEN` go in `.env` next to `docker-compose.yml`
+  (see `.env.example`).
+- On first deploy, `scripts/migrate_from_lease.sh` copies the old embedded agent's
+  `*.local.json`, runtime data and AI keys from `LEGACY_LEASE_DIR`
+  (default `/root/github/Lease-Management-System`), then writes a marker and never runs again.
+
+Repository secrets: `SERVER_HOST`, `SERVER_PASSWORD` (required); `SERVER_USER` (default
+`root`), `SERVER_PORT` (default `22`), `SERVER_APP_DIR` (default `/root/github/AI_Agent`),
+`REPO_CLONE_URL` (only if the server needs an authenticated URL to clone this repo).
+Optional variable `GATEWAY_URL` (default `http://127.0.0.1:5050`) is used for the
+post-deploy check through the lease gateway.
+
 ## Project layout
 
 ```text

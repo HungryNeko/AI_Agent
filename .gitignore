@@ -77,3 +77,6 @@ Thumbs.db
 *.swo
 .idea/
 .vscode/
+
+# Docker deployment persistent data (server-side config + runtime state)
+docker-data/
