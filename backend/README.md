@@ -7,13 +7,10 @@ This backend is intentionally small while learning LangGraph.
 ```text
 backend/
   agent/
-    config.py      # load local model config with a public example fallback
+    config.py      # load .env and data/api_configs.json
     llm.py         # call OpenAI-compatible /chat/completions
     graph.py       # LangGraph state flow and tool loop
     cli.py         # plain argparse CLI and chat loop
-    server.py      # FastAPI routes and SSE delivery to React
-    session_store.py # saved conversations, branches, and context compression
-    app_settings.py  # persistent defaults
   prompts/
     context.py     # compressed context summary prompt
     system.py      # build the system prompt
@@ -26,18 +23,10 @@ backend/
     curl.py        # direct public HTTP API GET tool
     python.py      # Python analysis/plotting/local scripting tool
     fileEditor.py  # project-scoped anchor-based file editor
-    fileReader.py  # read-only PDF/Office/text extraction
     memory.py      # file-backed memory helpers
     skills.py      # file-backed skill helpers
     rag.py         # search data/knowledge, data/memory, data/skills
-    mcp.py         # configured MCP stdio / Streamable HTTP / SSE client
-    plan.py        # session-plan validation and Markdown export
-    question.py    # ask the user a question and pause the turn
-    models.py      # provider model catalog (list/refresh/switch)
-    createTool.py  # create and run user-level custom Python tools
-    automation.py  # scheduled automation runner
-    history.py     # read saved conversation history
-    appSettings.py # persistent app settings storage
+    mcp.py         # configured MCP stdio client
   scripts/
     simple_chat.py # run the CLI with python directly
 ```
@@ -47,18 +36,11 @@ backend/
 
 ```text
 data/
-  api_configs.example.json # tracked safe model/provider defaults
-  api_configs.json         # optional local base config, ignored by Git
-  api_configs.local.json   # UI-managed local override, ignored by Git
-  settings.example.json    # tracked safe application defaults
-  instruction.example.md   # tracked safe instruction template
+  api_configs.json
   knowledge/       # local docs and reference notes for rag
-  memory/          # local durable project memory, ignored except README
+  memory/          # durable project memory files
   skills/          # skill folders, each with SKILL.md
-  mcp/servers.example.json # tracked empty MCP template
-  mcp/servers.local.json   # configured MCP servers, ignored by Git
-  plans/           # saved plan Markdown exports
-  custom_tools/    # user-created custom Python tools (tool.json + tool.py)
+  mcp/servers.json # configured MCP servers
 ```
 
 `rag` searches `data/knowledge`, `data/memory`, and `data/skills`. When
@@ -72,7 +54,7 @@ Memory and skills are ordinary project files. To update them, let the model use
 python backend\scripts\simple_chat.py --rag-mode auto --file-editor-mode auto --file-editor-approval manual "Search project memory, then propose a memory update about today's decision."
 ```
 
-MCP servers are stored locally in `data/mcp/servers.local.json`. The model can list
+MCP servers are configured only in `data/mcp/servers.json`. The model can list
 servers, list tools, or call a configured tool, but it cannot provide a server
 command at runtime:
 
@@ -84,24 +66,10 @@ python backend\scripts\simple_chat.py --mcp-mode auto "Use mcp to list configure
 For the React frontend, start the FastAPI server from the repo root:
 
 ```powershell
-$env:AI_AGENT_BACKEND_PORT = "8012"
 conda run --no-capture-output -n sde python backend\scripts\server.py
 ```
 
 The server exposes chat streaming, data file editing, skill import, and MCP configuration endpoints under `/api/*`.
-
-Without `AI_AGENT_BACKEND_PORT`, the server uses `8010`, while Vite expects `8012`.
-On Windows, `powershell -ExecutionPolicy Bypass -File .\start_dev.ps1` starts both.
-
-On macOS, start the backend and frontend together from the repo root:
-
-```bash
-./start_dev.sh
-```
-
-Press `Ctrl+C` or close the terminal to stop both services and their child processes.
-The script prefers `.venv/bin/python`, or you can set `AI_AGENT_PYTHON` to another
-Python 3.11+ interpreter with the backend dependencies installed.
 
 ## Run
 
@@ -172,13 +140,6 @@ standard Python introspection. It still blocks obvious destructive operations
 and direct writes outside the artifact directory; use `fileEditor` for project
 file changes that should follow the editor approval policy.
 
-File reader mode extracts bounded text from uploaded or project files without
-modifying them. It supports PDF, DOCX, PPTX, XLSX, HTML, CSV, Markdown, source
-code, and other UTF-8 text formats. PDF/PowerPoint page ranges and a single
-Excel sheet can be selected for large documents. Legacy `.doc`, `.ppt`, and
-`.xls` files should be converted to their modern formats first; scanned PDFs
-need OCR before they contain extractable text.
-
 File editor mode lets the model inspect and edit project files with stable text
 anchors. It supports `list`, `read`, `write`, `replace`, `insertAfter`,
 `insertBefore`, and `append`. It does not expose delete/move/rename operations,
@@ -186,12 +147,9 @@ and it blocks paths outside the project root plus protected paths such as `.git`
 `.env`, `backend/runtime`, and `node_modules`.
 
 Write permission is controlled separately with `--file-editor-approval`:
-- `manual` validates the edit and returns a diff preview, but does not write.
-- `auto` is the default and applies allowed writes immediately.
+- `manual` is the default: validate the edit and return a diff preview, but do not write.
+- `auto` applies allowed writes immediately, like approving the agent to edit.
 - `readOnly` allows `list`/`read` but never applies writes.
-
-The frontend/backend also support `aiReview` for separate review of high-risk calls.
-Approval policy is independent of Ask/Plan/Agent tool availability.
 
 Read a file:
 
@@ -244,8 +202,7 @@ python backend\scripts\simple_chat.py --loop --web-search-mode auto --web-search
 python backend\scripts\simple_chat.py --loop --web-search-mode auto --web-search-provider tavily
 ```
 
-Only the first turn announces the textual `available` list. Later turns keep dynamic
-context small; a tool request error supplies the allowed list again:
+Normal turns keep dynamic prompt text small:
 
 ```text
 available: ["webSearch", "rag", "curl", "python", "fileEditor", "mcp"]
@@ -275,22 +232,14 @@ $env:AI_AGENT_LOG_DIR = "D:\tmp\ai-agent-logs"
 ```
 
 The first system prompt includes fixed rules plus `data/instruction.md`.
-Later turns refresh current time, mode, RAG context, and optional
-compressed summary, but they do not re-inject the instruction file or textual tool
-list. Tool availability is enforced by the current OpenAI schemas and request parser.
-Conversation JSON is saved under
+Later turns refresh current time, available tools, RAG context, and optional
+compressed summary, but they do not re-inject the instruction file. Conversation JSON is saved under
 `backend/runtime/conversations`; compression shortens active model context but
 does not delete the full saved history, which the `history` tool can read.
-RAG builds a local TF-IDF character n-gram index at
-`backend/runtime/rag_index/index.pkl` and searches it with cosine similarity. It has no
-model download or neural inference step, so searches remain fast on CPU-only servers.
-The `/api/rag/reindex` endpoint
+RAG builds a local TF-IDF vector index at `backend/runtime/rag_index/index.pkl`
+and searches chunks with cosine similarity. The `/api/rag/reindex` endpoint
 rebuilds that vector index after instruction, memory, skill, or knowledge files
-change. The Data page supports local simple splitting and bounded LLM-assisted
-splitting with a dedicated configured model. Upload ingestion uses `fileReader`, saves
-the extracted source as user-knowledge Markdown, and reuses per-document and per-unit
-chunk caches so small additions or deletions do not re-run unrelated LLM work. See
-`../docs/rag-ingestion.md` for the complete route and cost limits.
+change.
 
 Current chain:
 
@@ -312,38 +261,68 @@ tool_error -> assistant_step
 `response` stores only the final answer. Tool-call prefaces and between-tool
 notes are streamed as `assistant_progress` events.
 
-## Conversation Modes and User Tools
+## Saved Tool Parameters
 
-The UI selects `ask`, `plan`, or `agent`. Ask and Plan expose `fileReader`, read-only
-`fileEditor`, and retrieval tools, but disallow Python, MCP calls, custom tools, and RAG
-ingestion. Plan additionally exposes `plan` to update/finalize a session draft; explicit
-Save copy exports it to `data/plans`. Approve and implement switches the UI to Agent
-and sends an implementation request. A plan approval does not override file permissions.
+`parameterSave` wraps data tools without returning a large dataset to the model:
 
-`question` returns a waiting event and ends the turn. The next user response resumes the
-conversation. Question strength is `off`, `light`, or `heavy`; the UI always offers free
-text, refusal, redirection, and minimize/restore. The CLI shows the question and accepts
-the response as the next normal input.
-
-`model` lists or refreshes configured model catalogs and switches the current conversation
-model. Provider keys remain backend-only. Refresh requires an OpenAI-compatible `/models`
-endpoint; manual configuration is available when a provider does not support it.
-
-`createTool` saves a user tool as `data/custom_tools/<name>/tool.py` plus `tool.json`.
-Code defines `run(arguments)` and uses an object JSON Schema. Saved functions are exposed
-as `custom__name`; built-in tools keep their names and MCP calls use `mcp`. These local
-execution helpers are not a hardened sandbox, so use trusted code.
-
-Branches summarize a selected history prefix into a new conversation. Pause/stop act
-at event boundaries and do not interrupt or roll back a tool already running. Queue
-and insertion are UI workflows; queued inputs are not durable across page reloads.
-
-## Verification
-
-From the repository root, using `sde`:
-
-```powershell
-conda run --no-capture-output -n sde python -m pytest backend/tests
-npm.cmd run build --prefix frontend
-git diff --check
+```json
+{
+  "action": "call",
+  "call": {
+    "tool": "mcp",
+    "arguments": {"action": "callTool", "server": "demo", "tool": "query", "arguments": {}}
+  },
+  "save": [{"name": "query_result"}]
+}
 ```
+
+`save.path` extracts a child BEFORE saving, relative to the decoded application result.
+MCP `callTool` unwraps `structuredContent`, or parses JSON from a single text result;
+do not prefix the path with `structuredContent`. For `{"data":{"rows":[...]}}`, use
+`data.rows`. If the structure is unknown, start with `save=[{"name":"query_result"}]`
+and inspect the saved ref. Omitted/empty/`$` paths save the complete value. Dot paths
+support keys and numeric list indexes, for example `data.rows.0`, not full JSONPath.
+Errors report the failing segment and available keys/structure, without raw values.
+Tool I/O limits still apply.
+Supported targets are MCP, custom tools, Python, web search, RAG search, curl, and
+read-only file tools; state-changing tools and recursive wrappers are rejected.
+
+The response contains `saved` entries with immutable `param:...` refs and structural
+metadata, not the raw data. Subsequent MCP/custom arguments can contain
+`{"$ref":"param:...","path":"optional.path"}`; the backend expands the data.
+`inspect` with `path` describes that child without changing the saved value. The
+inferred `type=table` can mean a list of dictionaries; `pythonType` reports the actual
+Python type. Python has these helpers available without imports:
+
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+
+rows = load_parameter("param:reference-returned-by-the-tool", path="data.rows")
+df = pd.DataFrame(rows)
+df["rent"].plot.hist()
+plt.savefig("distribution.png")
+save_parameter("summary", {"count": len(df)})
+```
+
+For wrapped Python, `save.path` selects a variable created by the code. JSON values,
+tuples, numeric NumPy arrays, and Pandas DataFrames are supported without pickle;
+`save.type` converts AFTER path extraction: omitted/`auto` preserves the selected value,
+`json` produces JSON-compatible structures, `ndarray` creates a NumPy array, and
+`table`/`dataframe` creates a Pandas DataFrame. It cannot repair an invalid path.
+Unknown or action-inapplicable fields are rejected instead of ignored. No arbitrary
+object codec is executed. Only successful Python runs publish their exported variables.
+`load_parameter(ref, path="")` returns the stored Python value or a selected child
+without conversion; omit `path` to load the complete value.
+
+Values live in `backend/runtime/parameters/<conversation_id>` until deleted. Saved
+conversation JSON contains only metadata and reference snapshots. Compression keeps
+values; branches copy only refs visible at the selected event and keep independent
+data. Reusing a name creates a new version/ref. `list` recovers refs, `inspect` returns
+metadata by default (`limit=1..20` opts into a bounded preview), and `delete` removes a
+ref in Agent mode. The conversation API also supports list/inspect/delete under
+`/api/conversations/{id}/parameters`. CLI turns are saved to conversation history too.
+
+Original tool modes and AI review still apply inside the wrapper. This is a token-saving
+data channel, not a secrecy boundary: tool code can read the data, so do not print full
+datasets when only a statistic or chart is needed.

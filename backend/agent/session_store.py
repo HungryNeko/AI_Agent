@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from agent.config import PROJECT_ROOT
+from tools import parameterSave
 
 CONVERSATION_ROOT = PROJECT_ROOT / "backend" / "runtime" / "conversations"
 SUMMARY_LIMIT = 12_000
@@ -105,6 +106,7 @@ def save_turn(
             "summary": state.get("conversation_summary") or conversation.get("summary") or "",
             "events": events,
             "state": state,
+            "parameters": parameterSave.list_parameters(conversation_id),
         }
     )
     write_conversation(conversation)
@@ -148,6 +150,7 @@ def delete_conversation(conversation_id: str) -> None:
     path = conversation_path(conversation_id)
     if path.exists():
         path.unlink()
+    parameterSave.delete_all(conversation_id)
 
 
 def branch_conversation(conversation_id: str, event_index: int) -> dict[str, Any]:
@@ -160,6 +163,13 @@ def branch_conversation(conversation_id: str, event_index: int) -> dict[str, Any
     source_state = dict(source.get("state") or {})
     source_state["conversation_summary"] = ""
     state = compact_state(source_state, branch_events)
+    entries = []
+    for event in branch_events:
+        if event.get("type") == "parameters_changed":
+            entries = event.get("parameters", [])
+    parameterSave.clone_parameters(conversation_id, branch_id, entries)
+    state["conversation_id"] = branch_id
+    state["parameters"] = parameterSave.list_parameters(branch_id)
     now = utc_now()
     branch = {
         "id": branch_id,
@@ -169,6 +179,7 @@ def branch_conversation(conversation_id: str, event_index: int) -> dict[str, Any
         "summary": state.get("conversation_summary", ""),
         "events": branch_events,
         "state": state,
+        "parameters": state["parameters"],
         "parent_id": conversation_id,
         "parent_event_index": event_index,
     }

@@ -428,6 +428,11 @@ small {
   display: none;
 }
 
+.operationGroup {
+  width: min(100%, 820px);
+  min-width: 0;
+}
+
 .operationDetails {
   width: min(100%, 820px);
   border: 1px solid #e5e7eb;
@@ -444,10 +449,109 @@ small {
   font-size: 12px;
   font-weight: 800;
   user-select: none;
+  cursor: pointer;
+  list-style: none;
+}
+
+.operationDetails summary::-webkit-details-marker {
+  display: none;
+}
+
+.operationChevron,
+.operationDetails .runningDot {
+  flex: 0 0 auto;
+}
+
+.operationDetails[open] .operationChevron {
+  transform: rotate(90deg);
 }
 
 .operationDetails summary small {
   margin-left: auto;
+  white-space: nowrap;
+  font-weight: 400;
+}
+
+.operationPreview {
+  margin: 10px 0 0 17px;
+  padding-left: 13px;
+  border-left: 1px solid #d1d5db;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.operationPreview .markdownBody {
+  font-size: 14px;
+}
+
+.operationTools {
+  display: grid;
+  gap: 7px;
+  padding: 0;
+  margin: 10px 0 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.operationTools li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.operationTools svg {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  opacity: 0.65;
+}
+
+.operationTools span {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.operationPending,
+.operationAttention {
+  opacity: 0.75;
+}
+
+.operationAttention {
+  margin-top: 10px;
+}
+
+.operationAttention.isError {
+  color: #dc2626;
+  opacity: 1;
+}
+
+:root[data-theme="dark"] .operationPreview {
+  border-color: #3f4752;
+}
+
+:root[data-theme="dark"] .operationDetails summary {
+  color: #c9d1d9;
+}
+
+:root[data-theme="dark"] .operationAttention.isError {
+  color: #fda4af;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .operationDetails summary {
+    color: #c9d1d9;
+  }
+
+  :root:not([data-theme="light"]) .operationPreview {
+    border-color: #3f4752;
+  }
+
+  :root:not([data-theme="light"]) .operationAttention.isError {
+    color: #fda4af;
+  }
 }
 
 .operationDetails[open] summary {

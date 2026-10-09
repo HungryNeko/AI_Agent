@@ -34,7 +34,7 @@ def test_rag_auto_exposes_rag_tool():
 def test_curl_auto_exposes_curl_tool():
     prompt = build_tools_prompt(curl_mode="auto")
 
-    assert 'available: ["curl", "createTool", "custom__*", "model", "question"]' in prompt
+    assert 'available: ["curl", "createTool", "custom__*", "model", "parameterSave", "question"]' in prompt
 
 
 
@@ -158,7 +158,7 @@ def test_current_time_prompt_has_local_and_utc_reference():
 def test_python_auto_exposes_python_tool_without_rules():
     prompt = build_tools_prompt(python_mode="auto")
 
-    assert 'available: ["python", "createTool", "custom__*", "model", "question"]' in prompt
+    assert 'available: ["python", "createTool", "custom__*", "model", "parameterSave", "question"]' in prompt
     assert "artifact directory" not in prompt
 
 
@@ -190,7 +190,7 @@ def test_tool_rules_include_mcp_file_base64_guidance():
 def test_file_editor_auto_exposes_tool_without_rules():
     prompt = build_tools_prompt(file_editor_mode="auto")
 
-    assert 'available: ["fileEditor", "createTool", "custom__*", "model", "question"]' in prompt
+    assert 'available: ["fileEditor", "createTool", "custom__*", "model", "parameterSave", "question"]' in prompt
     assert "oldText" not in prompt
 
 
@@ -204,7 +204,7 @@ def test_tool_rules_include_file_editor_anchor_guidance():
 def test_file_reader_auto_exposes_read_only_document_tool():
     prompt = build_tools_prompt(file_reader_mode="auto")
 
-    assert 'available: ["fileReader", "createTool", "custom__*", "model", "question"]' in prompt
+    assert 'available: ["fileReader", "createTool", "custom__*", "model", "parameterSave", "question"]' in prompt
 
     detailed = build_tools_prompt(file_reader_mode="auto", include_rules=True)
     assert "Use fileReader to extract text" in detailed

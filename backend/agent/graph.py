@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, NotRequired, TypedDict
 from urllib.parse import unquote
+from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
 
@@ -20,7 +21,7 @@ from agent.references import resolve_reference_context
 from agent.reviewer import ReviewDecision, review_tool_request
 from prompts.context import build_context_prompt, format_current_time
 from prompts.tools import build_tools_prompt_from_settings, format_available
-from tools import rag
+from tools import parameterSave, rag
 from tools import models as model_tool
 from tools.executor import execute_tool
 from tools.request import ToolRequest, build_openai_tools, parse_openai_tool_calls
@@ -32,6 +33,7 @@ Route = Literal["assistant_step", "tool_call", "tool_error", "conversation_end"]
 
 class AgentEvent(TypedDict, total=False):
     type: str
+    step_id: int
     text: str
     tool: str
     query: str
@@ -46,10 +48,13 @@ class AgentEvent(TypedDict, total=False):
     content: str
     status: str
     state: ChatState
+    parameters: list[dict[str, Any]]
 
 
 class ChatState(TypedDict):
     message: str
+    conversation_id: NotRequired[str]
+    parameters: NotRequired[list[dict[str, Any]]]
     messages: NotRequired[list[Message]]
     model: NotRequired[str]
     system_prompt: NotRequired[str]
@@ -131,8 +136,10 @@ def first_state(state: ChatState) -> dict[str, Any]:
         conversation_mode=state.get("conversation_mode", "agent"),
     )
 
+    conversation_id = state.get("conversation_id") or uuid4().hex
+    settings = replace(settings, conversation_id=conversation_id)
     if state.get("initialized") and state.get("messages"):
-        return {"settings": settings, "conversation_mode": settings.conversation_mode}
+        return {"settings": settings, "conversation_id": conversation_id, "conversation_mode": settings.conversation_mode}
 
     system_prompt = load_system_prompt(
         web_search_mode=settings.web_search.mode,
@@ -153,6 +160,7 @@ def first_state(state: ChatState) -> dict[str, Any]:
     return {
         "messages": [{"role": "system", "content": system_prompt}],
         "settings": settings,
+        "conversation_id": conversation_id,
         "initialized": True,
         "tool_rounds": 0,
         "response": "",
@@ -380,6 +388,7 @@ def tool_call(state: ChatState) -> dict[str, Any]:
     active_plan = dict(state.get("plan") or {})
 
     for request in tool_requests:
+        previous_parameters = parameterSave.list_parameters(settings.conversation_id) if settings.conversation_id else []
         review_decision = maybe_review_tool_request(request, state)
         if review_decision and not review_decision.approved:
             result = f'toolError: "aiReview denied {request.name}: {review_decision.reason}"'
@@ -388,6 +397,11 @@ def tool_call(state: ChatState) -> dict[str, Any]:
             if review_decision:
                 tool_events.append({"type": "ai_review", "tool": request.name, "text": f"approved: {review_decision.reason}"})
             result = execute_tool(request, reviewed_tool_settings(request, settings))
+        current_parameters = parameterSave.list_parameters(settings.conversation_id) if settings.conversation_id else []
+        if current_parameters != previous_parameters:
+            tool_events.append({"type": "parameters_changed", "tool": "parameterSave",
+                                "text": f"Conversation parameters: {len(current_parameters)}",
+                                "parameters": current_parameters})
         messages.append(
             {
                 "role": "tool",
@@ -440,6 +454,7 @@ def tool_call(state: ChatState) -> dict[str, Any]:
         "tool_error": "",
         "question_pending": question_pending,
         "plan": active_plan or None,
+        "parameters": parameterSave.list_parameters(settings.conversation_id) if settings.conversation_id else [],
     }
     if active_model:
         update["model"] = active_model
@@ -643,8 +658,11 @@ def stream_turn(state: ChatState, message: str) -> Iterator[AgentEvent]:
                     continue
                 current_state.update(update)
                 if node == "assistant_step":
-                    yield from describe_assistant_progress_events(current_state)
-                    yield from describe_tool_call_events(current_state)
+                    step_id = current_state.get("tool_rounds", 0) + 1
+                    for event in describe_assistant_progress_events(current_state):
+                        yield {**event, "step_id": step_id}
+                    for event in describe_tool_call_events(current_state):
+                        yield {**event, "step_id": step_id}
                 if node == "tool_call":
                     yield from update.get("tool_events") or []
                 if update.get("tool_error"):
@@ -820,6 +838,7 @@ def file_editor_approval_required(result: str) -> bool:
 
 
 def maybe_review_tool_request(request: ToolRequest, state: ChatState) -> ReviewDecision | None:
+    request = request.wrapped_request or request
     settings = state["settings"]
     if settings.file_editor.approval != "aiReview" or not is_high_risk_tool_request(request):
         return None
@@ -842,11 +861,12 @@ def reviewed_tool_settings(request: ToolRequest, settings: ToolSettings) -> Tool
 
 
 def is_high_risk_tool_request(request: ToolRequest) -> bool:
+    request = request.wrapped_request or request
     if request.name == "rag" and request.rag_request:
         return request.rag_request.action == "ingest"
     if request.name == "fileEditor" and request.file_edit:
         return request.file_edit.action not in {"list", "read"}
-    if request.name == "python":
+    if request.name == "python" or request.name.startswith("custom__"):
         return True
     if request.name == "mcp" and request.mcp_request:
         return request.mcp_request.action == "callTool"

@@ -31,6 +31,7 @@ from tools import models as model_tool
 from tools import createTool as custom_tool
 from tools import plan as plan_tool
 from tools import rag
+from tools import parameterSave
 from tools.mcp import McpRequest
 from tools.rag import RagRequest
 from tools.settings import McpSettings, make_tool_settings
@@ -402,6 +403,14 @@ def put_custom_tool(name: str, payload: CustomToolPayload) -> dict[str, Any]:
     return {"status": "saved", **item}
 
 
+@app.delete("/api/custom-tools/{name}")
+def delete_custom_tool(name: str) -> dict[str, Any]:
+    try:
+        return custom_tool.delete_tool(name)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/api/chat/stop")
 def stop_chat(payload: StopChatRequest) -> dict[str, str]:
     run_id = payload.run_id.strip()
@@ -437,6 +446,7 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     run_id = (payload.run_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
+    state["conversation_id"] = conversation_id
     clear_cancelled_run(run_id)
 
     def events():
@@ -543,6 +553,42 @@ def branch_conversation(conversation_id: str, payload: BranchPayload) -> dict[st
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "branched", **conversation}
+
+
+@app.get("/api/conversations/{conversation_id}/parameters")
+def list_conversation_parameters(conversation_id: str) -> dict[str, Any]:
+    try:
+        session_store.conversation_path(conversation_id)
+        return {"parameters": parameterSave.list_parameters(conversation_id)}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/conversations/{conversation_id}/parameters/{ref}")
+def inspect_conversation_parameter(conversation_id: str, ref: str, path: str = "",
+                                   offset: int = Query(0, ge=0), limit: int = Query(0, ge=0, le=20)) -> dict[str, Any]:
+    try:
+        with parameterSave.conversation_scope(conversation_id):
+            return parameterSave.inspect_parameter(ref, path=path, offset=offset, limit=limit)
+    except (ValueError, KeyError, IndexError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/api/conversations/{conversation_id}/parameters/{ref}")
+def delete_conversation_parameter(conversation_id: str, ref: str) -> dict[str, Any]:
+    try:
+        with parameterSave.conversation_scope(conversation_id):
+            result = parameterSave.delete_parameter(ref)
+        conversation = session_store.read_conversation(conversation_id)
+        entries = parameterSave.list_parameters(conversation_id)
+        conversation.setdefault("events", []).append({"type": "parameters_changed", "parameters": entries,
+                                                        "text": "Parameter deleted", "ts": session_store.utc_now()})
+        conversation.setdefault("state", {})["parameters"] = entries
+        conversation["parameters"] = entries
+        session_store.write_conversation(conversation)
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/conversations/{conversation_id}/plan/decision")

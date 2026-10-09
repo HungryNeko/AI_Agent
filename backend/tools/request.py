@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from tools import createTool
+from tools import createTool, parameterSave
 from tools.appSettings import SettingsRequest
 from tools.automation import AutomationRequest
 from tools.createTool import CreateToolRequest
@@ -36,6 +36,7 @@ SYSTEM_TOOL_NAMES = {
     "model",
     "plan",
     "createTool",
+    "parameterSave",
 }
 
 
@@ -58,6 +59,8 @@ class ToolRequest:
     create_tool_request: CreateToolRequest | None = None
     custom_arguments: dict[str, Any] | None = None
     question_request: QuestionRequest | None = None
+    parameter_request: parameterSave.ParameterRequest | None = None
+    wrapped_request: ToolRequest | None = None
 
 
 def build_openai_tools(settings: ToolSettings) -> list[dict[str, Any]]:
@@ -89,6 +92,7 @@ def build_openai_tools(settings: ToolSettings) -> list[dict[str, Any]]:
         tools.append(automation_tool())
         tools.append(settings_tool())
     tools.append(model_tool())
+    tools.append(parameter_tool(read_only=settings.conversation_mode != "agent"))
     if settings.allows("plan"):
         tools.append(plan_tool())
     if settings.allows("createTool"):
@@ -143,6 +147,21 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
         raise ValueError("tool arguments must be a JSON object.")
 
     validate_tool_allowed(name, settings)
+    if name == "parameterSave":
+        item = parse_parameter_request(parsed_arguments, settings)
+        wrapped = None
+        if item.action == "call":
+            target = item.call["tool"]
+            if target not in parameterSave.DATA_TOOLS and not target.startswith("custom__"):
+                raise ValueError("parameterSave can only wrap data/query tools or Python/custom tools")
+            wrapped = parse_one_tool_call({"id": call_id, "function": {
+                "name": target, "arguments": json.dumps(item.call["arguments"]),
+            }}, settings)
+            if (wrapped.file_edit and wrapped.file_edit.action not in {"list", "read"}) or (
+                wrapped.rag_request and wrapped.rag_request.action != "search"
+            ):
+                raise ValueError("parameterSave cannot wrap file writes or RAG ingestion")
+        return ToolRequest(id=call_id, name=name, parameter_request=item, wrapped_request=wrapped)
     if name == "rag":
         rag_request = parse_rag_request(parsed_arguments)
         if settings.conversation_mode != "agent" and rag_request.action != "search":
@@ -206,6 +225,59 @@ def parse_rag_request(arguments: dict[str, Any]) -> RagRequest:
         chunk_model=optional_string(arguments.get("chunkModel")).strip(),
         overwrite=optional_bool(arguments.get("overwrite")),
     )
+
+
+def parse_parameter_request(arguments: dict[str, Any], settings: ToolSettings) -> parameterSave.ParameterRequest:
+    action = require_string(arguments, "action", "parameterSave")
+    if action not in {"call", "list", "inspect", "delete"}:
+        raise ValueError("parameterSave action must be call, list, inspect, or delete")
+    allowed = {
+        "call": {"action", "call", "save"}, "list": {"action"},
+        "inspect": {"action", "ref", "path", "offset", "limit"}, "delete": {"action", "ref"},
+    }[action]
+    unknown = set(arguments) - allowed
+    if unknown:
+        raise ValueError(f"parameterSave {action} unsupported fields: {', '.join(sorted(unknown))}; allowed: {', '.join(sorted(allowed))}")
+    if action == "delete" and settings.conversation_mode != "agent":
+        raise ValueError("parameterSave delete is only available in Agent mode")
+    call = arguments.get("call", {})
+    if not isinstance(call, dict):
+        raise ValueError("parameterSave call must be an object")
+    if action == "call":
+        unknown = set(call) - {"tool", "arguments"}
+        if unknown:
+            raise ValueError(f"parameterSave call unsupported fields: {', '.join(sorted(unknown))}; allowed: tool, arguments")
+        require_string(call, "tool", "parameterSave call")
+        if not isinstance(call.get("arguments"), dict):
+            raise ValueError("parameterSave call.arguments must be an object")
+    saves = arguments.get("save", [])
+    if not isinstance(saves, list) or len(saves) > 30:
+        raise ValueError("parameterSave save must be an array of at most 30 entries")
+    normalized = []
+    for item in saves:
+        if not isinstance(item, dict):
+            raise ValueError("parameterSave save entry must be an object")
+        unknown = set(item) - {"name", "path", "type"}
+        if unknown:
+            raise ValueError(f"parameterSave save unsupported fields: {', '.join(sorted(unknown))}; allowed: name, path, type")
+        name = require_string(item, "name", "parameterSave save")
+        data_type = item.get("type", "auto")
+        path = item.get("path", "")
+        if not isinstance(data_type, str) or data_type not in {"auto", "json", "ndarray", "table", "dataframe"}:
+            raise ValueError("parameterSave save.type must be auto, json, ndarray, table, or dataframe; it converts the selected value after path extraction")
+        if not isinstance(path, str):
+            raise ValueError("parameterSave save.path must be a dot-path string relative to the decoded tool result (a variable name for Python)")
+        if action == "call" and call["tool"] == "python" and not path:
+            raise ValueError("Python save entries require a variable path, e.g. values")
+        normalized.append({"name": name, "path": path, "type": data_type})
+    offset, limit = arguments.get("offset", 0), arguments.get("limit", 0)
+    if type(offset) is not int or offset < 0 or type(limit) is not int or not 0 <= limit <= 20:
+        raise ValueError("inspect offset must be nonnegative; limit must be 0 to 20")
+    ref = require_string(arguments, "ref", "parameterSave") if action in {"inspect", "delete"} else ""
+    path = arguments.get("path", "")
+    if not isinstance(path, str):
+        raise ValueError("parameterSave path must be a string")
+    return parameterSave.ParameterRequest(action, call, tuple(normalized), ref, path, offset, limit)
 
 
 def parse_file_read(arguments: dict[str, Any]) -> FileReadRequest:
@@ -354,8 +426,8 @@ def parse_plan_request(arguments: dict[str, Any]) -> PlanRequest:
 
 def parse_create_tool_request(arguments: dict[str, Any]) -> CreateToolRequest:
     action = require_string(arguments, "action", "createTool")
-    if action not in {"list", "read", "save"}:
-        raise ValueError("createTool action must be one of: list, read, save.")
+    if action not in {"list", "read", "save", "delete"}:
+        raise ValueError("createTool action must be one of: list, read, save, delete.")
     parameters = arguments.get("parameters", {})
     if not isinstance(parameters, dict):
         raise ValueError("createTool parameters must be an object")
@@ -666,6 +738,40 @@ def model_tool() -> dict[str, Any]:
     )
 
 
+def parameter_tool(*, read_only: bool = False) -> dict[str, Any]:
+    return function_tool(
+        name="parameterSave",
+        description=(
+            "Wrap an enabled data tool and save selected full results before truncation. "
+            "Returns only immutable conversation-scoped refs and structural metadata, not data. "
+            "When the structure is unknown, save=[{name:...}] stores the whole result; then inspect it. "
+            "Use list or inspect (limit=0 metadata, 1..20 preview); inspect.path describes the selected child's "
+            "inferred type/columns without conversion. A table label may be a list of dicts; pythonType is the actual type. "
+            "Delete removes a ref. Pass {$ref:ref, path:optional.dot.path} in MCP/custom arguments "
+            "or use load_parameter(ref, path=optional.dot.path) in Python. "
+            "For MCP callTool, the path root is the decoded application result: structuredContent's contents, "
+            "otherwise parsed single JSON text, otherwise the MCP result. Do not prefix structuredContent. "
+            "Dot paths support keys/numeric list indexes, not full JSONPath. "
+            "For Python, save paths are variables in the executed code. Original tool permissions and review still apply."
+        ),
+        properties={
+            "action": {"type": "string", "enum": ["call", "list", "inspect"] if read_only else ["call", "list", "inspect", "delete"]},
+            "call": {"type": "object", "properties": {
+                "tool": {"type": "string"}, "arguments": {"type": "object"},
+            }, "required": ["tool", "arguments"], "additionalProperties": False},
+            "save": {"type": "array", "items": {"type": "object", "properties": {
+                "name": {"type": "string", "description": "Label for a new immutable ref/version; the only required save field."},
+                "path": {"type": "string", "description": "Extract BEFORE saving, relative to the decoded tool result. Omitted/empty/$ saves the whole result. Example: data.rows, not structuredContent.data.rows. For Python a variable path is required, e.g. rows."},
+                "type": {"type": "string", "enum": ["auto", "json", "ndarray", "table", "dataframe"], "description": "Conversion AFTER path extraction: omitted/auto preserves Python type; json converts to JSON-compatible structures; ndarray uses NumPy; table/dataframe uses Pandas DataFrame. Does not affect path lookup."},
+            }, "required": ["name"], "additionalProperties": False}},
+            "ref": {"type": "string"}, "path": {"type": "string", "description": "For inspect only: child path relative to the stored value. Displays that child's inferred structure, without changing the ref or stored type; empty/$ selects the whole value."},
+            "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 0, "maximum": 20},
+        },
+        required=["action"],
+    )
+
+
 def plan_tool() -> dict[str, Any]:
     return function_tool(
         name="plan",
@@ -682,9 +788,9 @@ def plan_tool() -> dict[str, Any]:
 def create_tool() -> dict[str, Any]:
     return function_tool(
         name="createTool",
-        description="Create or update a reusable user-level Python tool. The code must define run(arguments) and is stored separately from system tools. Use custom__name after saving it.",
+        description="Create, update, or delete a reusable user-level Python tool. The code must define run(arguments) and is stored separately from system tools. Use custom__name after saving it.",
         properties={
-            "action": {"type": "string", "enum": ["list", "read", "save"]},
+            "action": {"type": "string", "enum": ["list", "read", "save", "delete"]},
             "name": {"type": "string"},
             "description": {"type": "string"},
             "parameters": {"type": "object", "description": "OpenAI function JSON Schema with type=object."},

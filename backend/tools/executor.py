@@ -18,12 +18,13 @@ from tools import (
     history,
     mcp,
     models,
+    parameterSave,
     plan,
     question,
     rag,
 )
 from tools import python as python_tool
-from tools.request import ToolRequest
+from tools.request import ToolRequest, parse_one_tool_call
 from tools.settings import ToolSettings
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
@@ -38,7 +39,8 @@ def execute_tool(request: ToolRequest, settings: ToolSettings) -> str:
 
     log_event("tool.request", tool=request.name, request=request)
     try:
-        result_text = execute_tool_uncaught(request, settings)
+        with parameterSave.conversation_scope(settings.conversation_id):
+            result_text = execute_tool_uncaught(request, settings)
     except NotImplementedError as exc:
         result_text = f'toolError: "{exc}"'
         log_exception("tool.error", exc, tool=request.name, request=request, result=result_text)
@@ -57,6 +59,8 @@ def execute_tool(request: ToolRequest, settings: ToolSettings) -> str:
 
 
 def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
+    if request.name == "parameterSave":
+        return execute_parameter_request(request, settings)
     if request.name.startswith("custom__"):
         return createTool.execute_custom(request.name, request.custom_arguments or {}, settings.python)
     if request.name == "webSearch":
@@ -121,6 +125,92 @@ def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
             return 'toolError: "question request is missing question_request."'
         return question.waiting_result(request.question_request)
     return f'toolError: "unknown tool: {request.name}"'
+
+
+def execute_parameter_request(request: ToolRequest, settings: ToolSettings) -> str:
+    item = request.parameter_request
+    if item is None:
+        raise ValueError("parameterSave request is missing")
+    if item.action == "list":
+        result = {"parameters": parameterSave.list_parameters()}
+    elif item.action == "inspect":
+        result = parameterSave.inspect_parameter(item.ref, path=item.path, offset=item.offset, limit=item.limit)
+    elif item.action == "delete":
+        result = parameterSave.delete_parameter(item.ref)
+    else:
+        # Re-parse at dispatch too: wrapping must never bypass current tool permissions.
+        inner = parse_one_tool_call({"id": request.id, "function": {
+            "name": item.call["tool"], "arguments": json.dumps(item.call["arguments"]),
+        }}, settings)
+        if inner.name == "python":
+            code = inner.code
+            if item.save:
+                code += "\nfrom ai_agent_parameters import select_path\n"
+                for spec in item.save:
+                    code += f"save_parameter({spec['name']!r}, select_path(globals(), {spec['path']!r}), {spec['type']!r})\n"
+            execution = python_tool.run(code, settings.python)
+            if execution["return_code"] != 0:
+                raise ValueError(execution["stderr"] or "Python execution failed")
+            if not item.save:
+                return format_python_result(execution)
+            if len(execution.get("parameters", [])) < len(item.save):
+                raise ValueError("Python finished before exporting the requested variables")
+            result = {"saved": execution.get("parameters", []), "files": execution["files"]}
+        elif not item.save:
+            return execute_tool_uncaught(inner, settings)
+        else:
+            value, files = execute_raw_data_tool(inner, settings)
+            saved = parameterSave.store_many([
+                (spec["name"], parameterSave.select_path(value, spec["path"]), spec["type"])
+                for spec in item.save
+            ])
+            result = {"saved": saved, "files": files}
+    return "parameterSaveResult:\n" + json.dumps(result, ensure_ascii=False)
+
+
+def execute_raw_data_tool(request: ToolRequest, settings: ToolSettings) -> tuple[Any, list[str]]:
+    if request.name.startswith("custom__"):
+        result = createTool.execute_custom(request.name, request.custom_arguments or {}, settings.python, raw=True)
+        return result["result"], result["files"]
+    if request.name == "mcp" and request.mcp_request:
+        item = request.mcp_request
+        if item.action == "listServers":
+            return mcp.list_servers(settings.mcp), []
+        if item.action == "listTools":
+            return mcp.list_tools(item.server, settings.mcp, raw=True)["response"], []
+        result = mcp.call_tool(item.server, item.tool, item.arguments, settings.mcp, raw=True)
+        response = result["response"]
+        payload = response.get("result", {})
+        if response.get("error") or payload.get("isError"):
+            raise ValueError("MCP error: " + json.dumps(response.get("error") or payload, ensure_ascii=False)[:4000])
+        if "structuredContent" in payload:
+            return payload["structuredContent"], result["files"]
+        content = payload.get("content", [])
+        if len(content) == 1 and content[0].get("type") == "text":
+            text = content[0].get("text", "")
+            try:
+                return json.loads(text), result["files"]
+            except json.JSONDecodeError:
+                return text, result["files"]
+        return payload, result["files"]
+    if request.name == "webSearch":
+        return WebSearch.search(request.query, settings.web_search), []
+    if request.name == "rag" and request.rag_request and request.rag_request.action == "search":
+        return rag.search(request.rag_request.query, settings.rag), []
+    if request.name == "curl":
+        result = curl.get(request.url, settings.curl)
+        if format_curl_result(result).startswith("toolError:"):
+            raise ValueError(format_curl_result(result))
+        body = result.get("body", "")
+        try:
+            return json.loads(body), []
+        except json.JSONDecodeError:
+            return result, []
+    if request.name == "fileReader" and request.file_read:
+        return fileReader.read(request.file_read, settings.file_reader), []
+    if request.name == "fileEditor" and request.file_edit and request.file_edit.action in {"list", "read"}:
+        return fileEditor.execute(request.file_edit, settings.file_editor), []
+    raise ValueError("this tool cannot provide a saved data result")
 
 
 def format_web_search_results(results: list[dict[str, Any]]) -> str:
@@ -206,6 +296,8 @@ def format_python_result(result: dict[str, Any]) -> str:
 
     prefix = "pythonResult" if return_code == 0 else "toolError"
     lines = [f"{prefix}:", f"returnCode: {return_code}", f"artifactDir: {artifact_dir}"]
+    if result.get("parameters"):
+        lines.append("savedParameters: " + json.dumps(result["parameters"], ensure_ascii=False))
     if files:
         lines.append("files:")
         lines.extend(f"- {path}" for path in files)

@@ -29,6 +29,31 @@ def test_custom_tool_save_read_and_schema(tmp_path, monkeypatch):
     assert schemas[0]["function"]["parameters"] == parameters
 
 
+def test_custom_tool_delete_removes_tool(tmp_path, monkeypatch):
+    monkeypatch.setattr(createTool, "CUSTOM_TOOL_ROOT", tmp_path / "custom_tools")
+    parameters = {
+        "type": "object",
+        "properties": {"value": {"type": "integer"}},
+        "required": ["value"],
+    }
+    createTool.execute(
+        CreateToolRequest(
+            action="save",
+            name="temporary",
+            description="A tool to delete",
+            parameters=parameters,
+            code="def run(arguments):\n    return arguments['value'] * 2",
+        )
+    )
+    assert createTool.list_tools()
+
+    deleted = createTool.execute(CreateToolRequest(action="delete", name="temporary"))
+
+    assert '"status": "deleted"' in deleted
+    assert createTool.list_tools() == []
+    assert not (tmp_path / "custom_tools" / "temporary").exists()
+
+
 def test_plan_tool_uses_session_payload_and_exports_only_explicitly(tmp_path, monkeypatch):
     monkeypatch.setattr(plan, "PLAN_ROOT", tmp_path / "plans")
 

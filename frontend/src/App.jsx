@@ -7,6 +7,7 @@ import {
   Archive,
   AtSign,
   Check,
+  ChevronRight,
   Code2,
   Database,
   Download,
@@ -35,6 +36,7 @@ import {
 } from "lucide-react";
 import "katex/dist/katex.min.css";
 import "./styles.css";
+import { currentOperation, toolPreviewText } from "./operationPreview.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
@@ -645,7 +647,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
         </div>
         <div className="stream" ref={outputRef} onScroll={trackScroll}>
           {events.length === 0 && <div className="emptyState">输入消息，或用 @ 指定工具、历史、技能、记忆和知识。</div>}
-          <StreamEvents events={events} busy={busy} onPreviewImage={setPreviewImage} onBranch={branchConversation} />
+          <StreamEvents events={events} busy={busy} onPreviewImage={setPreviewImage} onBranch={branchConversation} text={text} />
           <PlanReviewCard plan={state?.plan} busy={busy} onApprove={() => reviewPlan("approved")} onReject={() => reviewPlan("rejected")} onRevise={revisePlan} onSave={savePlanCopy} text={text} />
         </div>
         <form className="composer" onSubmit={sendMessage}>
@@ -815,7 +817,7 @@ function SelectField({ label, value, onChange, values, icon = null }) {
   );
 }
 
-function StreamEvents({ events, busy = false, onPreviewImage, onBranch }) {
+function StreamEvents({ events, busy = false, onPreviewImage, onBranch, text }) {
   const turns = [];
   let current = [];
   for (const [eventIndex, rawEvent] of events.entries()) {
@@ -834,6 +836,7 @@ function StreamEvents({ events, busy = false, onPreviewImage, onBranch }) {
       running={busy && index === turns.length - 1}
       onPreviewImage={onPreviewImage}
       onBranch={onBranch}
+      text={text}
     />
   ));
 }
@@ -1002,7 +1005,8 @@ function QuestionDialog({ question, busy, onRespond, text }) {
   );
 }
 
-function StreamTurn({ events, running = false, onPreviewImage, onBranch }) {
+function StreamTurn({ events, running = false, onPreviewImage, onBranch, text }) {
+  const [expanded, setExpanded] = useState(false);
   const assistantIndex = findLastIndex(events, (event) => event.type === "assistant");
   const stoppedIndex = findLastIndex(events, (event) => event.type === "stopped");
   const errorIndex = findLastIndex(events, (event) => event.type === "error" && event.terminal);
@@ -1011,20 +1015,39 @@ function StreamTurn({ events, running = false, onPreviewImage, onBranch }) {
   const userEvents = events.filter((event) => event.type === "user");
   const finalEvent = completed ? events[finalIndex] : null;
   const operationEvents = events.filter((event, index) => index !== finalIndex && event.type !== "user");
-  const currentWork = summarizeOperation(operationEvents[operationEvents.length - 1], completed);
+  const currentWork = currentOperation(operationEvents);
+  const active = !completed && (running || operationEvents.length > 0);
+
+  useEffect(() => {
+    if (completed) setExpanded(false);
+  }, [completed]);
 
   return (
     <div className="streamTurn">
       {userEvents.map((event, index) => <StreamEvent key={`${event.type}-${index}`} event={event} onPreviewImage={onPreviewImage} />)}
-      {operationEvents.length > 0 && (
-        <details className="operationDetails">
-          <summary>
-            {running && !completed && <span className="runningDot" />}
-            <span>{currentWork}</span>
-            <small>{operationEvents.length} steps</small>
-          </summary>
-          {operationEvents.map((event, index) => <StreamEvent key={`${event.type}-${index}`} event={event} compact onPreviewImage={onPreviewImage} />)}
-        </details>
+      {(operationEvents.length > 0 || active) && (
+        <section className="operationGroup">
+          <details className="operationDetails" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+            <summary>
+              <ChevronRight size={14} className="operationChevron" />
+              {running && !completed && <span className="runningDot" />}
+              <span>{completed ? text("执行过程", "Activity") : currentWork.attention?.type === "question_required" ? text("等待回答", "Waiting for answer") : currentWork.attention?.type === "approval_required" ? text("等待批准", "Waiting for approval") : text("进行中", "Working")}</span>
+              <small>{operationEvents.length} {text("条记录", "events")}</small>
+            </summary>
+            {operationEvents.map((event, index) => <StreamEvent key={`${event.type}-${index}`} event={event} compact onPreviewImage={onPreviewImage} />)}
+          </details>
+          {active && !expanded && (
+            <div className="operationPreview">
+              {currentWork.thinking ? <MarkdownText text={currentWork.thinking} onPreviewImage={onPreviewImage} /> : currentWork.tools.length === 0 && <p className="operationPending">{text("正在思考…", "Thinking...")}</p>}
+              {currentWork.tools.length > 0 && (
+                <ul className="operationTools" aria-label={text("当前步骤的工具调用", "Current step tool calls")}>
+                  {currentWork.tools.map((event, index) => <li key={event.id || `${event.tool}-${index}`}><Wrench size={14} aria-hidden="true" /><span>{toolPreviewText(event)}</span></li>)}
+                </ul>
+              )}
+              {currentWork.attention && <p className={`operationAttention${currentWork.attention.type === "error" ? " isError" : ""}`}>{currentWork.attention.text || currentWork.attention.question || text("等待确认", "Waiting for confirmation")}</p>}
+            </div>
+          )}
+        </section>
       )}
       {finalEvent && String(finalEvent.text || "").trim() && <StreamEvent event={finalEvent} onPreviewImage={onPreviewImage} onBranch={onBranch} />}
     </div>
@@ -1710,6 +1733,20 @@ function CustomToolsView({ text }) {
     }
   }
 
+  async function deleteTool() {
+    if (!selected) return;
+    if (!window.confirm(text(`删除自建工具 custom__${selected}？`, `Delete custom tool custom__${selected}?`))) return;
+    try {
+      await fetchJson(`/api/custom-tools/${encodeURIComponent(selected)}`, { method: "DELETE" });
+      setSelected("");
+      setForm(emptyTool);
+      setStatus(text("已删除自建工具", "Custom tool deleted"));
+      await refreshTools();
+    } catch (error) {
+      setStatus(`${text("删除失败", "Delete failed")}: ${String(error.message || error)}`);
+    }
+  }
+
   return (
     <section className="configLayout">
       <aside className="providerPane">
@@ -1717,7 +1754,7 @@ function CustomToolsView({ text }) {
         {tools.map((item) => <button className={selected === item.name ? "providerItem active" : "providerItem"} key={item.name} type="button" onClick={() => openTool(item.name)}><span><Wrench size={15} />custom__{item.name}</span></button>)}
       </aside>
       <div className="modelEditor">
-        <div className="editorHeader"><div><h2>{text("工具代码", "TOOL CODE")}</h2><span>{text("用户级工具与 backend/tools 系统工具分开保存。代码必须定义 run(arguments)。", "User tools are separate from system tools and must define run(arguments).")}</span></div><button className="primaryButton" type="button" onClick={saveTool}><Save size={16} /><span>{text("保存", "Save")}</span></button></div>
+        <div className="editorHeader"><div><h2>{text("工具代码", "TOOL CODE")}</h2><span>{text("用户级工具与 backend/tools 系统工具分开保存。代码必须定义 run(arguments)。", "User tools are separate from system tools and must define run(arguments).")}</span></div><div className="rowActions"><button className="dangerButton" type="button" onClick={deleteTool} disabled={!selected}><Trash2 size={16} /><span>{text("删除", "Delete")}</span></button><button className="primaryButton" type="button" onClick={saveTool}><Save size={16} /><span>{text("保存", "Save")}</span></button></div></div>
         <div className="customToolForm">
           <label><span>{text("名称", "Name")}</span><input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="my_tool" /></label>
           <label><span>{text("描述", "Description")}</span><input value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></label>
@@ -2161,7 +2198,7 @@ function modelValue(item) {
 }
 
 function stringifyEventText(event, fallback) {
-  if (["tool_call", "assistant_progress", "question_required", "approval_required", "ai_review", "plan_updated", "plan_ready", "plan_decision", "error", "stopped", "user", "assistant"].includes(event.type)) {
+  if (["tool_call", "assistant_progress", "question_required", "approval_required", "ai_review", "plan_updated", "plan_ready", "plan_decision", "parameters_changed", "error", "stopped", "user", "assistant"].includes(event.type)) {
     return fallback;
   }
   return JSON.stringify(event, null, 2);
@@ -2174,14 +2211,6 @@ function formatQuestionResponseForUser(response, text) {
   if (response.selected.length > 0) parts.push(response.selected.join(text("、", ", ")));
   if (response.text) parts.push(response.text);
   return parts.join("\n") || text("已回答。", "Answered.");
-}
-
-function summarizeOperation(event, completed) {
-  if (!event) return completed ? "已完成" : "正在准备";
-  const name = event.tool || event.type || "step";
-  const detail = event.query || event.url || event.question || event.text || "";
-  const clean = String(detail).replace(/\s+/g, " ").slice(0, 90);
-  return `${completed ? "已执行" : "正在"} ${eventLabel(name)}${clean ? `: ${clean}` : ""}`;
 }
 
 function eventLabel(type) {
@@ -2203,6 +2232,8 @@ function eventLabel(type) {
     fileEditor: "FILE",
     fileReader: "READER",
     settings_changed: "SETTINGS",
+    parameters_changed: "PARAMETERS",
+    parameterSave: "PARAMETERS",
     plan_updated: "PLAN DRAFT",
     plan_ready: "PLAN READY",
     plan_decision: "PLAN REVIEW",
@@ -2287,6 +2318,7 @@ function toolMentionOptions(text) {
     { label: text("工具 HTTP", "Tool HTTP"), token: "@tool:curl" },
     { label: text("工具 文件编辑", "Tool File Editor"), token: "@tool:fileEditor" },
     { label: text("工具 MCP", "Tool MCP"), token: "@tool:mcp" },
+    { label: text("工具 变量存储", "Tool Saved Parameters"), token: "@tool:parameterSave" },
     { label: text("工具 历史", "Tool History"), token: "@tool:history" },
     { label: text("工具设置", "Tool Settings"), token: "@tool:settings" },
   ];

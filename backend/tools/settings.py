@@ -176,9 +176,10 @@ class ToolSettings:
     automation: AutomationSettings = AutomationSettings()
     question: QuestionSettings = QuestionSettings()
     conversation_mode: ConversationMode = "agent"
+    conversation_id: str = ""
 
     def allows(self, tool: str) -> bool:
-        if tool in {"model", "question"}:
+        if tool in {"model", "question", "parameterSave"}:
             return tool != "question" or self.question.can_model_call
         read_tools = {"webSearch", "rag", "curl", "history", "fileReader", "fileEditor"}
         if self.conversation_mode == "ask":
@@ -216,6 +217,7 @@ class ToolSettings:
             available.append("createTool")
             available.append("custom__*")
         available.append("model")
+        available.append("parameterSave")
         if self.question.can_model_call:
             available.append("question")
         return {"available": available}

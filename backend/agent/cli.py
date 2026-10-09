@@ -8,6 +8,7 @@ import os
 import sys
 
 from agent.graph import ChatState, new_chat_state, stream_turn
+from agent import session_store
 
 
 def fix_windows_encoding() -> None:
@@ -135,7 +136,10 @@ def run_loop(args: argparse.Namespace, state: ChatState) -> None:
 
 def run_streamed_turn(state: ChatState, message: str, *, assistant_prefix: str) -> ChatState:
     next_state = state
+    state.setdefault("conversation_id", session_store.create_conversation_id())
+    turn_events = []
     for event in stream_turn(state, message):
+        turn_events.append(event)
         event_type = event.get("type")
         if event_type == "assistant_progress":
             print(f"{assistant_prefix}{event.get('text', '')}")
@@ -153,6 +157,10 @@ def run_streamed_turn(state: ChatState, message: str, *, assistant_prefix: str) 
         elif event_type == "assistant":
             next_state = event.get("state", next_state)
             print(f"{assistant_prefix}{event.get('text', '')}")
+    session_store.save_turn(
+        state["conversation_id"], user_text=message, turn_events=turn_events,
+        state={key: value for key, value in next_state.items() if key not in {"settings", "message"}},
+    )
     return next_state
 
 

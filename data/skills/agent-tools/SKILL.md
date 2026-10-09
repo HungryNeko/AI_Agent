@@ -20,6 +20,17 @@ Use this skill when a task may need local tools, conversation history, RAG, MCP,
 - `fileEditor` reads and writes workspace files according to the configured approval mode.
 - `webSearch` is for current or uncertain external facts.
 
+## parameterSave / Python References
+
+- Wrap large queries with `parameterSave` before executing them so raw data stays out of model context. An empty `list` means this conversation has no saved values, not that the tool is unavailable.
+- Save the whole result when its structure is unknown: `{"action":"call","call":{"tool":"mcp","arguments":{"action":"callTool","server":"configuredServerName","tool":"query","arguments":{}}},"save":[{"name":"query_result"}]}`. Only `name` is required; the result contains an immutable `param:...` ref and structural metadata.
+- Optional `save.path` extracts a child BEFORE saving. The root is the decoded application result, not the MCP transport envelope: `structuredContent` is unwrapped, or a single JSON text content block is parsed. For an application object with keys `content`, `data`, `success`, `error`, use `data.rows`, not `structuredContent.data.rows`. Omitting `path`, or using empty/`$`, saves the whole result. Python wrappers require a variable path such as `rows`.
+- Optional `save.type` converts the selected value AFTER extraction: `auto` (default) preserves type, `json` produces JSON-compatible structures, `ndarray` creates a NumPy array, and `table`/`dataframe` creates a Pandas DataFrame. Changing `type` cannot repair a wrong path. Unknown fields are rejected, not silently ignored.
+- `{"action":"inspect","ref":"param:..."}` returns structure only. Add `path="data.rows"` to describe that child's inferred type and columns. Inspection never converts stored data: `type=table` can describe a list of dicts, while `pythonType=list` reports its real Python type. `limit=1..20` explicitly requests a bounded preview; leave `limit=0` to avoid revealing row values.
+- Python helpers are available without imports: `obj = load_parameter(ref)` loads the entire stored value; `rows = load_parameter(ref, path="data.rows")` selects a child. They preserve actual stored types. `save_parameter("summary", value, data_type="auto")` returns a new ref; only successful runs publish it to conversation storage. Use `pd.DataFrame(rows)` explicitly if needed.
+- MCP and custom-tool arguments can use `{"$ref":"param:...","path":"data.rows"}`; the backend resolves the value without printing it. Dot paths support dictionary keys and numeric list indexes (`data.rows.0`), not brackets or arbitrary JSONPath expressions. Path errors show available keys/structure, never row values.
+- Values belong to one conversation and survive restart/compression; `list` recovers refs, `delete` removes them when requested, and branches keep independent copies. Original tool availability and approvals still apply. Do not print entire datasets just to pass them between tools.
+
 ## Attachments
 
 - Uploaded text files should be included as a bounded text preview in the current user message.

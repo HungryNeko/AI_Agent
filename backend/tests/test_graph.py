@@ -70,13 +70,13 @@ def test_run_agent_calls_model_once(monkeypatch):
 
     assert result == "hi"
     assert payloads[0]["model"] == "deepseek-chat"
-    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["webSearch", "rag", "model", "createTool", "question"]
+    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["webSearch", "rag", "model", "parameterSave", "createTool", "question"]
     assert payloads[0]["messages"][0]["role"] == "system"
     assert "Tool request format reminder:" in payloads[0]["messages"][0]["content"]
     assert payloads[0]["messages"][-1]["role"] == "user"
     assert 'currentTime: "2026-09-02T12:00:00-07:00"' in payloads[0]["messages"][-1]["content"]
     assert 'conversationSummary: "summary"' in payloads[0]["messages"][-1]["content"]
-    assert 'available: ["webSearch", "rag", "createTool", "custom__*", "model", "question"]' in payloads[0]["messages"][-1]["content"]
+    assert 'available: ["webSearch", "rag", "createTool", "custom__*", "model", "parameterSave", "question"]' in payloads[0]["messages"][-1]["content"]
 
 
 def test_turn_context_includes_question_and_developer_modes(monkeypatch):
@@ -303,6 +303,7 @@ def test_stream_turn_emits_tool_call_before_final_answer(monkeypatch):
         "tool": "webSearch",
         "query": "Los Angeles weather",
         "text": "webSearch: Los Angeles weather",
+        "step_id": 1,
     }
     assert events[-1]["type"] == "assistant"
     assert events[-1]["text"] == "final answer"
@@ -425,15 +426,35 @@ def test_stream_turn_emits_assistant_progress_before_tool_call(monkeypatch):
     assert events[0] == {
         "type": "assistant_progress",
         "text": "I will check current weather data first.",
+        "step_id": 1,
     }
     assert events[1] == {
         "type": "tool_call",
         "tool": "curl",
         "url": "https://api.open-meteo.com/v1/forecast",
         "text": "curl: https://api.open-meteo.com/v1/forecast",
+        "step_id": 1,
     }
     assert events[-1]["type"] == "assistant"
     assert events[-1]["text"] == "The API returned current weather data."
+
+def test_stream_turn_groups_multiple_tools_and_tool_only_next_step(monkeypatch):
+    responses = iter([
+        {"role": "assistant", "content": "Check two sources.", "tool_calls": [
+            {"id": "call_a", "type": "function", "function": {"name": "curl", "arguments": '{"url":"https://example.com/a"}'}},
+            {"id": "call_b", "type": "function", "function": {"name": "curl", "arguments": '{"url":"https://example.com/b"}'}},
+        ]},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "call_c", "type": "function", "function": {"name": "python", "arguments": '{"code":"print(1)"}'}},
+        ]},
+        {"role": "assistant", "content": "Done."},
+    ])
+    monkeypatch.setattr(graph, "complete_chat_once", lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(graph, "execute_tool", lambda *args: "result")
+    events = list(graph.stream_turn(graph.new_chat_state(curl_mode="auto", python_mode="auto"), "Check sources"))
+    assert [event["type"] for event in events] == ["assistant_progress", "tool_call", "tool_call", "tool_call", "assistant"]
+    assert [event["step_id"] for event in events[:-1]] == [1, 1, 1, 2]
+
 
 def test_stream_turn_emits_progress_between_multiple_tool_calls(monkeypatch):
     calls = []
@@ -491,6 +512,8 @@ def test_stream_turn_emits_progress_between_multiple_tool_calls(monkeypatch):
     ]
     assert events[0]["text"] == "I will search for the forecast source first."
     assert events[2]["text"] == "I found a direct API endpoint. I will fetch it now."
+    assert events[0]["step_id"] == events[1]["step_id"] == 1
+    assert events[2]["step_id"] == events[3]["step_id"] == 2
     assert events[-1]["text"] == "Summary: current weather data is available."
 
 def test_stream_turn_emits_executor_tool_error_event_and_allows_model_retry(monkeypatch):
@@ -675,12 +698,14 @@ def test_stream_turn_emits_python_tool_call(monkeypatch):
     assert events[0] == {
         "type": "assistant_progress",
         "text": "I will calculate this with Python.",
+        "step_id": 1,
     }
     assert events[1] == {
         "type": "tool_call",
         "tool": "python",
         "code": "print(2 + 2)",
         "text": "python: print(2 + 2)",
+        "step_id": 1,
     }
     assert events[-1]["text"] == "The result is 4."
 
@@ -714,6 +739,7 @@ def test_stream_turn_emits_file_editor_tool_call(monkeypatch):
     assert events[0] == {
         "type": "assistant_progress",
         "text": "I will edit the file with a stable anchor.",
+        "step_id": 1,
     }
     assert events[1] == {
         "type": "tool_call",
@@ -721,6 +747,7 @@ def test_stream_turn_emits_file_editor_tool_call(monkeypatch):
         "action": "replace",
         "path": "a.py",
         "text": "fileEditor: replace a.py",
+        "step_id": 1,
     }
     assert events[-1]["text"] == "Updated a.py."
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Any
@@ -18,7 +19,7 @@ CUSTOM_TOOL_ROOT = PROJECT_ROOT / "data" / "custom_tools"
 
 @dataclass(frozen=True)
 class CreateToolRequest:
-    action: Literal["list", "read", "save"]
+    action: Literal["list", "read", "save", "delete"]
     name: str = ""
     description: str = ""
     parameters: dict[str, Any] | None = None
@@ -33,6 +34,8 @@ def execute(request: CreateToolRequest) -> str:
     if request.action == "save":
         saved = save_tool(request.name, request.description, request.parameters or {}, request.code)
         return result({"status": "saved", **saved})
+    if request.action == "delete":
+        return result(delete_tool(request.name))
     raise ValueError(f"unknown createTool action: {request.action}")
 
 
@@ -80,19 +83,34 @@ def save_tool(name: str, description: str, parameters: dict[str, Any], code: str
     return manifest
 
 
-def execute_custom(function_name: str, arguments: dict[str, Any], settings: PythonSettings) -> str:
+def delete_tool(name: str) -> dict[str, Any]:
+    root = tool_root(name)
+    if not root.is_dir():
+        raise ValueError(f"custom tool not found: {name}")
+    shutil.rmtree(root)
+    return {"status": "deleted", "name": clean_name(name)}
+
+
+def execute_custom(function_name: str, arguments: dict[str, Any], settings: PythonSettings, *, raw: bool = False) -> Any:
     if not function_name.startswith("custom__"):
         raise ValueError("custom tool name must start with custom__")
     item = read_tool(function_name.removeprefix("custom__"), include_code=True)
-    arguments_json = json.dumps(arguments, ensure_ascii=False)
+    from tools import parameterSave
+
+    arguments = parameterSave.resolve_references(arguments)
     wrapped = (
         f"{item['code']}\n\n"
         "import json as _json\n"
-        f"_arguments = _json.loads({arguments_json!r})\n"
+        "from ai_agent_parameters import load_bindings, export_result\n"
+        "_arguments = load_bindings()\n"
         "_result = run(_arguments)\n"
-        "print(_json.dumps(_result, ensure_ascii=False, default=str))\n"
+        + ("export_result(_result)\n" if raw else "print(_json.dumps(_result, ensure_ascii=False, default=str))\n")
     )
-    execution = python_tool.run(wrapped, settings)
+    execution = python_tool.run(wrapped, settings, bindings=arguments, capture_result=raw)
+    if raw:
+        if execution["return_code"] != 0 or "result" not in execution:
+            raise ValueError(execution.get("stderr") or "custom tool returned no result")
+        return execution
     return "customToolResult:\n" + json.dumps(execution, ensure_ascii=False, default=str)
 
 

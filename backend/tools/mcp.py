@@ -93,16 +93,19 @@ def list_servers(settings: McpSettings) -> dict[str, Any]:
     return {"action": "listServers", "servers": servers}
 
 
-def list_tools(server_name: str, settings: McpSettings) -> dict[str, Any]:
+def list_tools(server_name: str, settings: McpSettings, *, raw: bool = False) -> dict[str, Any]:
     server = require_server(server_name, settings)
     response = run_session(server, settings, method="tools/list", params={})
-    return {"action": "listTools", "server": server_name, "response": trim_json(response, settings.max_output_chars)}
+    return {"action": "listTools", "server": server_name, "response": response if raw else trim_json(response, settings.max_output_chars)}
 
 
-def call_tool(server_name: str, tool_name: str, arguments: dict[str, Any], settings: McpSettings) -> dict[str, Any]:
+def call_tool(server_name: str, tool_name: str, arguments: dict[str, Any], settings: McpSettings, *, raw: bool = False) -> dict[str, Any]:
     if not tool_name.strip():
         raise ValueError("mcp callTool requires tool.")
     server = require_server(server_name, settings)
+    from tools import parameterSave
+
+    arguments = parameterSave.to_wire(parameterSave.resolve_references(arguments))
     prepared_arguments, expanded_uploads = prepare_mcp_arguments(arguments)
     response = run_session(
         server,
@@ -116,7 +119,7 @@ def call_tool(server_name: str, tool_name: str, arguments: dict[str, Any], setti
         "action": "callTool",
         "server": server_name,
         "tool": tool_name,
-        "response": trim_json(response_for_model, settings.max_output_chars),
+        "response": response if raw else trim_json(response_for_model, settings.max_output_chars),
         "files": files,
     }
     if expanded_uploads:

@@ -167,6 +167,7 @@ def run_llm_automation_conversation(path: Path, item: dict[str, Any]) -> dict[st
             max_tool_rounds=10,
         )
     state["automation_mode"] = "auto"
+    state["conversation_id"] = conversation_id
     state["history_mode"] = "auto"
     state["mcp_mode"] = state.get("mcp_mode") or "auto"
     state["python_mode"] = state.get("python_mode") or "auto"

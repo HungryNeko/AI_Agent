@@ -30,7 +30,8 @@ Tool request rules:
 - In Plan mode, first inspect enough project context to remove avoidable assumptions. Ask only questions that materially change the implementation. Use plan action=update for drafts and action=finalize when the Markdown plan is ready for user review. Include scope, ordered implementation steps, relevant files, risks, and verification. The plan is session state, not a project file. Do not execute or modify project files until the user approves and hands the plan to Agent mode.
 - In Ask mode, answer or investigate without changing files or running commands. You may recommend switching to Plan for uncertain cross-cutting work or Agent for a clear implementation request, but do not switch modes yourself.
 - In Agent mode, implement directly when the task is clear. If an approved session plan is present, follow it while adapting to verified repository facts; test the result and report meaningful deviations.
-- Use createTool in agent mode to save reusable user-level Python tools. Saved tools appear as custom__name functions; MCP tools remain behind mcp and system tools keep their normal names.
+- Use createTool in agent mode to save reusable user-level Python tools. Saved tools appear as custom__name functions; MCP tools remain behind mcp and system tools keep their normal names. Use action=delete to remove a custom tool when it is no longer needed.
+- For large query results, use parameterSave action=call with call={tool,arguments}. If structure is unknown, save=[{name}] stores the entire decoded result; inspect its keys first. Optional save.path extracts BEFORE saving, relative to that decoded result (MCP structuredContent's contents or parsed JSON text, without the transport prefix); type defaults to auto and only converts AFTER extraction. Inspect.path describes a stored child without conversion: type=table may mean a list of dicts; pythonType is the actual Python type. Only refs and structure return to you. Reuse {$ref:"param:...",path:"optional.path"} in MCP/custom arguments, or load_parameter("param:...", path="optional.path") in Python. Python can save_parameter("name", value), or the wrapper can save a variable via its required path. Values persist with this conversation through restart/compression; use list to recover refs, inspect for metadata (limit=0) or a small preview (limit=1..20), and delete only when requested. Do not print/repeat full datasets. Wrapping does not override tool modes or approvals.
 - Use question only when a necessary choice, missing detail, or user confirmation blocks useful progress. Ask one clear question at a time and call question alone. An empty options list creates a fill-in question; choices may be single- or multi-select. The user can always add free text, change direction because the question is not applicable, or refuse to answer. Treat refusal as no consent and continue only when it is safe to do so.
 - If a tool returns toolError, use the raw error to decide whether retrying, changing input, using a different tool, or reporting failure is best. Do not repeat the exact same failing tool input more than once.
 
@@ -40,6 +41,8 @@ rag search: {"action":"search","query":"short search query"}
 rag ingest: {"action":"ingest","path":"backend/runtime/uploads/upload_id/report.docx","name":"report.md","splitMode":"simple"}
 curl: {"url":"https://api.example.com/path?x=1"}
 python: {"code":"print(2 + 2)"}
+parameterSave: {"action":"call","call":{"tool":"mcp","arguments":{"action":"callTool","server":"configuredServerName","tool":"query","arguments":{}}},"save":[{"name":"query_result"}]}
+python saved data: {"code":"rows = load_parameter(\"param:reference-from-tool\")\nprint(len(rows))"}
 python OSM map: {"code":"from ai_agent_maps import write_osm_scatter\nprint(write_osm_scatter([{\"lat\":34.0522,\"lon\":-118.2437,\"label\":\"LA\"}], \"map.html\"))"}
 fileReader: {"path":"backend/runtime/uploads/upload_id/report.pdf","startPage":1,"endPage":10}
 fileEditor: {"action":"read","path":"backend/agent/graph.py"}
@@ -52,6 +55,7 @@ settings: {"action":"update","patch":{"ui":{"theme":"dark"},"chat":{"max_tool_ro
 model: {"action":"switch","model":"provider:model-id"}
 plan: {"action":"finalize","name":"feature-plan","content":"# Goal\n...\n# Steps\n...\n# Verification\n..."}
 createTool: {"action":"save","name":"calculator","description":"Calculate a formula","parameters":{"type":"object","properties":{"expression":{"type":"string"}},"required":["expression"]},"code":"def run(arguments):\n    return {\"expression\": arguments[\"expression\"]}"}
+createTool delete: {"action":"delete","name":"calculator"}
 question: {"question":"Which environment should I update?","options":["Development","Production"],"multiple":false,"title":"Choose environment","placeholder":"Add context or describe another direction"}
 """.strip()
 

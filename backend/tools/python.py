@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tools import parameterSave
 from tools.settings import PythonSettings
 
 DESTRUCTIVE_METHODS = {"remove", "unlink", "rmdir", "rmtree", "removedirs"}
@@ -23,7 +24,7 @@ class SafetyError(ValueError):
     pass
 
 
-def run(code: str, settings: PythonSettings) -> dict[str, Any]:
+def run(code: str, settings: PythonSettings, *, bindings: Any = None, capture_result: bool = False) -> dict[str, Any]:
     clean_code = code.strip()
     if not clean_code:
         raise ValueError("python code must not be empty.")
@@ -31,6 +32,7 @@ def run(code: str, settings: PythonSettings) -> dict[str, Any]:
 
     run_dir = make_run_dir(settings)
     write_helper_modules(run_dir)
+    parameterSave.prepare_python_bridge(run_dir, bindings)
     script_path = run_dir / "snippet.py"
     script_path.write_text(build_wrapped_code(clean_code, run_dir), encoding="utf-8")
 
@@ -46,13 +48,24 @@ def run(code: str, settings: PythonSettings) -> dict[str, Any]:
         check=False,
     )
 
-    return {
+    result = {
         "return_code": completed.returncode,
         "stdout": trim_output(completed.stdout, settings.max_output_chars),
         "stderr": trim_output(completed.stderr, settings.max_output_chars),
         "artifact_dir": str(run_dir),
         "files": list_artifacts(run_dir, settings),
     }
+    if completed.returncode == 0:
+        exports = parameterSave.collect_python_exports(run_dir)
+        if exports:
+            result["parameters"] = exports
+        if capture_result:
+            path = run_dir / "_parameters" / "result.json"
+            if path.exists():
+                import json
+
+                result["result"] = parameterSave.decode(json.loads(path.read_text(encoding="utf-8")))
+    return result
 
 
 def check_code_safety(code: str) -> None:
@@ -104,6 +117,7 @@ def build_child_env(run_dir: Path) -> dict[str, str]:
     env["PYTHONIOENCODING"] = "utf-8"
     env["MPLBACKEND"] = "Agg"
     env["AI_AGENT_PYTHON_ARTIFACT_DIR"] = str(run_dir)
+    env["AI_AGENT_PARAMETER_BRIDGE"] = str(run_dir / "_parameters" / "bridge.json")
     return env
 
 
@@ -150,7 +164,7 @@ def _audit(event, args):
 sys.addaudithook(_audit)
 os.chdir(_ARTIFACT_DIR)
 """.lstrip()
-    return prelude + "\n" + user_code + "\n"
+    return prelude + "\nfrom ai_agent_parameters import load_parameter, save_parameter\n" + user_code + "\n"
 
 
 def make_run_dir(settings: PythonSettings) -> Path:
@@ -175,9 +189,11 @@ def trim_output(text: str, max_chars: int) -> str:
 def list_artifacts(run_dir: Path, settings: PythonSettings) -> list[str]:
     files: list[str] = []
     for path in sorted(run_dir.rglob("*")):
-        if not path.is_file() or path.name in {"snippet.py", "ai_agent_maps.py"}:
+        if not path.is_file() or path.name in {"snippet.py", "ai_agent_maps.py", "ai_agent_parameters.py"}:
             continue
         if "matplotlib" in path.relative_to(run_dir).parts:
+            continue
+        if any(part in path.relative_to(run_dir).parts for part in {"_parameters", "__pycache__"}):
             continue
         try:
             size = path.stat().st_size
