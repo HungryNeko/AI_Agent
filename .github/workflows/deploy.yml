@@ -143,7 +143,7 @@ jobs:
           wait_backend() {
             attempt=1
             while [ "$attempt" -le 60 ]; do
-              if body="$(docker compose -f docker-compose.yml exec -T ai-agent-backend python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8010/api/health', timeout=5).read().decode())" 2>/dev/null)"; then
+              if body="$(docker compose -f docker-compose.yml exec -T ai-agent-backend python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8010/api/health', timeout=5).read().decode())" 2>/dev/null </dev/null)"; then
                 printf 'ai backend ready: %s\n' "$body"
                 return 0
               fi
