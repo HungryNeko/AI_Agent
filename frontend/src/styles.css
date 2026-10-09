@@ -31,6 +31,42 @@ textarea {
 
 button {
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 80ms ease, box-shadow 120ms ease, opacity 120ms ease;
+}
+
+button:hover:not(:disabled) {
+  filter: brightness(0.97);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.tabPane {
+  display: contents;
+}
+
+.tabPane[hidden] {
+  display: none;
+}
+
+.tabPane > * {
+  animation: paneFade 160ms ease;
+}
+
+@keyframes paneFade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  .tabPane > * {
+    transition: none;
+    animation: none;
+  }
 }
 
 button:disabled {

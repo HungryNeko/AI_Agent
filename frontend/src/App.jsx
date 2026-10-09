@@ -90,6 +90,7 @@ const TEXT = {
 
 function App() {
   const [tab, setTab] = useState("chat");
+  const [visited, setVisited] = useState({ chat: true });
   const [models, setModels] = useState([]);
   const [options, setOptionsState] = useState(emptyOptions);
   const [theme, setThemeState] = useState("system");
@@ -98,6 +99,10 @@ function App() {
   const settingsSaveTimerRef = useRef(null);
   const label = useLabel(language);
   const text = useText(language);
+
+  useEffect(() => {
+    setVisited((current) => (current[tab] ? current : { ...current, [tab]: true }));
+  }, [tab]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -179,7 +184,7 @@ function App() {
         </nav>
       </header>
 
-      {tab === "chat" && (
+      <TabPane id="chat" tab={tab} visited={visited}>
         <ChatView
           models={models}
           options={options}
@@ -189,16 +194,25 @@ function App() {
           onSettingsChanged={reloadSettings}
           onModelsChanged={reloadModels}
         />
-      )}
-      {tab === "data" && <DataView text={text} models={models} />}
-      {tab === "config" && (
-        <ConfigView text={text} onSaved={reloadModels} />
-      )}
-      {tab === "automation" && <AutomationView options={options} setOptions={setOptions} text={text} />}
-      {tab === "mcp" && <McpView text={text} />}
-      {tab === "tools" && <CustomToolsView text={text} />}
-      {tab === "system" && <SystemView theme={theme} setTheme={setTheme} language={language} setLanguage={setLanguage} text={text} />}
+      </TabPane>
+      <TabPane id="data" tab={tab} visited={visited}><DataView text={text} models={models} /></TabPane>
+      <TabPane id="config" tab={tab} visited={visited}><ConfigView text={text} onSaved={reloadModels} /></TabPane>
+      <TabPane id="automation" tab={tab} visited={visited}><AutomationView options={options} setOptions={setOptions} text={text} /></TabPane>
+      <TabPane id="mcp" tab={tab} visited={visited}><McpView text={text} /></TabPane>
+      <TabPane id="tools" tab={tab} visited={visited}><CustomToolsView text={text} /></TabPane>
+      <TabPane id="system" tab={tab} visited={visited}><SystemView theme={theme} setTheme={setTheme} language={language} setLanguage={setLanguage} text={text} /></TabPane>
     </main>
+  );
+}
+
+// Keep visited tabs mounted (hidden) so state, scroll position and in-flight
+// streams survive tab switches instead of reloading everything.
+function TabPane({ id, tab, visited, children }) {
+  if (!visited[id]) return null;
+  return (
+    <div className="tabPane" hidden={tab !== id}>
+      {children}
+    </div>
   );
 }
 
