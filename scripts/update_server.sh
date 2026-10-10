@@ -33,6 +33,17 @@ mkdir -p \
   "$APP_DIR/docker-data/local-data/mcp" \
   "$APP_DIR/docker-data/runtime"
 
+# Rescue files an older image kept only inside the container (they were lost on
+# every rebuild). Runs before the rebuild; never overwrites existing data.
+backend_container="$(docker compose -f "$COMPOSE_FILE" ps -q ai-agent-backend 2>/dev/null || true)"
+if [ -n "$backend_container" ]; then
+  for name in instruction.md custom_tools plans; do
+    if [ ! -e "$APP_DIR/docker-data/local-data/$name" ]; then
+      docker cp "$backend_container:/app/data/$name" "$APP_DIR/docker-data/local-data/$name" 2>/dev/null         && echo "Rescued $name from running container" || true
+    fi
+  done
+fi
+
 echo "Building and updating Docker containers..."
 docker compose -f "$COMPOSE_FILE" up -d --build --remove-orphans
 

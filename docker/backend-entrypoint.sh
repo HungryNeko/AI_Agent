@@ -10,6 +10,22 @@ ln -sfn "$LOCAL_DATA_DIR/api_configs.local.json" /app/data/api_configs.local.jso
 ln -sfn "$LOCAL_DATA_DIR/settings.local.json" /app/data/settings.local.json
 ln -sfn "$LOCAL_DATA_DIR/mcp/servers.local.json" /app/data/mcp/servers.local.json
 
+# Runtime-editable files that live under data/ must survive image rebuilds.
+# Keep them in the mounted local-data volume and link them into the image tree.
+# instruction.md: seed from the image copy the first time so nothing is lost.
+if [ ! -e "$LOCAL_DATA_DIR/instruction.md" ] && [ -f /app/data/instruction.md ] && [ ! -L /app/data/instruction.md ]; then
+  cp -p /app/data/instruction.md "$LOCAL_DATA_DIR/instruction.md"
+fi
+ln -sfn "$LOCAL_DATA_DIR/instruction.md" /app/data/instruction.md
+for dir in custom_tools plans; do
+  mkdir -p "$LOCAL_DATA_DIR/$dir"
+  if [ ! -L "/app/data/$dir" ]; then
+    cp -an "/app/data/$dir/." "$LOCAL_DATA_DIR/$dir/" 2>/dev/null || true
+    rm -rf "/app/data/$dir"
+  fi
+  ln -sfn "$LOCAL_DATA_DIR/$dir" "/app/data/$dir"
+done
+
 if [ ! -f "$LOCAL_DATA_DIR/mcp/servers.local.json" ]; then
   python - <<'PY'
 import json

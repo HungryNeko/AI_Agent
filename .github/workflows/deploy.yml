@@ -126,15 +126,9 @@ jobs:
           echo "### Verification output" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           set +e
-          sshpass -e ssh \
-            -p "$SERVER_PORT" \
-            -o BatchMode=no \
-            -o StrictHostKeyChecking=yes \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=20 \
-            -o TCPKeepAlive=yes \
-            "$SERVER_USER@$SERVER_HOST" \
-            "APP_DIR='$SERVER_APP_DIR' GATEWAY_URL='${{ vars.GATEWAY_URL || 'http://127.0.0.1:5050' }}' sh -s" 2>&1 <<'REMOTE_VERIFY' | tee verify.log
+          # The remote script is shipped as a base64 argument instead of ssh stdin, so no command
+          # in it (docker exec, curl, ...) can swallow the rest of the script from stdin.
+          REMOTE_SCRIPT="$(cat <<'REMOTE_VERIFY'
           set -eu
 
           cd "$APP_DIR"
@@ -176,6 +170,18 @@ jobs:
           wait_backend
           wait_gateway
           REMOTE_VERIFY
+          )"
+          payload="$(printf '%s\n' "$REMOTE_SCRIPT" | base64 -w0)"
+          sshpass -e ssh \
+            -p "$SERVER_PORT" \
+            -o BatchMode=no \
+            -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
+            -o TCPKeepAlive=yes \
+            "$SERVER_USER@$SERVER_HOST" \
+            "APP_DIR='$SERVER_APP_DIR' GATEWAY_URL='${{ vars.GATEWAY_URL || 'http://127.0.0.1:5050' }}' sh -c \"\$(echo $payload | base64 -d)\"" \
+            < /dev/null 2>&1 | tee verify.log
           verify_status="${PIPESTATUS[0]}"
           set -e
           cat verify.log >> "$GITHUB_STEP_SUMMARY"
