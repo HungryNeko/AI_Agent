@@ -1,4 +1,4 @@
-const attentionTypes = new Set(["error", "question_required", "approval_required", "ai_review"]);
+const attentionTypes = new Set(["error", "question_required", "approval_required", "approval_request", "ai_review"]);
 
 export function currentOperation(events) {
   let current = { thinking: "", tools: [], attention: null };

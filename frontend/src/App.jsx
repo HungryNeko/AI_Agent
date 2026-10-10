@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import rehypeKatex from "rehype-katex";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -7,27 +7,35 @@ import {
   Archive,
   AtSign,
   Check,
+  ChevronDown,
   ChevronRight,
+  ChevronUp,
   Code2,
   Database,
   Download,
   FileText,
   GitBranch,
+  GripVertical,
   Image,
   Key,
   Languages,
+  ListChecks,
+  ListOrdered,
   Maximize2,
   MessageSquare,
   Minus,
   Paperclip,
   Pause,
+  Pencil,
   Play,
   Plug,
   Plus,
   RefreshCw,
+  Scissors,
   Save,
   Send,
   Settings,
+  ShieldCheck,
   Square,
   Sun,
   Trash2,
@@ -39,6 +47,8 @@ import "./styles.css";
 import { currentOperation, toolPreviewText } from "./operationPreview.js";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
+// Events fetched per page; long conversations load newest-first and fetch older pages on scroll-up.
+const EVENT_PAGE = 60;
 
 function createRunId() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -229,7 +239,24 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [events, setEvents] = useState([]);
-  const [state, setState] = useState(null);
+  const [state, setStateRaw] = useState(null);
+  const [livePlan, setLivePlan] = useState(null);
+  const [selectMode, setSelectMode] = useState(false);
+  // Inline rename / delete confirmation: window.prompt and confirm are blocked in embedded browsers.
+  const [renamingId, setRenamingId] = useState("");
+  const [renameDraft, setRenameDraft] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState("");
+  const [confirmBulk, setConfirmBulk] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [eventOffset, setEventOffset] = useState(0);
+  const [hasMoreEvents, setHasMoreEvents] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  // False while local event indices may not match the saved conversation (until the next resync).
+  const [indexTrusted, setIndexTrusted] = useState(true);
+  const eventOffsetRef = useRef(0);
+  const busyRef = useRef(false);
+  const loadingOlderRef = useRef(false);
+  const scrollRestoreRef = useRef(null);
   const [conversationId, setConversationId] = useState("");
   const [conversationModel, setConversationModel] = useState("");
   const [conversations, setConversations] = useState([]);
@@ -257,9 +284,41 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
     refreshConversations();
   }, []);
 
+  // Authoritative state replaces any plan streamed ahead of the final event.
+  function setState(next) {
+    setLivePlan(null);
+    setStateRaw(next);
+  }
+
+  // The plan card is pinned below the transcript. While a turn runs, hide it so a
+  // tall stale card cannot cover the new messages; it reappears (and scrolls into
+  // view) once the turn ends.
+  eventOffsetRef.current = eventOffset;
+
+  const displayPlan = livePlan || state?.plan || null;
+
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+
+  // Keep the viewport anchored when older events are prepended above it.
+  useLayoutEffect(() => {
+    const restore = scrollRestoreRef.current;
+    const node = outputRef.current;
+    if (!restore || !node) return;
+    scrollRestoreRef.current = null;
+    node.scrollTop = restore.top + (node.scrollHeight - restore.height);
+  }, [events]);
+
+  // A short page may not fill the viewport; keep pulling older pages until it scrolls.
+  useEffect(() => {
+    const node = outputRef.current;
+    if (hasMoreEvents && !loadingOlder && !busy && node && node.scrollHeight <= node.clientHeight + 40) loadOlderEvents();
+  }, [events, hasMoreEvents, loadingOlder, busy]);
+
   useEffect(() => {
     if (atBottomRef.current) outputRef.current?.scrollTo({ top: outputRef.current.scrollHeight });
-  }, [events]);
+  }, [events, busy, displayPlan?.content, displayPlan?.status]);
 
   useEffect(() => {
     if (busy || pendingQuestion || queuedMessages.length === 0) return;
@@ -272,6 +331,56 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
     const node = outputRef.current;
     if (!node) return;
     atBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
+    if (node.scrollTop < 200) loadOlderEvents();
+  }
+
+  // Show a conversation (or one page of it), newest events last.
+  function applyConversation(data, { toBottom = true } = {}) {
+    const all = data.events || [];
+    const paged = data.event_offset !== undefined;
+    const shown = paged ? all : all.slice(-EVENT_PAGE);
+    const offset = paged ? data.event_offset : all.length - shown.length;
+    if (toBottom) atBottomRef.current = true;
+    setEvents(shown);
+    setEventOffset(offset);
+    setHasMoreEvents(paged ? !!data.has_more : offset > 0);
+    setIndexTrusted(true);
+  }
+
+  async function loadOlderEvents() {
+    if (!conversationId || !hasMoreEvents || loadingOlderRef.current || busyRef.current || eventOffsetRef.current <= 0) return;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    const node = outputRef.current;
+    const anchor = { height: node?.scrollHeight || 0, top: node?.scrollTop || 0 };
+    try {
+      const data = await fetchJson(
+        `/api/conversations/${encodeURIComponent(conversationId)}?limit=${EVENT_PAGE}&before=${eventOffsetRef.current}&state=false`,
+      );
+      scrollRestoreRef.current = anchor;
+      setEvents((items) => [...(data.events || []), ...items]);
+      setEventOffset(data.event_offset || 0);
+      setHasMoreEvents(!!data.has_more);
+    } catch {
+      setHasMoreEvents(false);
+    } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
+    }
+  }
+
+  // Replace the local tail with what the server saved so indices stay exact.
+  async function resyncEvents(id, { force = false } = {}) {
+    if (!id || (busyRef.current && !force)) return;
+    try {
+      const data = await fetchJson(`/api/conversations/${encodeURIComponent(id)}?since=${eventOffsetRef.current}&state=false`);
+      setEvents(data.events || []);
+      setEventOffset(data.event_offset || 0);
+      setHasMoreEvents(!!data.has_more);
+      setIndexTrusted(true);
+    } catch {
+      /* keep the local view; actions stay disabled until the next successful sync */
+    }
   }
 
   async function refreshConversations() {
@@ -286,9 +395,9 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
 
   async function openConversation(id) {
     if (!id || busy) return;
-    const data = await fetchJson(`/api/conversations/${encodeURIComponent(id)}`);
+    const data = await fetchJson(`/api/conversations/${encodeURIComponent(id)}?limit=${EVENT_PAGE}`);
     setConversationId(data.id || id);
-    setEvents(data.events || []);
+    applyConversation(data);
     setState(data.state || null);
     setConversationModel(data.state?.model || "");
     setPendingQuestion(data.state?.question_pending || null);
@@ -296,17 +405,73 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
     setHistoryStatus("");
   }
 
-  async function renameConversation(item) {
-    const title = window.prompt("重命名对话", item.title || "");
-    if (!title) return;
-    await fetchJson(`/api/conversations/${encodeURIComponent(item.id)}`, { method: "PATCH", body: { title } });
-    await refreshConversations();
+  function startRename(item) {
+    setConfirmDeleteId("");
+    setRenamingId(item.id);
+    setRenameDraft(item.title || "");
+  }
+
+  async function commitRename() {
+    const id = renamingId;
+    const title = renameDraft.trim();
+    setRenamingId("");
+    if (!id || !title) return;
+    try {
+      await fetchJson(`/api/conversations/${encodeURIComponent(id)}`, { method: "PATCH", body: { title } });
+      await refreshConversations();
+    } catch (error) {
+      setHistoryStatus(`${text("重命名失败：", "Rename failed: ")}${String(error.message || error)}`);
+    }
   }
 
   async function deleteConversation(id) {
-    if (!window.confirm("删除这条对话历史？")) return;
-    await fetchJson(`/api/conversations/${encodeURIComponent(id)}`, { method: "DELETE" });
-    if (conversationId === id) newConversation();
+    setConfirmDeleteId("");
+    try {
+      await fetchJson(`/api/conversations/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (conversationId === id) newConversation();
+      await refreshConversations();
+    } catch (error) {
+      setHistoryStatus(`${text("删除失败：", "Delete failed: ")}${String(error.message || error)}`);
+    }
+  }
+
+  function toggleSelectMode() {
+    setSelectMode((on) => !on);
+    setSelectedIds([]);
+    setConfirmBulk(false);
+    setConfirmDeleteId("");
+    setRenamingId("");
+  }
+
+  function toggleSelected(id) {
+    setConfirmBulk(false);
+    setSelectedIds((ids) => (ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]));
+  }
+
+  const allSelected = conversations.length > 0 && selectedIds.length === conversations.length;
+
+  function toggleSelectAll() {
+    setConfirmBulk(false);
+    setSelectedIds(allSelected ? [] : conversations.map((item) => item.id));
+  }
+
+  async function deleteSelectedConversations() {
+    // The conversation being streamed into cannot disappear mid-turn.
+    const ids = selectedIds.filter((id) => !(busy && id === conversationId));
+    if (ids.length === 0) return;
+    setConfirmBulk(false);
+    const results = await Promise.allSettled(
+      ids.map((id) => fetchJson(`/api/conversations/${encodeURIComponent(id)}`, { method: "DELETE" })),
+    );
+    const failed = results.filter((result) => result.status === "rejected").length;
+    if (ids.includes(conversationId) && !busy) newConversation();
+    setSelectedIds([]);
+    setSelectMode(false);
+    setHistoryStatus(
+      failed
+        ? text(`已删除 ${ids.length - failed} 条，${failed} 条失败`, `Deleted ${ids.length - failed}, ${failed} failed`)
+        : text(`已删除 ${ids.length} 条对话`, `Deleted ${ids.length} conversations`),
+    );
     await refreshConversations();
   }
 
@@ -314,6 +479,9 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
     if (busy) return;
     setConversationId("");
     setEvents([]);
+    setEventOffset(0);
+    setHasMoreEvents(false);
+    setIndexTrusted(true);
     setState(null);
     setConversationModel("");
     setAttachments([]);
@@ -357,6 +525,10 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
     if (!nextMessage.trim() || busy) return;
     atBottomRef.current = true;
     setBusy(true);
+    busyRef.current = true;
+    const wasNewConversation = !conversationId;
+    let activeConversationId = conversationId;
+    let localFailure = false;
     const runId = createRunId();
     const controller = new AbortController();
     activeRunIdRef.current = runId;
@@ -391,8 +563,16 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
         if (["assistant", "stopped"].includes(eventData.type) || (eventData.type === "error" && eventData.terminal)) {
           streamCompleted = true;
         }
-        if (eventData.conversation_id) setConversationId(eventData.conversation_id);
-        if (eventData.type === "question_required") setPendingQuestion(eventData);
+        if (eventData.conversation_id) {
+          activeConversationId = eventData.conversation_id;
+          setConversationId(eventData.conversation_id);
+        }
+        if (eventData.type === "plan_updated" || eventData.type === "plan_ready") {
+          // Show the plan as soon as the tool call returns, even if the turn never reaches a final state.
+          atBottomRef.current = true;
+          setLivePlan({ name: eventData.name, content: eventData.content, status: eventData.status });
+        }
+        if (eventData.type === "question_required" || eventData.type === "approval_request") setPendingQuestion(eventData);
         if (eventData.type === "model_changed") setConversationModel(eventData.text || "");
         if (eventData.type === "models_changed") onModelsChanged?.().catch(() => {});
         if (eventData.type === "assistant" && eventData.state) {
@@ -406,10 +586,18 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
         throw new Error(text("响应流意外结束，后端没有返回最终结果。", "The response stream ended without a final result."));
       }
       await refreshConversations();
+      await resyncEvents(activeConversationId, { force: true });
+      if (wasNewConversation) {
+        // The model-written title lands a moment after the turn is saved.
+        window.setTimeout(() => refreshConversations(), 2500);
+        window.setTimeout(() => refreshConversations(), 7000);
+      }
     } catch (error) {
       if (!stopRequestedRef.current && error?.name !== "AbortError") {
+        localFailure = true;
         setEvents((items) => [...items, { type: "error", terminal: true, text: String(error.message || error) }]);
       }
+      if (stopRequestedRef.current || error?.name === "AbortError" || localFailure) setIndexTrusted(false);
     } finally {
       if (activeRunIdRef.current === runId) {
         abortRef.current = null;
@@ -435,7 +623,10 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
     });
     setBusy(false);
     setPaused(false);
+    setIndexTrusted(false);
     window.setTimeout(() => refreshConversations().catch(() => {}), 500);
+    // Once the server has saved the interrupted turn, line the local list up with it again.
+    if (conversationId) window.setTimeout(() => resyncEvents(conversationId), 1200);
   }
 
   async function loadMentionOptions() {
@@ -517,18 +708,63 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
     setPaused(nextPaused);
   }
 
-  async function branchConversation(eventIndex) {
-    if (!conversationId || busy) return;
-    const data = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/branch`, {
-      method: "POST",
-      body: { event_index: eventIndex },
-    });
-    setConversationId(data.id);
-    setEvents(data.events || []);
-    setState(data.state || null);
-    setConversationModel(data.state?.model || conversationModel || "");
-    setHistoryStatus(text("已创建对话分支", "Conversation branch created"));
-    await refreshConversations();
+  // Fork into a brand-new conversation. Forking at a user message stops right before it
+  // and puts its text back in the composer, so it can be sent (or changed) as a new path.
+  async function branchConversation(event) {
+    if (!conversationId || busy || !Number.isInteger(event?.eventIndex)) return;
+    const atUserMessage = event.type === "user";
+    try {
+      const data = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/branch`, {
+        method: "POST",
+        body: { event_index: event.eventIndex, before: atUserMessage },
+      });
+      setConversationId(data.id);
+      applyConversation(data);
+      setState(data.state || null);
+      setPendingQuestion(null);
+      setConversationModel(data.state?.model || conversationModel || "");
+      if (atUserMessage) {
+        setMessage(event.text || "");
+        requestAnimationFrame(() => composerRef.current?.focus());
+      }
+      setHistoryStatus(text("已创建新的对话分支", "Forked into a new conversation"));
+      await refreshConversations();
+    } catch (error) {
+      setHistoryStatus(`${text("分叉失败：", "Fork failed: ")}${String(error.message || error)}`);
+    }
+  }
+
+  // Rewrite a past user message: drop it and everything after it, then re-run from there.
+  async function editUserMessage(event, newText) {
+    const next = (newText || "").trim();
+    if (!conversationId || busy || !next || !Number.isInteger(event?.eventIndex)) return;
+    try {
+      const data = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/truncate`, {
+        method: "POST",
+        body: { event_index: event.eventIndex },
+      });
+      setEvents((items) => items.slice(0, Math.max(0, event.eventIndex - eventOffsetRef.current)));
+      setState(data.state || null);
+      setPendingQuestion(null);
+      setQueuedMessages([]);
+      await runChatTurn(next, event.attachments || [], next, { state: data.state || null });
+    } catch (error) {
+      setHistoryStatus(`${text("编辑失败：", "Edit failed: ")}${String(error.message || error)}`);
+    }
+  }
+
+  async function deletePlan() {
+    if (conversationId) {
+      try {
+        const data = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/plan`, { method: "DELETE" });
+        setState(data.state || null);
+        return;
+      } catch (error) {
+        setHistoryStatus(`${text("删除失败：", "Delete failed: ")}${String(error.message || error)}`);
+        return;
+      }
+    }
+    setState(state ? { ...state, plan: null } : null);
   }
 
   async function respondToQuestion(response) {
@@ -545,6 +781,19 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
     await runChatTurn(`questionResponse:\n${JSON.stringify(payload)}`, [], displayMessage);
   }
 
+  async function respondToApproval(response) {
+    if (!pendingQuestion || pendingQuestion.kind !== "approval" || busy) return;
+    const payload = {
+      status: response.status,
+      action: pendingQuestion.action,
+      text: response.text || "",
+    };
+    const approved = payload.status === "approved";
+    const displayMessage = `${approved ? text("已批准：", "Approved: ") : text("已拒绝：", "Rejected: ")}${payload.action}${payload.text ? `\n${payload.text}` : ""}`;
+    setPendingQuestion(null);
+    await runChatTurn(`approvalResponse:\n${JSON.stringify(payload)}`, [], displayMessage);
+  }
+
   async function reviewPlan(decision) {
     if (!conversationId || busy) return;
     const data = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/plan/decision`, {
@@ -552,7 +801,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
       body: { decision },
     });
     setState(data.state || null);
-    setEvents(data.events || []);
+    applyConversation(data, { toBottom: false });
     if (decision === "approved") {
       const nextOptions = { ...options, conversation_mode: "agent" };
       setOptions(nextOptions);
@@ -617,11 +866,43 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
             </button>
           </div>
           {!settingsOpen && (
-            <button className="iconButton neutral" onClick={newConversation} type="button" title={label("newChat")}>
-              <Plus size={17} />
-            </button>
+            <div className="historyHeaderActions">
+              <button
+                className={selectMode ? "iconButton neutral active" : "iconButton neutral"}
+                onClick={toggleSelectMode}
+                type="button"
+                title={selectMode ? text("退出选择", "Exit selection") : text("批量选择", "Select multiple")}
+                aria-pressed={selectMode}
+              >
+                <ListChecks size={17} />
+              </button>
+              <button className="iconButton neutral" onClick={newConversation} type="button" title={label("newChat")}>
+                <Plus size={17} />
+              </button>
+            </div>
           )}
         </div>
+        {!settingsOpen && selectMode && (
+          <div className="historyBulkBar">
+            <label className="historyCheck">
+              <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} disabled={conversations.length === 0} />
+              <span>{text("全选", "Select all")}</span>
+            </label>
+            <small>{selectedIds.length}/{conversations.length}</small>
+            {confirmBulk ? (
+              <span className="bulkConfirm">
+                <span>{text(`删除 ${selectedIds.length} 条？`, `Delete ${selectedIds.length}?`)}</span>
+                <button className="bulkButton danger" type="button" onClick={deleteSelectedConversations}>{text("确定", "Yes")}</button>
+                <button className="bulkButton" type="button" onClick={() => setConfirmBulk(false)}>{text("取消", "No")}</button>
+              </span>
+            ) : (
+              <button className="bulkButton danger" type="button" onClick={() => setConfirmBulk(true)} disabled={selectedIds.length === 0}>
+                <Trash2 size={13} />
+                {text("删除", "Delete")}
+              </button>
+            )}
+          </div>
+        )}
         {settingsOpen ? (
           <SettingsPanel
             models={models}
@@ -635,13 +916,60 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
         ) : (
           <div className="historyList">
             {conversations.map((item) => (
-              <div className={conversationId === item.id ? "historyRow active" : "historyRow"} key={item.id}>
-                <button className="historyItem" onClick={() => openConversation(item.id)} type="button">
-                  <MessageSquare size={15} />
-                  <span>{item.title || "未命名"}</span>
-                </button>
-                <button className="miniButton" onClick={() => renameConversation(item)} type="button" title="重命名">改</button>
-                <button className="miniButton dangerMini" onClick={() => deleteConversation(item.id)} type="button" title="删除">删</button>
+              <div
+                className={`historyRow${conversationId === item.id ? " active" : ""}${selectMode ? " selecting" : ""}${selectedIds.includes(item.id) ? " checked" : ""}`}
+                key={item.id}
+              >
+                {selectMode && (
+                  <input
+                    className="historyCheckbox"
+                    type="checkbox"
+                    checked={selectedIds.includes(item.id)}
+                    onChange={() => toggleSelected(item.id)}
+                    aria-label={item.title || "未命名"}
+                  />
+                )}
+                {renamingId === item.id ? (
+                  <form className="historyRename" onSubmit={(event) => { event.preventDefault(); commitRename(); }}>
+                    <input
+                      autoFocus
+                      value={renameDraft}
+                      onChange={(event) => setRenameDraft(event.target.value)}
+                      onKeyDown={(event) => { if (event.key === "Escape") setRenamingId(""); }}
+                      onFocus={(event) => event.target.select()}
+                      maxLength={80}
+                      aria-label={text("对话名称", "Conversation name")}
+                    />
+                    <button className="miniButton" type="submit" title={text("保存", "Save")} aria-label={text("保存", "Save")}><Check size={14} /></button>
+                    <button className="miniButton" type="button" onClick={() => setRenamingId("")} title={text("取消", "Cancel")} aria-label={text("取消", "Cancel")}><X size={14} /></button>
+                  </form>
+                ) : (
+                  <button
+                    className="historyItem"
+                    onClick={() => (selectMode ? toggleSelected(item.id) : openConversation(item.id))}
+                    type="button"
+                    title={item.title || "未命名"}
+                  >
+                    <MessageSquare size={15} />
+                    <span>{item.title || "未命名"}</span>
+                  </button>
+                )}
+                {!selectMode && renamingId !== item.id && (confirmDeleteId === item.id ? (
+                  <div className="historyRowActions confirming">
+                    <span>{text("删除？", "Delete?")}</span>
+                    <button className="miniButton dangerMini" onClick={() => deleteConversation(item.id)} type="button" title={text("确认删除", "Confirm delete")} aria-label={text("确认删除", "Confirm delete")}><Check size={14} /></button>
+                    <button className="miniButton" onClick={() => setConfirmDeleteId("")} type="button" title={text("取消", "Cancel")} aria-label={text("取消", "Cancel")}><X size={14} /></button>
+                  </div>
+                ) : (
+                  <div className="historyRowActions">
+                    <button className="miniButton" onClick={() => startRename(item)} type="button" title={text("重命名", "Rename")} aria-label={text("重命名", "Rename")}>
+                      <Pencil size={14} />
+                    </button>
+                    <button className="miniButton dangerMini" onClick={() => setConfirmDeleteId(item.id)} type="button" title={text("删除", "Delete")} aria-label={text("删除", "Delete")}>
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
               </div>
             ))}
           </div>
@@ -661,9 +989,39 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
         </div>
         <div className="stream" ref={outputRef} onScroll={trackScroll}>
           {events.length === 0 && <div className="emptyState">输入消息，或用 @ 指定工具、历史、技能、记忆和知识。</div>}
-          <StreamEvents events={events} busy={busy} onPreviewImage={setPreviewImage} onBranch={branchConversation} text={text} />
-          <PlanReviewCard plan={state?.plan} busy={busy} onApprove={() => reviewPlan("approved")} onReject={() => reviewPlan("rejected")} onRevise={revisePlan} onSave={savePlanCopy} text={text} />
+          {hasMoreEvents && (
+            <div className="olderLoader">
+              {loadingOlder
+                ? <span><span className="spinner" /> {text("正在加载更早的消息…", "Loading earlier messages...")}</span>
+                : <button className="secondaryButton" type="button" onClick={loadOlderEvents}>{text("加载更早的消息", "Load earlier messages")}</button>}
+            </div>
+          )}
+          <StreamEvents
+            events={events}
+            indexOffset={eventOffset}
+            busy={busy}
+            canAct={!busy && indexTrusted}
+            onPreviewImage={setPreviewImage}
+            onBranch={branchConversation}
+            onEdit={editUserMessage}
+            text={text}
+          />
+          <PlanReviewCard plan={busy ? null : displayPlan} busy={busy} onApprove={() => reviewPlan("approved")} onReject={() => reviewPlan("rejected")} onRevise={revisePlan} onSave={savePlanCopy} onDelete={deletePlan} text={text} />
         </div>
+        <QuestionDialog
+          key={`${pendingQuestion?.run_id || "saved"}:${pendingQuestion?.question || ""}`}
+          question={pendingQuestion?.kind === "approval" ? null : pendingQuestion}
+          busy={busy}
+          onRespond={respondToQuestion}
+          text={text}
+        />
+        <ApprovalDialog
+          key={`${pendingQuestion?.run_id || "saved"}:${pendingQuestion?.action || ""}`}
+          approval={pendingQuestion?.kind === "approval" ? pendingQuestion : null}
+          busy={busy}
+          onRespond={respondToApproval}
+          text={text}
+        />
         <form className="composer" onSubmit={sendMessage}>
           {queuedMessages.length > 0 && <div className="queuedMessages">{queuedMessages.map((item, index) => <div key={item.id}><span>{index + 1}. {item.displayMessage}</span><button type="button" onClick={() => setQueuedMessages((items) => items.filter((entry) => entry.id !== item.id))}><X size={14} /></button></div>)}</div>}
           {mentionOpen && filteredMentions.length > 0 && (
@@ -721,15 +1079,24 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
                   <option value="">{text("默认模型", "Default model")}</option>
                   {models.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
                 </select>
-                <button className={options.file_editor_approval === "auto" ? "composerIcon active" : "composerIcon"} type="button" onClick={() => setOptions((current) => ({ ...current, file_editor_approval: current.file_editor_approval === "auto" ? "manual" : "auto" }))} title={label("autoApproval")} aria-pressed={options.file_editor_approval === "auto"}><Check size={17} /></button>
-              </div>
-              <div className="composerActions">
                 <select className="composerPicker queuePicker" value={inputMode} onChange={(event) => setInputMode(event.target.value)} title={text("运行中发送方式", "Send while running")} aria-label={text("运行中发送方式", "Send while running")}>
                   <option value="queue">{text("排队", "Queue")}</option>
                   <option value="insert">{text("打断", "Interrupt")}</option>
                 </select>
+              </div>
+              <div className="composerActions">
                 {busy && <button className="composerIcon" type="button" onClick={togglePause} title={paused ? text("继续", "Resume") : text("暂停", "Pause")}>{paused ? <Play size={17} /> : <Pause size={17} />}</button>}
                 {busy && <button className="composerIcon dangerIcon" type="button" onClick={stopOutput} title={label("stop")}><Square size={15} /></button>}
+                <button
+                  className={options.file_editor_approval === "auto" ? "composerToggle active" : "composerToggle"}
+                  type="button"
+                  onClick={() => setOptions((current) => ({ ...current, file_editor_approval: current.file_editor_approval === "auto" ? "manual" : "auto" }))}
+                  title={label("autoApproval")}
+                  aria-pressed={options.file_editor_approval === "auto"}
+                >
+                  <Check size={14} />
+                  <span>{label("autoApproval")}</span>
+                </button>
                 <button className="composerSend" type="submit" disabled={!message.trim() && attachments.length === 0} title={busy ? (inputMode === "insert" ? text("打断并发送", "Interrupt and send") : text("加入队列", "Add to queue")) : label("send")} aria-label={label("send")}><Send size={17} /></button>
               </div>
             </div>
@@ -737,13 +1104,6 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
           <input ref={fileInputRef} type="file" className="hiddenInput" onChange={uploadSelectedFile} multiple />
           <input ref={imageInputRef} type="file" accept="image/*" className="hiddenInput" onChange={uploadSelectedFile} multiple />
         </form>
-        <QuestionDialog
-          key={`${pendingQuestion?.run_id || "saved"}:${pendingQuestion?.question || ""}`}
-          question={pendingQuestion}
-          busy={busy}
-          onRespond={respondToQuestion}
-          text={text}
-        />
         <ImagePreview image={previewImage} onClose={() => setPreviewImage(null)} />
       </div>
     </section>
@@ -831,11 +1191,12 @@ function SelectField({ label, value, onChange, values, icon = null }) {
   );
 }
 
-function StreamEvents({ events, busy = false, onPreviewImage, onBranch, text }) {
+function StreamEvents({ events, indexOffset = 0, busy = false, canAct = false, onPreviewImage, onBranch, onEdit, text }) {
   const turns = [];
   let current = [];
-  for (const [eventIndex, rawEvent] of events.entries()) {
-    const event = { ...rawEvent, eventIndex };
+  for (const [localIndex, rawEvent] of events.entries()) {
+    // eventIndex is the position in the saved conversation, not in the loaded window.
+    const event = { ...rawEvent, eventIndex: indexOffset + localIndex };
     if (event.type === "user" && current.length > 0) {
       turns.push(current);
       current = [];
@@ -850,12 +1211,15 @@ function StreamEvents({ events, busy = false, onPreviewImage, onBranch, text }) 
       running={busy && index === turns.length - 1}
       onPreviewImage={onPreviewImage}
       onBranch={onBranch}
+      onEdit={onEdit}
+      canAct={canAct}
       text={text}
     />
   ));
 }
 
-function PlanReviewCard({ plan, busy, onApprove, onReject, onRevise, onSave, text }) {
+function PlanReviewCard({ plan, busy, onApprove, onReject, onRevise, onSave, onDelete, text }) {
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   if (!plan?.content || plan.status === "rejected") return null;
   const ready = plan.status === "ready";
   return (
@@ -871,6 +1235,14 @@ function PlanReviewCard({ plan, busy, onApprove, onReject, onRevise, onSave, tex
       <div className="planActions">
         <button className="secondaryButton" type="button" onClick={onRevise} disabled={busy}>{text("继续修改", "Revise")}</button>
         <button className="secondaryButton" type="button" onClick={onSave} disabled={busy}><Save size={15} /><span>{text("保存副本", "Save copy")}</span></button>
+        {confirmingDelete ? (
+          <>
+            <button className="secondaryButton" type="button" onClick={() => setConfirmingDelete(false)}>{text("取消", "Cancel")}</button>
+            <button className="secondaryButton dangerButton" type="button" onClick={() => { setConfirmingDelete(false); onDelete(); }} disabled={busy}><Trash2 size={15} /><span>{text("确认删除", "Confirm delete")}</span></button>
+          </>
+        ) : (
+          <button className="secondaryButton dangerButton" type="button" onClick={() => setConfirmingDelete(true)} disabled={busy}><Trash2 size={15} /><span>{text("删除计划", "Delete plan")}</span></button>
+        )}
         {ready && <button className="secondaryButton dangerButton" type="button" onClick={onReject} disabled={busy}>{text("拒绝", "Reject")}</button>}
         {ready && <button className="primaryButton" type="button" onClick={onApprove} disabled={busy}><Check size={16} /><span>{text("批准并执行", "Approve and implement")}</span></button>}
       </div>
@@ -1019,7 +1391,60 @@ function QuestionDialog({ question, busy, onRespond, text }) {
   );
 }
 
-function StreamTurn({ events, running = false, onPreviewImage, onBranch, text }) {
+function ApprovalDialog({ approval, busy, onRespond, text }) {
+  const [note, setNote] = useState("");
+  const [minimized, setMinimized] = useState(false);
+  if (!approval) return null;
+  const risk = ["low", "medium", "high"].includes(approval.risk) ? approval.risk : "medium";
+  const riskLabel = { low: text("低风险", "Low risk"), medium: text("中等风险", "Medium risk"), high: text("高风险", "High risk") }[risk];
+
+  if (minimized) {
+    return (
+      <button className="questionMinimized" type="button" onClick={() => setMinimized(false)}>
+        <span><strong>{text("等待批准", "Approval needed")}</strong>{approval.action}</span>
+        <Maximize2 size={17} />
+      </button>
+    );
+  }
+
+  return (
+    <div className="questionBackdrop">
+      <section className={`questionDialog approvalDialog risk-${risk}`} role="dialog" aria-labelledby="approval-title">
+        <header className="questionHeader">
+          <div>
+            <span><ShieldCheck size={12} /> {text("需要你的批准", "APPROVAL NEEDED")} · <b className={`riskBadge risk-${risk}`}>{riskLabel}</b></span>
+            <h2 id="approval-title">{approval.title || text("确认执行操作", "Confirm action")}</h2>
+          </div>
+          <div className="questionHeaderActions">
+            <button className="iconButton neutral" type="button" onClick={() => setMinimized(true)} title={text("缩小", "Minimize")}>
+              <Minus size={17} />
+            </button>
+          </div>
+        </header>
+        <p className="questionText">{approval.action}</p>
+        {approval.details && <div className="approvalDetails"><MarkdownText text={approval.details} /></div>}
+        <label className="questionAnswer">
+          <span>{text("补充说明（可选，会一并发给 AI）", "Note for the AI (optional)")}</span>
+          <textarea
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder={text("例如：只处理 build/ 目录；或说明拒绝的原因…", "e.g. only touch build/, or why you are rejecting...")}
+          />
+        </label>
+        <div className="questionActions">
+          <button className="secondaryButton dangerButton" type="button" onClick={() => onRespond({ status: "rejected", text: note.trim() })} disabled={busy}>
+            <X size={15} /><span>{text("拒绝", "Reject")}</span>
+          </button>
+          <button className="primaryButton" type="button" onClick={() => onRespond({ status: "approved", text: note.trim() })} disabled={busy}>
+            <Check size={15} /><span>{text("批准", "Approve")}</span>
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function StreamTurn({ events, running = false, canAct = false, onPreviewImage, onBranch, onEdit, text }) {
   const [expanded, setExpanded] = useState(false);
   const assistantIndex = findLastIndex(events, (event) => event.type === "assistant");
   const stoppedIndex = findLastIndex(events, (event) => event.type === "stopped");
@@ -1038,17 +1463,17 @@ function StreamTurn({ events, running = false, onPreviewImage, onBranch, text })
 
   return (
     <div className="streamTurn">
-      {userEvents.map((event, index) => <StreamEvent key={`${event.type}-${index}`} event={event} onPreviewImage={onPreviewImage} />)}
+      {userEvents.map((event, index) => <StreamEvent key={`${event.type}-${index}`} event={event} onPreviewImage={onPreviewImage} onBranch={canAct ? onBranch : undefined} onEdit={canAct ? onEdit : undefined} />)}
       {(operationEvents.length > 0 || active) && (
         <section className="operationGroup">
           <details className="operationDetails" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
             <summary>
               <ChevronRight size={14} className="operationChevron" />
               {running && !completed && <span className="runningDot" />}
-              <span>{completed ? text("执行过程", "Activity") : currentWork.attention?.type === "question_required" ? text("等待回答", "Waiting for answer") : currentWork.attention?.type === "approval_required" ? text("等待批准", "Waiting for approval") : text("进行中", "Working")}</span>
+              <span>{completed ? text("执行过程", "Activity") : currentWork.attention?.type === "question_required" ? text("等待回答", "Waiting for answer") : currentWork.attention?.type === "approval_request" ? text("等待批准", "Waiting for approval") : currentWork.attention?.type === "approval_required" ? text("等待批准", "Waiting for approval") : text("进行中", "Working")}</span>
               <small>{operationEvents.length} {text("条记录", "events")}</small>
             </summary>
-            {operationEvents.map((event, index) => <StreamEvent key={`${event.type}-${index}`} event={event} compact onPreviewImage={onPreviewImage} />)}
+            {operationEvents.map((event, index) => <StreamEvent key={`${event.type}-${index}`} event={event} compact onPreviewImage={onPreviewImage} onBranch={canAct ? onBranch : undefined} />)}
           </details>
           {active && !expanded && (
             <div className="operationPreview">
@@ -1063,20 +1488,62 @@ function StreamTurn({ events, running = false, onPreviewImage, onBranch, text })
           )}
         </section>
       )}
-      {finalEvent && String(finalEvent.text || "").trim() && <StreamEvent event={finalEvent} onPreviewImage={onPreviewImage} onBranch={onBranch} />}
+      {finalEvent && String(finalEvent.text || "").trim() && <StreamEvent event={finalEvent} onPreviewImage={onPreviewImage} onBranch={canAct ? onBranch : undefined} />}
     </div>
   );
 }
 
-function StreamEvent({ event, compact = false, onPreviewImage, onBranch }) {
+function StreamEvent({ event, compact = false, onPreviewImage, onBranch, onEdit }) {
   const type = event.type || "event";
-  const fallback = event.text || event.query || event.url || event.question || "";
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const fallback = event.text || event.query || event.url || event.question || event.action || "";
   const body = stringifyEventText(event, fallback);
   const images = extractLooseImages(body);
+  const canFork = Boolean(onBranch) && Number.isInteger(event.eventIndex);
+  const canEdit = type === "user" && Boolean(onEdit) && Number.isInteger(event.eventIndex);
+
+  function startEdit() {
+    setDraft(event.text || "");
+    setEditing(true);
+  }
+
+  function submitEdit(submitEvent) {
+    submitEvent.preventDefault();
+    if (!draft.trim()) return;
+    setEditing(false);
+    onEdit(event, draft);
+  }
+
   return (
-    <article className={`event event-${type}${compact ? " compact" : ""}`}>
-      <div className="eventType">{eventLabel(type)}{type === "assistant" && onBranch && <button className="branchButton" type="button" onClick={() => onBranch(event.eventIndex)} title="Branch conversation"><GitBranch size={13} /></button>}</div>
-      <MarkdownText text={body} onPreviewImage={onPreviewImage} />
+    <article className={`event event-${type}${compact ? " compact" : ""}${editing ? " isEditing" : ""}`}>
+      <div className="eventType">{eventLabel(type)}</div>
+      {(canEdit || canFork) && !editing && (
+        <div className="eventActions">
+          {canEdit && <button className="branchButton" type="button" onClick={startEdit} title="编辑并从这里重新生成 / Edit and regenerate from here" aria-label="Edit"><Pencil size={14} /></button>}
+          {canFork && <button className="branchButton" type="button" onClick={() => onBranch(event)} title="从这里分叉为新对话 / Fork into a new conversation" aria-label="Fork"><GitBranch size={14} /></button>}
+        </div>
+      )}
+      {editing ? (
+        <form className="editMessage" onSubmit={submitEdit}>
+          <textarea
+            autoFocus
+            value={draft}
+            onChange={(changeEvent) => setDraft(changeEvent.target.value)}
+            onKeyDown={(keyEvent) => {
+              if (keyEvent.key === "Enter" && (keyEvent.ctrlKey || keyEvent.metaKey)) keyEvent.currentTarget.form?.requestSubmit();
+              if (keyEvent.key === "Escape") setEditing(false);
+            }}
+          />
+          <div className="editMessageActions">
+            <span>此消息之后的所有内容将被删除 · Ctrl+Enter 提交 / Everything after this message will be removed</span>
+            <button className="secondaryButton" type="button" onClick={() => setEditing(false)}>取消 / Cancel</button>
+            <button className="primaryButton" type="submit" disabled={!draft.trim()}>重新生成 / Regenerate</button>
+          </div>
+        </form>
+      ) : (
+        <MarkdownText text={body} onPreviewImage={onPreviewImage} />
+      )}
       {event.attachments?.length > 0 && <AttachmentList attachments={event.attachments} onPreviewImage={onPreviewImage} />}
       {images.length > 0 && <ImageStrip images={images} onPreviewImage={onPreviewImage} />}
       {type === "assistant" && <ReferenceList refs={extractReferences(body)} />}
@@ -1404,6 +1871,7 @@ function DataView({ text, models }) {
     ["memory", text("记忆", "MEMORY")],
     ["skills", text("技能", "SKILL")],
     ["knowledge", text("知识", "KNOWLEDGE")],
+    ["plans", text("计划", "PLANS")],
   ];
   const isMarkdown = selected.toLowerCase().endsWith(".md");
 
@@ -1489,7 +1957,7 @@ function DataView({ text, models }) {
       </div>
       <form className="importPane" onSubmit={importResource}>
         <h2>{text("导入", "IMPORT")}</h2>
-        <label><span>{text("名称", "Name")}</span><input value={importName} onChange={(event) => setImportName(event.target.value)} placeholder={kind === "skills" ? "my-skill" : "notes.md"} /></label>
+        <label><span>{text("名称", "Name")}</span><input value={importName} onChange={(event) => setImportName(event.target.value)} placeholder={kind === "skills" ? "my-skill" : kind === "plans" ? "my-plan.md" : "notes.md"} /></label>
         <label><span>{text("内容", "Content")}</span><textarea value={importContent} onChange={(event) => setImportContent(event.target.value)} /></label>
         <button className="primaryButton" type="submit"><Plus size={16} /><span>{text("导入到当前分类", "Import to current category")}</span></button>
       </form>
@@ -1506,6 +1974,44 @@ function formatRagRefreshStatus(prefix, ragStatus) {
   return `${prefix}：${details.join("，")}`;
 }
 
+const PRIORITY_CUT = "__cut__";
+
+// Every "provider:model" value the config offers, in provider order (mirrors backend list_model_items).
+function listConfigModels(config) {
+  const values = [];
+  for (const [provider, entry] of Object.entries(config?.providers || {})) {
+    for (const item of Array.isArray(entry?.models) ? entry.models : []) {
+      const id = typeof item === "string" ? item : item?.id;
+      if (id) values.push(`${provider}:${id}`);
+    }
+  }
+  return values;
+}
+
+// Saved order (existing models only) + any new models below the cut line. With nothing saved,
+// the current default model is the only one above the line.
+function buildPriorityItems(config) {
+  const all = listConfigModels(config);
+  const saved = [...new Set((Array.isArray(config.model_priority) ? config.model_priority : []).filter((value) => all.includes(value)))];
+  const hasSaved = saved.length > 0 && Number.isInteger(config.model_priority_cutoff) && config.model_priority_cutoff >= 1;
+  let order = saved;
+  if (!hasSaved) {
+    const current = config.default_provider && config.default_model ? `${config.default_provider}:${config.default_model}` : "";
+    order = all.includes(current) ? [current] : [];
+  }
+  for (const value of all) if (!order.includes(value)) order.push(value);
+  const cutoff = hasSaved ? Math.min(config.model_priority_cutoff, order.length) : Math.min(1, order.length);
+  return [...order.slice(0, cutoff), PRIORITY_CUT, ...order.slice(cutoff)];
+}
+
+function reconcilePriority(items, config) {
+  if (!items.includes(PRIORITY_CUT)) return buildPriorityItems(config);
+  const all = listConfigModels(config);
+  const kept = items.filter((item) => item === PRIORITY_CUT || all.includes(item));
+  const missing = all.filter((value) => !kept.includes(value));
+  return [...kept, ...missing];
+}
+
 function ConfigView({ onSaved, text }) {
   const [config, setConfig] = useState({ providers: {} });
   const [selectedProvider, setSelectedProvider] = useState("");
@@ -1513,15 +2019,26 @@ function ConfigView({ onSaved, text }) {
   const [apiKey, setApiKey] = useState("");
   const [newModel, setNewModel] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [view, setView] = useState("provider");
+  const [priorityItems, setPriorityItems] = useState([]);
+  const [dragIndex, setDragIndex] = useState(null);
+  const [dropIndex, setDropIndex] = useState(null);
 
   useEffect(() => {
     refreshConfig();
   }, []);
 
+  // Keep the priority list in step with the models that exist: drop removed ones, append new ones below the cut.
+  const modelKey = listConfigModels(config).join("|");
+  useEffect(() => {
+    setPriorityItems((current) => reconcilePriority(current, config));
+  }, [modelKey]);
+
   async function refreshConfig(preferredProvider = "") {
     const data = await fetchJson("/api/config");
     const nextConfig = data.config || { providers: {} };
     setConfig(nextConfig);
+    setPriorityItems(buildPriorityItems(nextConfig));
     setSelectedProvider(preferredProvider || nextConfig.default_provider || Object.keys(nextConfig.providers || {})[0] || "");
     setApiKey("");
     setStatus("");
@@ -1584,8 +2101,14 @@ function ConfigView({ onSaved, text }) {
     try {
       const payload = structuredClone(config);
       if (selectedProvider && apiKey.trim()) payload.providers[selectedProvider].api_key = apiKey.trim();
+      const cutIndex = priorityItems.indexOf(PRIORITY_CUT);
+      if (cutIndex >= 0) {
+        payload.model_priority = priorityItems.filter((item) => item !== PRIORITY_CUT);
+        payload.model_priority_cutoff = cutIndex;
+      }
       const data = await fetchJson("/api/config", { method: "PUT", body: { config: payload } });
       setConfig(data.config || config);
+      if (data.config) setPriorityItems(buildPriorityItems(data.config));
       setApiKey("");
       if (showStatus) setStatus(text("模型 API 配置已保存", "Model API configuration saved"));
       await onSaved?.();
@@ -1625,6 +2148,38 @@ function ConfigView({ onSaved, text }) {
 
   function setDefaultModel(modelId) {
     updateConfig((draft) => ({ ...draft, default_provider: selectedProvider, default_model: modelId }));
+    // Make it the head of the fallback chain too, keeping the cut where it was.
+    setPriorityItems((items) => {
+      const value = `${selectedProvider}:${modelId}`;
+      const rest = items.filter((item) => item !== value);
+      return [value, ...rest];
+    });
+  }
+
+  // priorityItems = [...chain, PRIORITY_CUT, ...pool]: the chain is tried in order, the pool never is.
+  const cutIndex = priorityItems.indexOf(PRIORITY_CUT);
+  const priorityChain = priorityItems.slice(0, Math.max(cutIndex, 0));
+  const priorityPool = priorityItems.slice(cutIndex + 1);
+  const [poolQuery, setPoolQuery] = useState("");
+
+  function setSplit(chain, pool) {
+    setPriorityItems([...chain, PRIORITY_CUT, ...pool]);
+  }
+
+  function moveInChain(from, to) {
+    if (from === null || to === null || from === to || to < 0 || to >= priorityChain.length) return;
+    const next = [...priorityChain];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    setSplit(next, priorityPool);
+  }
+
+  function removeFromChain(value) {
+    setSplit(priorityChain.filter((item) => item !== value), [value, ...priorityPool]);
+  }
+
+  function addToChain(value) {
+    setSplit([...priorityChain, value], priorityPool.filter((item) => item !== value));
   }
 
   const providers = config.providers || {};
@@ -1638,13 +2193,106 @@ function ConfigView({ onSaved, text }) {
           <h2>{text("供应商", "PROVIDER")}</h2>
           <button className="iconButton neutral" onClick={addProvider} type="button" title={text("新增", "Add")}><Plus size={16} /></button>
         </div>
+        <button className={view === "priority" ? "providerItem active priorityEntry" : "providerItem priorityEntry"} onClick={() => setView("priority")} type="button">
+          <span><ListOrdered size={15} />{text("默认模型优先级", "Default model priority")}</span>
+        </button>
         {Object.keys(providers).map((name) => (
-          <button key={name} className={selectedProvider === name ? "providerItem active" : "providerItem"} onClick={() => setSelectedProvider(name)} type="button">
+          <button key={name} className={view === "provider" && selectedProvider === name ? "providerItem active" : "providerItem"} onClick={() => { setSelectedProvider(name); setView("provider"); }} type="button">
             <span><Key size={15} />{name}</span>
             {config.default_provider === name && <small>{text("默认", "DEFAULT")}</small>}
           </button>
         ))}
       </aside>
+      {view === "priority" ? (
+      <div className="modelEditor priorityEditor">
+        <div className="editorHeader">
+          <div>
+            <h2>{text("默认模型优先级", "DEFAULT MODEL PRIORITY")}</h2>
+            <span>{text("默认模型调用失败时，按下面的队列顺序依次换下一个。队列之外的模型不会被自动尝试。", "When the default model fails, the next one in the queue is tried. Models outside the queue are never tried automatically.")}</span>
+          </div>
+          <div className="rowActions">
+            <button className="secondaryButton" type="button" onClick={() => setPriorityItems(buildPriorityItems(config))}><RefreshCw size={16} /><span>{text("重置", "Reset")}</span></button>
+            <button className="primaryButton" onClick={() => saveConfig()} type="button"><Save size={16} /><span>{text("保存", "Save")}</span></button>
+          </div>
+        </div>
+        <div className="prioBody">
+          <section className="prioCard">
+            <header>
+              <h3>{text("优先队列", "Priority queue")}</h3>
+              <small>{priorityChain.length} {text("个模型 · 从上到下依次尝试", "models · tried top to bottom")}</small>
+            </header>
+            {priorityChain.length === 0 ? (
+              <p className="prioEmpty">{text("队列为空，没有默认模型。从下方“未启用”里加入至少一个模型。", "The queue is empty, so there is no default model. Add at least one from “Not in use” below.")}</p>
+            ) : (
+              <ol className="prioList">
+                {priorityChain.map((value, index) => {
+                  const [providerName, ...rest] = value.split(":");
+                  return (
+                    <li
+                      key={value}
+                      className={`prioRow${dragIndex === index ? " dragging" : ""}${dropIndex === index && dragIndex !== index ? " dropTarget" : ""}`}
+                      draggable
+                      onDragStart={(event) => { setDragIndex(index); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", value); }}
+                      onDragOver={(event) => { event.preventDefault(); setDropIndex(index); }}
+                      onDrop={(event) => { event.preventDefault(); moveInChain(dragIndex, index); setDragIndex(null); setDropIndex(null); }}
+                      onDragEnd={() => { setDragIndex(null); setDropIndex(null); }}
+                    >
+                      <GripVertical size={16} className="prioGrip" aria-hidden="true" />
+                      <span className={index === 0 ? "prioRank first" : "prioRank"}>{index + 1}</span>
+                      <span className="prioName" title={value}>
+                        <b>{rest.join(":")}</b>
+                        <small>{providerName}</small>
+                      </span>
+                      <span className="prioTag">{index === 0 ? text("默认", "Default") : text("备用", "Fallback")}</span>
+                      <span className="prioButtons">
+                        <button type="button" onClick={() => moveInChain(index, index - 1)} disabled={index === 0} title={text("上移", "Move up")} aria-label={text("上移", "Move up")}><ChevronUp size={16} /></button>
+                        <button type="button" onClick={() => moveInChain(index, index + 1)} disabled={index === priorityChain.length - 1} title={text("下移", "Move down")} aria-label={text("下移", "Move down")}><ChevronDown size={16} /></button>
+                        <button type="button" className="remove" onClick={() => removeFromChain(value)} title={text("移出队列", "Remove from queue")} aria-label={text("移出队列", "Remove from queue")}><X size={16} /></button>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+            {priorityChain.length > 0 && (
+              <p className="prioNote">
+                <Scissors size={13} />
+                {text(`“${priorityChain[priorityChain.length - 1]}” 是最后一个：它也失败时，不会再尝试其他模型。`, `“${priorityChain[priorityChain.length - 1]}” is the last one: if it fails too, no other model is tried.`)}
+              </p>
+            )}
+          </section>
+
+          <section className="prioCard muted">
+            <header>
+              <h3>{text("未启用", "Not in use")}</h3>
+              <small>{priorityPool.length} {text("个模型 · 不会被自动尝试", "models · never tried automatically")}</small>
+            </header>
+            {priorityPool.length > 6 && (
+              <input className="prioSearch" value={poolQuery} onChange={(event) => setPoolQuery(event.target.value)} placeholder={text("搜索模型…", "Search models...")} />
+            )}
+            <ul className="prioList">
+              {priorityPool.filter((value) => value.toLowerCase().includes(poolQuery.trim().toLowerCase())).map((value) => {
+                const [providerName, ...rest] = value.split(":");
+                return (
+                  <li className="prioRow pool" key={value}>
+                    <span className="prioName" title={value}>
+                      <b>{rest.join(":")}</b>
+                      <small>{providerName}</small>
+                    </span>
+                    <button className="prioAdd" type="button" onClick={() => addToChain(value)}>
+                      <Plus size={14} />
+                      {text("加入队列", "Add")}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            {priorityPool.length === 0 && <p className="prioEmpty">{text("所有模型都已在队列中。", "Every model is already in the queue.")}</p>}
+          </section>
+        </div>
+        {status && <p className="statusLine"><Check size={15} />{status}</p>}
+      </div>
+      ) : (
       <div className="modelEditor">
         <div className="editorHeader">
           <div>
@@ -1696,6 +2344,7 @@ function ConfigView({ onSaved, text }) {
         )}
         {status && <p className="statusLine"><Check size={15} />{status}</p>}
       </div>
+      )}
     </section>
   );
 }
@@ -2212,7 +2861,7 @@ function modelValue(item) {
 }
 
 function stringifyEventText(event, fallback) {
-  if (["tool_call", "assistant_progress", "question_required", "approval_required", "ai_review", "plan_updated", "plan_ready", "plan_decision", "parameters_changed", "error", "stopped", "user", "assistant"].includes(event.type)) {
+  if (["tool_call", "assistant_progress", "question_required", "approval_required", "ai_review", "plan_updated", "plan_ready", "plan_decision", "approval_request", "parameters_changed", "error", "stopped", "user", "assistant"].includes(event.type)) {
     return fallback;
   }
   return JSON.stringify(event, null, 2);
@@ -2235,6 +2884,7 @@ function eventLabel(type) {
     tool_call: "TOOL",
     question_required: "QUESTION",
     approval_required: "APPROVAL",
+    approval_request: "APPROVAL",
     ai_review: "AI REVIEW",
     error: "ERROR",
     stopped: "STOPPED",

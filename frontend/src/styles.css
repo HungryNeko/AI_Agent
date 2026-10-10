@@ -2566,3 +2566,889 @@ textarea:focus {
   border-color: #111827;
   color: #ffffff;
 }
+
+/* ---- Bottom-docked prompts (question / approval), VS Code panel style ---- */
+.questionBackdrop {
+  position: static;
+  z-index: auto;
+  display: block;
+  padding: 0;
+  background: none;
+}
+
+.questionDialog {
+  width: 100%;
+  max-height: min(46vh, 420px);
+  padding: 12px max(14px, calc((100% - 860px) / 2)) 12px;
+  border: 0;
+  border-top: 2px solid #2563eb;
+  border-radius: 0;
+  box-shadow: 0 -6px 18px rgba(17, 24, 39, 0.1);
+  animation: dockUp 160ms ease;
+}
+
+.questionDialog .questionText {
+  margin: 10px 0 8px;
+  font-size: 14px;
+}
+
+.questionDialog .questionAnswer textarea,
+.questionDialog > form > textarea {
+  min-height: 64px;
+}
+
+.questionDialog .questionActions {
+  margin-top: 10px;
+}
+
+.questionMinimized {
+  position: static;
+  width: 100%;
+  padding: 8px max(14px, calc((100% - 860px) / 2));
+  border: 0;
+  border-top: 2px solid #2563eb;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+@keyframes dockUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+.approvalDialog.risk-low {
+  border-top-color: #16a34a;
+}
+
+.approvalDialog.risk-medium {
+  border-top-color: #d97706;
+}
+
+.approvalDialog.risk-high {
+  border-top-color: #dc2626;
+}
+
+.questionHeader span svg {
+  vertical-align: -2px;
+}
+
+.riskBadge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  color: #ffffff;
+}
+
+.riskBadge.risk-low {
+  background: #16a34a;
+}
+
+.riskBadge.risk-medium {
+  background: #d97706;
+}
+
+.riskBadge.risk-high {
+  background: #dc2626;
+}
+
+.approvalDetails {
+  max-height: 160px;
+  overflow: auto;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+/* ---- Per-message actions (edit / fork) and in-place editing ---- */
+.event {
+  position: relative;
+}
+
+.eventActions {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.event:hover > .eventActions,
+.eventActions:focus-within {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .eventActions {
+    opacity: 0.75;
+  }
+}
+
+.eventActions .branchButton {
+  padding: 4px;
+  border-radius: 5px;
+  color: #64748b;
+}
+
+.eventActions .branchButton:hover {
+  background: rgba(100, 116, 139, 0.2);
+  color: #1f2937;
+}
+
+.event.isEditing {
+  width: min(100%, 820px);
+  max-width: 100%;
+}
+
+.editMessage textarea {
+  width: 100%;
+  min-height: 90px;
+}
+
+.editMessageActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.editMessageActions span {
+  margin-right: auto;
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.olderLoader {
+  display: flex;
+  justify-content: center;
+  padding: 4px 0 14px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.olderLoader .spinner {
+  display: inline-block;
+  vertical-align: -3px;
+}
+
+/* ---- Plan card + docked prompts in dark mode (explicit dark and OS-dark with "system") ---- */
+:root[data-theme="dark"] .planReview,
+:root[data-theme="dark"] .approvalDetails {
+  background: #161b22;
+  color: #e5e7eb;
+  border-top-color: #30363d;
+  border-right-color: #30363d;
+  border-bottom-color: #30363d;
+}
+
+:root[data-theme="dark"] .planReview > header span,
+:root[data-theme="dark"] .planReview > header strong {
+  color: #8b949e;
+}
+
+:root[data-theme="dark"] .planReview > header h3 {
+  color: #f0f6fc;
+}
+
+:root[data-theme="dark"] .planReview.plan-draft {
+  border-left-color: #8b949e;
+}
+
+:root[data-theme="dark"] .planReview.plan-ready {
+  border-left-color: #58a6ff;
+}
+
+:root[data-theme="dark"] .planReview.plan-approved {
+  border-left-color: #3fb950;
+}
+
+:root[data-theme="dark"] .eventActions .branchButton {
+  color: #8b949e;
+}
+
+:root[data-theme="dark"] .eventActions .branchButton:hover {
+  background: rgba(139, 148, 158, 0.25);
+  color: #f0f6fc;
+}
+
+:root[data-theme="dark"] .questionDialog {
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.45);
+}
+
+:root[data-theme="dark"] .editMessageActions span,
+:root[data-theme="dark"] .olderLoader {
+  color: #8b949e;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .planReview,
+  :root:not([data-theme="light"]) .approvalDetails {
+    background: #161b22;
+    color: #e5e7eb;
+    border-top-color: #30363d;
+    border-right-color: #30363d;
+    border-bottom-color: #30363d;
+  }
+
+  :root:not([data-theme="light"]) .planReview > header span,
+  :root:not([data-theme="light"]) .planReview > header strong {
+    color: #8b949e;
+  }
+
+  :root:not([data-theme="light"]) .planReview > header h3 {
+    color: #f0f6fc;
+  }
+
+  :root:not([data-theme="light"]) .planReview.plan-draft {
+    border-left-color: #8b949e;
+  }
+
+  :root:not([data-theme="light"]) .planReview.plan-ready {
+    border-left-color: #58a6ff;
+  }
+
+  :root:not([data-theme="light"]) .planReview.plan-approved {
+    border-left-color: #3fb950;
+  }
+
+  :root:not([data-theme="light"]) .planActions {
+    border-top-color: #30363d;
+  }
+
+  :root:not([data-theme="light"]) .eventActions .branchButton {
+    color: #8b949e;
+  }
+
+  :root:not([data-theme="light"]) .eventActions .branchButton:hover {
+    background: rgba(139, 148, 158, 0.25);
+    color: #f0f6fc;
+  }
+
+  :root:not([data-theme="light"]) .questionDialog {
+    box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.45);
+  }
+
+  :root:not([data-theme="light"]) .editMessageActions span,
+  :root:not([data-theme="light"]) .olderLoader {
+    color: #8b949e;
+  }
+}
+
+@media (max-width: 720px) {
+  .questionDialog {
+    max-height: 60vh;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .questionDialog {
+    animation: none;
+  }
+}
+
+/* ---- History list: icon actions, multi-select and bulk delete ---- */
+.historyHeaderActions {
+  display: flex;
+  gap: 6px;
+}
+
+.historyHeaderActions .iconButton.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+}
+
+.historyRow {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.historyRow.selecting {
+  grid-template-columns: auto minmax(0, 1fr);
+  padding-left: 8px;
+}
+
+.historyRow.checked {
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.historyCheckbox,
+.historyCheck input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #2563eb;
+  cursor: pointer;
+}
+
+.historyRowActions {
+  display: flex;
+  gap: 2px;
+  padding-right: 4px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.historyRow:hover .historyRowActions,
+.historyRow.active .historyRowActions,
+.historyRowActions:focus-within {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .historyRowActions {
+    opacity: 1;
+  }
+}
+
+.miniButton {
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+}
+
+.miniButton:hover {
+  background: rgba(100, 116, 139, 0.2);
+}
+
+.dangerMini:hover {
+  background: rgba(220, 38, 38, 0.15);
+}
+
+.historyBulkBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 6px 8px;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  border-radius: 7px;
+  animation: paneFade 140ms ease;
+}
+
+.historyBulkBar small {
+  margin-right: auto;
+  color: #6b7280;
+}
+
+.historyBulkBar .iconButton {
+  height: 30px;
+  padding: 0 10px;
+}
+
+.historyCheck {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.historyBulkBar .iconButton:disabled {
+  opacity: 0.45;
+}
+
+
+/* ---- History bulk bar + inline rename/delete (replaces the first pass) ---- */
+.historyBulkBar {
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 6px 8px;
+}
+
+.historyBulkBar small {
+  margin-right: auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bulkButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid rgba(100, 116, 139, 0.4);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.bulkButton:hover:not(:disabled) {
+  background: rgba(100, 116, 139, 0.16);
+}
+
+.bulkButton.danger {
+  border-color: #dc2626;
+  background: #dc2626;
+  color: #ffffff;
+}
+
+.bulkButton.danger:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+.bulkButton svg {
+  flex: none;
+}
+
+.bulkConfirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.historyRowActions.confirming {
+  align-items: center;
+  opacity: 1;
+}
+
+.historyRowActions.confirming > span {
+  color: #b91c1c;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.historyRename {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  grid-column: 1 / -1;
+  padding: 3px 4px;
+}
+
+.historyRename input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+}
+
+.selecting .historyRename {
+  grid-column: auto;
+}
+
+
+/* ---- Composer: uniform selectors, auto-approval beside Send ---- */
+.composerTools {
+  gap: 6px;
+}
+
+.composerPicker {
+  width: 118px;
+  max-width: none;
+  height: 30px;
+  padding: 0 22px 0 9px;
+  border: 1px solid rgba(100, 116, 139, 0.32);
+  border-radius: 6px;
+  background-color: rgba(100, 116, 139, 0.06);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.composerPicker:hover {
+  border-color: rgba(100, 116, 139, 0.6);
+}
+
+.composerPicker.modePicker,
+.composerPicker.modelPicker,
+.composerPicker.queuePicker {
+  width: 118px;
+  max-width: none;
+  padding: 0 22px 0 9px;
+}
+
+.composerActions {
+  gap: 6px;
+}
+
+.composerToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid rgba(100, 116, 139, 0.32);
+  border-radius: 6px;
+  background: transparent;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.composerToggle:hover {
+  border-color: rgba(100, 116, 139, 0.6);
+}
+
+.composerToggle.active {
+  border-color: #16a34a;
+  background: rgba(22, 163, 74, 0.12);
+  color: #15803d;
+}
+
+:root[data-theme="dark"] .composerToggle.active {
+  color: #4ade80;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .composerToggle.active {
+    color: #4ade80;
+  }
+}
+
+@media (max-width: 720px) {
+  .composerToggle span {
+    display: none;
+  }
+
+  .composerPicker,
+  .composerPicker.modePicker,
+  .composerPicker.modelPicker,
+  .composerPicker.queuePicker {
+    width: 96px;
+  }
+}
+
+/* ---- Default model priority editor ---- */
+.priorityEntry {
+  margin-bottom: 6px;
+  border-bottom: 1px solid rgba(100, 116, 139, 0.25);
+  border-radius: 7px 7px 0 0;
+}
+
+.modelEditor.priorityEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.prioBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.prioCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  border-radius: 10px;
+  background: rgba(100, 116, 139, 0.04);
+}
+
+.prioCard:first-child {
+  border-color: rgba(37, 99, 235, 0.45);
+  background: rgba(37, 99, 235, 0.05);
+}
+
+.prioCard > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.prioCard h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.prioList {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.prioRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 6px 8px 6px 10px;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.55);
+  transition: border-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+}
+
+.prioRow:hover {
+  border-color: rgba(100, 116, 139, 0.6);
+}
+
+.prioRow.dragging {
+  opacity: 0.35;
+}
+
+.prioRow.dropTarget {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35);
+}
+
+.prioGrip {
+  flex: none;
+  color: #9ca3af;
+  cursor: grab;
+}
+
+.prioRank {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.22);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.prioRank.first {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.prioName {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.prioName b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.prioName small {
+  font-size: 11px;
+}
+
+.prioTag {
+  flex: none;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.18);
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.prioRank.first + .prioName + .prioTag {
+  background: rgba(37, 99, 235, 0.16);
+  color: #2563eb;
+}
+
+.prioButtons {
+  flex: none;
+  display: flex;
+  gap: 2px;
+}
+
+.prioButtons button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+
+.prioButtons button:hover:not(:disabled) {
+  background: rgba(100, 116, 139, 0.2);
+}
+
+.prioButtons button:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.prioButtons button.remove:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.16);
+  color: #dc2626;
+}
+
+.prioNote {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 0;
+  color: #b45309;
+  font-size: 12px;
+}
+
+.prioEmpty {
+  margin: 0;
+  padding: 10px 2px;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.prioCard.muted .prioRow {
+  background: transparent;
+  border-style: dashed;
+  min-height: 42px;
+}
+
+.prioCard.muted .prioName b {
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.prioAdd {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid rgba(37, 99, 235, 0.5);
+  border-radius: 6px;
+  background: transparent;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.prioAdd:hover {
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.prioSearch {
+  height: 32px;
+  padding: 0 10px;
+}
+
+:root[data-theme="dark"] .prioRow {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="dark"] .prioNote {
+  color: #fbbf24;
+}
+
+:root[data-theme="dark"] .prioAdd,
+:root[data-theme="dark"] .prioRank.first + .prioName + .prioTag {
+  color: #93c5fd;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .prioRow {
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  :root:not([data-theme="light"]) .prioNote {
+    color: #fbbf24;
+  }
+
+  :root:not([data-theme="light"]) .prioAdd,
+  :root:not([data-theme="light"]) .prioRank.first + .prioName + .prioTag {
+    color: #93c5fd;
+  }
+}
+
+/* ---- General polish ---- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+}
+
+button:focus-visible,
+summary:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.tab,
+.providerItem,
+.historyRow,
+.historyItem,
+.fileItem,
+.sidebarTab {
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.event-user {
+  border-radius: 12px 12px 4px 12px;
+}
+
+.event-assistant .markdownBody pre,
+.event .markdownBody pre {
+  border-radius: 8px;
+}
+
+.planReview,
+.questionDialog,
+.priorityChain {
+  animation: paneFade 160ms ease;
+}
+
+.composerSurface {
+  border-radius: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .planReview,
+  .questionDialog,
+  .priorityChain {
+    animation: none;
+  }
+}
+
+
+/* ---- Fixes from visual review ---- */
+.composerPicker,
+.composerPicker.modePicker,
+.composerPicker.modelPicker,
+.composerPicker.queuePicker {
+  width: 172px;
+}
+
+.editorHeader .rowActions span,
+.editorHeader .rowActions button span {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+@media (max-width: 720px) {
+  .composerPicker,
+  .composerPicker.modePicker,
+  .composerPicker.modelPicker,
+  .composerPicker.queuePicker {
+    width: 96px;
+  }
+}
