@@ -425,6 +425,17 @@ def tool_call(state: ChatState) -> dict[str, Any]:
                 "placeholder": item.placeholder,
             }
             tool_events.append({"type": "question_required", "tool": "question", **question_pending})
+        elif request.name == "approval" and request.approval_request:
+            item = request.approval_request
+            # Same pause mechanism as question: the turn ends until the user decides.
+            question_pending = {
+                "kind": "approval",
+                "action": item.action,
+                "title": item.title,
+                "details": item.details,
+                "risk": item.risk,
+            }
+            tool_events.append({"type": "approval_request", "tool": "approval", **question_pending})
         elif request.name == "settings":
             tool_events.append({"type": "settings_changed", "tool": "settings", "text": result})
         elif request.name == "model" and request.model_request:
@@ -779,6 +790,8 @@ def tool_call_key(request: ToolRequest) -> str:
     if request.name == "question" and request.question_request:
         item = request.question_request
         return f"{request.name}:{item.question}:{item.options}:{item.multiple}"
+    if request.name == "approval" and request.approval_request:
+        return f"{request.name}:{request.approval_request.action}:{request.approval_request.details}"
     return request.name
 
 
@@ -830,6 +843,8 @@ def describe_tool_call_target(request: ToolRequest) -> str:
         return describe_mcp_target(request)
     if request.name == "question" and request.question_request:
         return request.question_request.question
+    if request.name == "approval" and request.approval_request:
+        return request.approval_request.action
     return request.query
 
 
@@ -985,6 +1000,12 @@ def describe_tool_request(request: ToolRequest) -> AgentEvent:
             "type": "tool_call",
             "tool": request.name,
             "text": f"question: {request.question_request.question}",
+        }
+    if request.name == "approval" and request.approval_request:
+        return {
+            "type": "tool_call",
+            "tool": request.name,
+            "text": f"approval: {request.approval_request.action}",
         }
     return {
         "type": "tool_call",

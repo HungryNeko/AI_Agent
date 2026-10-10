@@ -70,13 +70,13 @@ def test_run_agent_calls_model_once(monkeypatch):
 
     assert result == "hi"
     assert payloads[0]["model"] == "deepseek-chat"
-    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["webSearch", "rag", "model", "parameterSave", "createTool", "question"]
+    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["webSearch", "rag", "model", "parameterSave", "createTool", "question", "approval"]
     assert payloads[0]["messages"][0]["role"] == "system"
     assert "Tool request format reminder:" in payloads[0]["messages"][0]["content"]
     assert payloads[0]["messages"][-1]["role"] == "user"
     assert 'currentTime: "2026-09-02T12:00:00-07:00"' in payloads[0]["messages"][-1]["content"]
     assert 'conversationSummary: "summary"' in payloads[0]["messages"][-1]["content"]
-    assert 'available: ["webSearch", "rag", "createTool", "custom__*", "model", "parameterSave", "question"]' in payloads[0]["messages"][-1]["content"]
+    assert 'available: ["webSearch", "rag", "createTool", "custom__*", "model", "parameterSave", "question", "approval"]' in payloads[0]["messages"][-1]["content"]
 
 
 def test_turn_context_includes_question_and_developer_modes(monkeypatch):
@@ -863,3 +863,43 @@ def test_ai_review_approval_executes_file_editor_as_auto(monkeypatch):
     assert seen_approval == ["auto"]
     assert any(event["type"] == "ai_review" and "approved" in event["text"] for event in events)
     assert events[-1]["text"] == "The edit was applied."
+
+
+def test_approval_pauses_turn_and_resumes_with_the_decision(monkeypatch):
+    calls = []
+
+    def fake_complete_chat_once(messages, *, model=None, tools=None):
+        calls.append(messages)
+        if len(calls) == 1:
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_approval",
+                        "type": "function",
+                        "function": {
+                            "name": "approval",
+                            "arguments": '{"action":"Delete build/","details":"rm -rf build/","risk":"high","title":"Confirm"}',
+                        },
+                    }
+                ],
+            }
+        return {"role": "assistant", "content": "Understood, skipping the deletion."}
+
+    monkeypatch.setattr(graph, "complete_chat_once", fake_complete_chat_once)
+
+    first_events = list(graph.stream_turn(graph.new_chat_state(), "clean up"))
+
+    assert [event["type"] for event in first_events] == ["tool_call", "approval_request", "assistant"]
+    request = first_events[1]
+    assert request["action"] == "Delete build/" and request["risk"] == "high" and request["kind"] == "approval"
+    state = first_events[-1]["state"]
+    assert state["question_pending"]["kind"] == "approval"
+    assert len(calls) == 1
+
+    state["question_pending"] = None
+    reply = 'approvalResponse:\n{"status":"rejected","text":"keep it"}'
+    second_events = list(graph.stream_turn(state, reply))
+    assert second_events[-1]["text"] == "Understood, skipping the deletion."
+    assert reply in calls[1][-1]["content"]

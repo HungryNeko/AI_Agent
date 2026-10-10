@@ -179,6 +179,8 @@ class ToolSettings:
     conversation_id: str = ""
 
     def allows(self, tool: str) -> bool:
+        if tool == "approval":
+            return self.conversation_mode == "agent"
         if tool in {"model", "question", "parameterSave"}:
             return tool != "question" or self.question.can_model_call
         read_tools = {"webSearch", "rag", "curl", "history", "fileReader", "fileEditor"}
@@ -220,6 +222,8 @@ class ToolSettings:
         available.append("parameterSave")
         if self.question.can_model_call:
             available.append("question")
+        if self.allows("approval"):
+            available.append("approval")
         return {"available": available}
 
 

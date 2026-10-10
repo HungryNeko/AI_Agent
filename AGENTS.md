@@ -112,6 +112,9 @@ rebuild the RAG index so the new content is searchable.
 - `automation`: creates/updates scheduled reminder, LLM, Python, or MCP work.
 - `settings`: lets an enabled automation-capable agent update application settings.
 - `question`: requests clarification and ends the turn until the user responds.
+- `approval`: Agent-mode manual approval; asks the user to approve or reject one action (with optional text),
+  ends the turn, and the reply returns as an `approvalResponse` message. It reuses `question_pending`
+  with `kind: "approval"` and emits the `approval_request` SSE event.
 - `model`: lists/refreshes provider catalogs or switches the current conversation model,
   without exposing backend credentials.
 - `plan`: updates/finalizes a session plan for review; explicit exports use `data/plans`.
@@ -203,7 +206,7 @@ It prefers `.venv/bin/python` and supports an explicit `AI_AGENT_PYTHON` overrid
 
 When adding an API capability, update both the Pydantic request model/server route and
 the matching frontend call. Preserve SSE event types already consumed by the UI:
-`assistant_progress`, `tool_call`, `approval_required`, `ai_review`, `error`, `stopped`,
+`assistant_progress`, `tool_call`, `approval_required`, `approval_request`, `ai_review`, `error`, `stopped`,
 `settings_changed`, and final `assistant`.
 
 ## Change guidelines

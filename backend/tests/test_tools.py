@@ -24,7 +24,7 @@ def test_model_view_is_small():
         mcp_mode="off",
     )
 
-    assert settings.model_view() == {"available": ["webSearch", "rag", "createTool", "custom__*", "model", "parameterSave", "question"]}
+    assert settings.model_view() == {"available": ["webSearch", "rag", "createTool", "custom__*", "model", "parameterSave", "question", "approval"]}
 
 
 def test_model_view_includes_curl_only_when_enabled():
@@ -37,7 +37,7 @@ def test_model_view_includes_curl_only_when_enabled():
         mcp_mode="off",
     )
 
-    assert settings.model_view() == {"available": ["webSearch", "rag", "curl", "createTool", "custom__*", "model", "parameterSave", "question"]}
+    assert settings.model_view() == {"available": ["webSearch", "rag", "curl", "createTool", "custom__*", "model", "parameterSave", "question", "approval"]}
 
 
 def test_build_openai_tools_from_enabled_settings():
@@ -52,7 +52,7 @@ def test_build_openai_tools_from_enabled_settings():
 
     tool_names = [tool["function"]["name"] for tool in build_openai_tools(settings)]
 
-    assert tool_names == ["webSearch", "rag", "model", "parameterSave", "createTool", "question"]
+    assert tool_names == ["webSearch", "rag", "model", "parameterSave", "createTool", "question", "approval"]
 
 
 def test_build_openai_tools_includes_curl_when_enabled():
@@ -67,7 +67,7 @@ def test_build_openai_tools_includes_curl_when_enabled():
 
     tool_names = [tool["function"]["name"] for tool in build_openai_tools(settings)]
 
-    assert tool_names == ["curl", "model", "parameterSave", "createTool", "question"]
+    assert tool_names == ["curl", "model", "parameterSave", "createTool", "question", "approval"]
 
 
 def test_build_openai_tools_includes_history_when_enabled():
@@ -83,7 +83,7 @@ def test_build_openai_tools_includes_history_when_enabled():
 
     tool_names = [tool["function"]["name"] for tool in build_openai_tools(settings)]
 
-    assert tool_names == ["history", "model", "parameterSave", "createTool", "question"]
+    assert tool_names == ["history", "model", "parameterSave", "createTool", "question", "approval"]
 
 
 def test_settings_tool_is_available_with_automation_mode():
@@ -100,7 +100,7 @@ def test_settings_tool_is_available_with_automation_mode():
 
     tool_names = [tool["function"]["name"] for tool in build_openai_tools(settings)]
 
-    assert tool_names == ["automation", "settings", "model", "parameterSave", "createTool", "question"]
+    assert tool_names == ["automation", "settings", "model", "parameterSave", "createTool", "question", "approval"]
 
 
 def test_question_tool_is_always_available_and_parses_choices():
@@ -135,7 +135,7 @@ def test_question_tool_is_always_available_and_parses_choices():
         settings,
     )
 
-    assert [tool["function"]["name"] for tool in tools] == ["model", "parameterSave", "createTool", "question"]
+    assert [tool["function"]["name"] for tool in tools] == ["model", "parameterSave", "createTool", "question", "approval"]
     assert request.question_request is not None
     assert request.question_request.options == ("Development", "Production")
     assert request.question_request.multiple is False
@@ -181,7 +181,7 @@ def test_question_tool_is_hidden_and_rejected_when_mode_is_off():
         question_mode="off",
     )
 
-    assert [tool["function"]["name"] for tool in build_openai_tools(settings)] == ["model", "parameterSave", "createTool"]
+    assert [tool["function"]["name"] for tool in build_openai_tools(settings)] == ["model", "parameterSave", "createTool", "approval"]
     with pytest.raises(ValueError, match="disabled"):
         parse_openai_tool_calls(
             {
@@ -584,7 +584,7 @@ def test_model_view_includes_python_only_when_enabled():
         mcp_mode="off",
     )
 
-    assert settings.model_view() == {"available": ["python", "createTool", "custom__*", "model", "parameterSave", "question"]}
+    assert settings.model_view() == {"available": ["python", "createTool", "custom__*", "model", "parameterSave", "question", "approval"]}
 
 
 def test_build_openai_tools_includes_python_when_enabled():
@@ -723,7 +723,7 @@ def test_model_view_includes_file_editor_only_when_enabled():
         mcp_mode="off",
     )
 
-    assert settings.model_view() == {"available": ["fileEditor", "createTool", "custom__*", "model", "parameterSave", "question"]}
+    assert settings.model_view() == {"available": ["fileEditor", "createTool", "custom__*", "model", "parameterSave", "question", "approval"]}
 
 
 def test_build_openai_tools_includes_file_editor_when_enabled():
@@ -814,7 +814,7 @@ def test_model_view_includes_mcp_only_when_enabled():
         mcp_mode="auto",
     )
 
-    assert settings.model_view() == {"available": ["mcp", "createTool", "custom__*", "model", "parameterSave", "question"]}
+    assert settings.model_view() == {"available": ["mcp", "createTool", "custom__*", "model", "parameterSave", "question", "approval"]}
 
 
 def test_build_openai_tools_includes_mcp_when_enabled():
@@ -965,3 +965,22 @@ def test_read_only_modes_keep_file_reader_and_block_rag_ingestion(mode):
             }}]},
             settings,
         )
+
+
+def test_approval_tool_is_agent_only_and_must_be_called_alone():
+    names = lambda mode: [tool["function"]["name"] for tool in build_openai_tools(make_tool_settings(conversation_mode=mode))]
+    assert "approval" in names("agent")
+    assert "approval" not in names("ask") and "approval" not in names("plan")
+    # question_mode off must not disable manual approval
+    off = make_tool_settings(question_mode="off")
+    assert "approval" in [tool["function"]["name"] for tool in build_openai_tools(off)]
+
+    call = lambda name, args: {"id": name, "type": "function", "function": {"name": name, "arguments": args}}
+    parsed = parse_openai_tool_calls({"tool_calls": [call("approval", '{"action":"Run deploy","risk":"bogus"}')]}, off)
+    assert parsed[0].approval_request.action == "Run deploy" and parsed[0].approval_request.risk == "medium"
+    with pytest.raises(ValueError, match="only tool call"):
+        parse_openai_tool_calls(
+            {"tool_calls": [call("approval", '{"action":"x"}'), call("model", '{"action":"list"}')]}, off
+        )
+    with pytest.raises(ValueError, match="action"):
+        parse_openai_tool_calls({"tool_calls": [call("approval", "{}")]}, off)

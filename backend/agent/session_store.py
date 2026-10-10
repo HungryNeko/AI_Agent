@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from agent.config import PROJECT_ROOT
+from agent import titles
 from tools import parameterSave
 
 CONVERSATION_ROOT = PROJECT_ROOT / "backend" / "runtime" / "conversations"
@@ -37,8 +38,7 @@ def list_conversations(*, limit: int = 50, query: str = "") -> list[dict[str, An
     needle = query.strip().lower()
     for path in CONVERSATION_ROOT.glob("*.json"):
         conversation = read_conversation(path.stem)
-        haystack = json.dumps(conversation, ensure_ascii=False).lower()
-        if needle and needle not in haystack:
+        if needle and needle not in json.dumps(conversation, ensure_ascii=False).lower():
             continue
         items.append(
             {
@@ -101,7 +101,8 @@ def save_turn(
     conversation.update(
         {
             "id": conversation_id,
-            "title": make_turn_title(user_text, turn_events) if was_empty else conversation.get("title") or make_title(user_text),
+            "title": make_title(titles.heuristic_title(user_text) or user_text) if was_empty else conversation.get("title") or make_title(user_text),
+            "title_auto": True if was_empty else conversation.get("title_auto", False),
             "updated_at": now,
             "summary": state.get("conversation_summary") or conversation.get("summary") or "",
             "events": events,
@@ -113,9 +114,22 @@ def save_turn(
     return conversation
 
 
+def set_auto_title(conversation_id: str, title: str) -> None:
+    """Apply a generated title unless the user renamed the conversation meanwhile."""
+
+    if not conversation_path(conversation_id).exists():
+        return
+    conversation = read_conversation(conversation_id)
+    if not conversation.get("title_auto"):
+        return
+    conversation["title"] = make_title(title)
+    write_conversation(conversation)
+
+
 def rename_conversation(conversation_id: str, title: str) -> dict[str, Any]:
     conversation = read_conversation(conversation_id)
     conversation["title"] = make_title(title)
+    conversation["title_auto"] = False
     conversation["updated_at"] = utc_now()
     write_conversation(conversation)
     return conversation
@@ -153,16 +167,21 @@ def delete_conversation(conversation_id: str) -> None:
     parameterSave.delete_all(conversation_id)
 
 
-def branch_conversation(conversation_id: str, event_index: int) -> dict[str, Any]:
+def branch_conversation(conversation_id: str, event_index: int, *, before: bool = False) -> dict[str, Any]:
+    """Copy a conversation up to (and including) an event into a brand-new conversation.
+
+    With ``before=True`` the event itself is left out, which is how forking from a
+    user message works: the new conversation ends right before that message.
+    """
+
     source = read_conversation(conversation_id)
     events = list(source.get("events") or [])
     if event_index < 0 or event_index >= len(events):
         raise ValueError("branch event index is out of range")
-    branch_events = events[: event_index + 1]
+    cut = event_index if before else event_index + 1
+    branch_events = events[:cut]
     branch_id = create_conversation_id()
-    source_state = dict(source.get("state") or {})
-    source_state["conversation_summary"] = ""
-    state = compact_state(source_state, branch_events)
+    state = rewind_state(source, branch_events)
     entries = []
     for event in branch_events:
         if event.get("type") == "parameters_changed":
@@ -173,7 +192,8 @@ def branch_conversation(conversation_id: str, event_index: int) -> dict[str, Any
     now = utc_now()
     branch = {
         "id": branch_id,
-        "title": f"Branch: {source.get('title') or 'Untitled'}",
+        "title": make_title(f"Branch: {source.get('title') or 'Untitled'}"),
+        "title_auto": False,
         "created_at": now,
         "updated_at": now,
         "summary": state.get("conversation_summary", ""),
@@ -185,6 +205,140 @@ def branch_conversation(conversation_id: str, event_index: int) -> dict[str, Any
     }
     write_conversation(branch)
     return branch
+
+
+def truncate_conversation(conversation_id: str, event_index: int) -> dict[str, Any]:
+    """Drop a user message and everything after it so that the turn can be re-run."""
+
+    conversation = read_conversation(conversation_id)
+    events = list(conversation.get("events") or [])
+    if event_index < 0 or event_index >= len(events):
+        raise ValueError("event index is out of range")
+    if events[event_index].get("type") != "user":
+        raise ValueError("only a user message can be edited")
+    kept = events[:event_index]
+    state = rewind_state(conversation, kept)
+    state["conversation_id"] = conversation_id
+    state["parameters"] = parameterSave.list_parameters(conversation_id)
+    conversation.update(
+        {
+            "events": kept,
+            "state": state,
+            "summary": state.get("conversation_summary", ""),
+            "updated_at": utc_now(),
+        }
+    )
+    write_conversation(conversation)
+    return conversation
+
+
+def rewind_state(source: dict[str, Any], kept_events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Rebuild the chat state as it was after ``kept_events``.
+
+    When the saved message list still lines up with the events, it is cut at the
+    exact turn boundary. Otherwise (compressed or mid-turn cuts) the kept events are
+    folded into a summary, like a manual compression.
+    """
+
+    source_events = list(source.get("events") or [])
+    state = dict(source.get("state") or {})
+    sliced = slice_messages(state, source_events, kept_events)
+    if sliced is not None:
+        state["messages"] = sliced
+        state["web_search_results"] = []
+        state["rag_results"] = []
+        state["tool_events"] = []
+        state["response"] = ""
+        state["conversation_summary"] = ""
+    else:
+        state["conversation_summary"] = ""
+        state = compact_state(state, kept_events)
+    if not any(event.get("type") == "user" for event in kept_events):
+        state["tools_announced"] = False
+    state["question_pending"] = None
+    state["tool_error"] = ""
+    plan = plan_from_events(kept_events)
+    if plan:
+        state["plan"] = plan
+    else:
+        state.pop("plan", None)
+    return state
+
+
+def slice_messages(
+    state: dict[str, Any],
+    source_events: list[dict[str, Any]],
+    kept_events: list[dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    messages = list(state.get("messages") or [])
+    user_positions = [i for i, message in enumerate(messages) if isinstance(message, dict) and message.get("role") == "user"]
+    total_turns = sum(1 for event in source_events if event.get("type") == "user")
+    if state.get("conversation_summary") or len(user_positions) != total_turns:
+        return None
+    # The cut must sit on a turn boundary: the next source event starts a new turn.
+    next_event = source_events[len(kept_events)] if len(kept_events) < len(source_events) else None
+    if next_event is not None and next_event.get("type") != "user":
+        return None
+    keep_turns = sum(1 for event in kept_events if event.get("type") == "user")
+    if keep_turns >= total_turns:
+        return messages
+    return messages[: user_positions[keep_turns]]
+
+
+def plan_from_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    plan: dict[str, Any] | None = None
+    for event in events:
+        kind = event.get("type")
+        if kind in {"plan_updated", "plan_ready"}:
+            plan = {
+                "name": event.get("name") or "implementation-plan",
+                "content": event.get("content") or "",
+                "status": event.get("status") or ("ready" if kind == "plan_ready" else "draft"),
+            }
+        elif kind == "plan_decision" and plan:
+            plan = {**plan, "status": event.get("decision") or plan.get("status")}
+    return plan
+
+
+def clear_plan(conversation_id: str) -> dict[str, Any]:
+    conversation = read_conversation(conversation_id)
+    state = dict(conversation.get("state") or {})
+    state["plan"] = None
+    conversation.update({"state": state, "updated_at": utc_now()})
+    write_conversation(conversation)
+    return conversation
+
+
+def read_conversation_page(
+    conversation_id: str,
+    *,
+    limit: int,
+    before: int | None = None,
+    since: int | None = None,
+    include_state: bool = True,
+) -> dict[str, Any]:
+    """Return a window of events ending before ``before`` (or at the end), newest last.
+
+    ``since`` instead returns everything from that index on, which lets a client that
+    already holds the older part refresh just the tail.
+    """
+
+    conversation = read_conversation(conversation_id)
+    events = list(conversation.get("events") or [])
+    total = len(events)
+    end = total if before is None else max(0, min(int(before), total))
+    start = max(0, end - max(1, int(limit)))
+    if since is not None:
+        end = total
+        start = max(0, min(int(since), total))
+    page = dict(conversation)
+    page["events"] = events[start:end]
+    page["event_offset"] = start
+    page["total_events"] = total
+    page["has_more"] = start > 0
+    if not include_state:
+        page.pop("state", None)
+    return page
 
 
 def compress_conversation(conversation_id: str) -> dict[str, Any]:
@@ -266,18 +420,6 @@ def write_conversation(conversation: dict[str, Any]) -> None:
 def make_title(text: str) -> str:
     clean = sanitize_title_text(text)
     return trim_text(clean, TITLE_LIMIT) or "Untitled"
-
-
-def make_turn_title(user_text: str, turn_events: list[dict[str, Any]]) -> str:
-    for event in turn_events:
-        if event.get("type") == "assistant":
-            text = str(event.get("text") or "").strip()
-            if text:
-                for line in text.splitlines():
-                    title = make_title(line)
-                    if title != "Untitled":
-                        return title
-    return make_title(user_text)
 
 
 def sanitize_title_text(text: str) -> str:

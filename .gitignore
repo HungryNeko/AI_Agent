@@ -80,3 +80,6 @@ Thumbs.db
 
 # Docker deployment persistent data (server-side config + runtime state)
 docker-data/
+
+# Saved plan copies (user output)
+data/plans/

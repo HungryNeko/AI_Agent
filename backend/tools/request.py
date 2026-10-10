@@ -16,6 +16,7 @@ from tools.history import HistoryRequest
 from tools.mcp import McpRequest
 from tools.models import ModelRequest
 from tools.plan import PlanRequest
+from tools.approval import ApprovalRequest, normalize_risk
 from tools.question import QuestionRequest
 from tools.rag import RagRequest
 from tools.settings import ToolSettings
@@ -33,6 +34,7 @@ SYSTEM_TOOL_NAMES = {
     "automation",
     "settings",
     "question",
+    "approval",
     "model",
     "plan",
     "createTool",
@@ -59,6 +61,7 @@ class ToolRequest:
     create_tool_request: CreateToolRequest | None = None
     custom_arguments: dict[str, Any] | None = None
     question_request: QuestionRequest | None = None
+    approval_request: ApprovalRequest | None = None
     parameter_request: parameterSave.ParameterRequest | None = None
     wrapped_request: ToolRequest | None = None
 
@@ -100,6 +103,8 @@ def build_openai_tools(settings: ToolSettings) -> list[dict[str, Any]]:
         tools.extend(createTool.openai_schemas())
     if settings.question.can_model_call:
         tools.append(question_tool())
+    if settings.allows("approval"):
+        tools.append(approval_tool())
     return tools
 
 
@@ -114,8 +119,9 @@ def parse_openai_tool_calls(
         raise ValueError("assistant tool_calls must be a list.")
 
     requests = [parse_one_tool_call(raw_tool_call, settings) for raw_tool_call in raw_tool_calls]
-    if len(requests) > 1 and any(request.name == "question" for request in requests):
-        raise ValueError("question must be the only tool call in an assistant step.")
+    for blocking in ("question", "approval"):
+        if len(requests) > 1 and any(request.name == blocking for request in requests):
+            raise ValueError(f"{blocking} must be the only tool call in an assistant step.")
     return requests
 
 
@@ -198,6 +204,8 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
         return ToolRequest(id=call_id, name="createTool", create_tool_request=parse_create_tool_request(parsed_arguments))
     if name == "question":
         return ToolRequest(id=call_id, name="question", question_request=parse_question_request(parsed_arguments))
+    if name == "approval":
+        return ToolRequest(id=call_id, name="approval", approval_request=parse_approval_request(parsed_arguments))
 
     query = require_string(parsed_arguments, "query", "tool")
     return ToolRequest(id=call_id, name=name, query=query)
@@ -383,6 +391,15 @@ def parse_settings_request(arguments: dict[str, Any]) -> SettingsRequest:
     if not isinstance(raw_patch, dict) or not isinstance(raw_settings, dict):
         raise ValueError("settings patch and settings must be objects.")
     return SettingsRequest(action=action, patch=raw_patch, settings=raw_settings)
+
+
+def parse_approval_request(arguments: dict[str, Any]) -> ApprovalRequest:
+    return ApprovalRequest(
+        action=require_string(arguments, "action", "approval"),
+        title=optional_string(arguments.get("title")).strip(),
+        details=optional_string(arguments.get("details")).strip(),
+        risk=normalize_risk(arguments.get("risk")),
+    )
 
 
 def parse_question_request(arguments: dict[str, Any]) -> QuestionRequest:
@@ -718,6 +735,28 @@ def question_tool() -> dict[str, Any]:
             "placeholder": {"type": "string", "description": "Optional hint for the free-text field."},
         },
         required=["question", "options", "multiple"],
+    )
+
+
+def approval_tool() -> dict[str, Any]:
+    return function_tool(
+        name="approval",
+        description=(
+            "Ask the user to manually approve or reject one specific action before you perform it, "
+            "and pause until they reply. Use it for risky, irreversible, costly, or out-of-scope steps "
+            "when the user has not already approved them. The reply arrives as approvalResponse with "
+            "status approved or rejected plus optional user text. Call this tool alone, without other tools."
+        ),
+        properties={
+            "action": {"type": "string", "description": "One clear sentence saying exactly what you want to do."},
+            "title": {"type": "string", "description": "Optional short dialog title."},
+            "details": {
+                "type": "string",
+                "description": "Optional Markdown with commands, files, targets, side effects, or a diff the user should check.",
+            },
+            "risk": {"type": "string", "enum": ["low", "medium", "high"], "description": "How risky the action is."},
+        },
+        required=["action"],
     )
 
 

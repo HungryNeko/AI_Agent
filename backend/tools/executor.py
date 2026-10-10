@@ -10,6 +10,7 @@ from agent.debug_log import log_event, log_exception
 from tools import (
     WebSearch,
     appSettings,
+    approval,
     automation,
     createTool,
     curl,
@@ -124,6 +125,10 @@ def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
         if request.question_request is None:
             return 'toolError: "question request is missing question_request."'
         return question.waiting_result(request.question_request)
+    if request.name == "approval":
+        if request.approval_request is None:
+            return 'toolError: "approval request is missing approval_request."'
+        return approval.waiting_result(request.approval_request)
     return f'toolError: "unknown tool: {request.name}"'
 
 

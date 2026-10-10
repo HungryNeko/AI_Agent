@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from agent.config import get_model_config
+from agent.config import get_model_config, models_to_try
 from agent.debug_log import log_event, log_exception
 
 
@@ -97,7 +97,36 @@ def complete_chat_once(
     tool_choice: str | dict[str, Any] | None = None,
     max_tokens: int | None = None,
 ) -> dict[str, Any]:
-    """Send one request and return the assistant message."""
+    """Send one request and return the assistant message.
+
+    The default model falls back along the user's priority chain when a request fails;
+    an explicitly chosen non-default model is tried alone.
+    """
+
+    candidates = models_to_try(model)
+    last_error: Exception | None = None
+    for index, candidate in enumerate(candidates):
+        try:
+            return complete_chat_with_model(
+                messages, model=candidate, tools=tools, tool_choice=tool_choice, max_tokens=max_tokens
+            )
+        except Exception as exc:  # noqa: BLE001 - any failure of this model moves on to the next
+            last_error = exc
+            if index + 1 < len(candidates):
+                log_event("llm.fallback", failed=candidate, next=candidates[index + 1], error=str(exc))
+    assert last_error is not None
+    raise last_error
+
+
+def complete_chat_with_model(
+    messages: list[dict[str, Any]],
+    *,
+    model: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
+    max_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Send one request to exactly one model."""
 
     config = get_model_config(model)
     api_key = config.api_key_value

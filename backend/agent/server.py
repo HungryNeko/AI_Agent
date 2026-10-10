@@ -22,7 +22,15 @@ from pydantic import BaseModel, Field
 from agent import session_store
 from agent.app_settings import load_app_settings, patch_app_settings, save_app_settings
 from agent.automation_runner import list_run_records, start_runner, stop_runner
-from agent.config import list_model_items, load_config, merge_config_secrets, public_config, save_config
+from agent import titles
+from agent.config import (
+    list_model_items,
+    load_config,
+    merge_config_secrets,
+    public_config,
+    save_config,
+    sync_default_from_priority,
+)
 from agent.debug_log import log_event, log_exception
 from agent.graph import ChatState, stream_turn
 from agent.instructions import load_instruction, save_instruction
@@ -49,7 +57,10 @@ USER_DATA_ROOTS = {
     "memory": USER_DATA_ROOT / "memory",
     "skills": USER_DATA_ROOT / "skills",
 }
-ALLOWED_DATA_ROOTS = {kind: (SYSTEM_DATA_ROOTS[kind], USER_DATA_ROOTS[kind]) for kind in SYSTEM_DATA_ROOTS}
+ALLOWED_DATA_ROOTS: dict[str, Any] = {kind: (SYSTEM_DATA_ROOTS[kind], USER_DATA_ROOTS[kind]) for kind in SYSTEM_DATA_ROOTS}
+# Saved plan copies are user output, not RAG sources: one writable root, no reindex.
+ALLOWED_DATA_ROOTS["plans"] = DATA_ROOT / "plans"
+NON_RAG_KINDS = {"plans"}
 MCP_CONFIG_PATH = DATA_ROOT / "mcp" / "servers.json"
 TEXT_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml"}
 ARTIFACT_ROOTS = [
@@ -186,6 +197,11 @@ class StopChatRequest(BaseModel):
 
 class BranchPayload(BaseModel):
     event_index: int = Field(ge=0)
+    before: bool = False
+
+
+class TruncatePayload(BaseModel):
+    event_index: int = Field(ge=0)
 
 
 class PlanDecisionPayload(BaseModel):
@@ -232,7 +248,7 @@ class SkillPayload(BaseModel):
 
 
 class DataImportPayload(BaseModel):
-    kind: Literal["knowledge", "memory", "skills"]
+    kind: Literal["knowledge", "memory", "skills", "plans"]
     name: str
     content: str
     split_mode: Literal["simple", "llm"] | None = None
@@ -338,7 +354,7 @@ def get_config() -> dict[str, Any]:
 def put_config(payload: ConfigPayload) -> dict[str, Any]:
     if not isinstance(payload.config.get("providers"), dict):
         raise HTTPException(status_code=400, detail="config.providers must be an object")
-    private_config = merge_config_secrets(load_config(), payload.config)
+    private_config = sync_default_from_priority(merge_config_secrets(load_config(), payload.config))
     merged = save_config(private_config, DATA_ROOT / "api_configs.local.json")
     return {"path": "data/api_configs.local.json", "status": "saved", "config": public_config(merged)}
 
@@ -481,13 +497,22 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
                     turn_events.append(stopped_event)
                     yield encode_sse(stopped_event)
                     break
-            session_store.save_turn(
+            saved = session_store.save_turn(
                 conversation_id,
                 user_text=payload.display_message or payload.message,
                 turn_events=turn_events,
                 state=final_state or public_state(state),
                 attachments=[model_to_dict(item) for item in payload.attachments],
             )
+            if len(saved.get("events") or []) == len(turn_events) + 1 and saved.get("title_auto"):
+                answer = next((str(e.get("text") or "") for e in reversed(turn_events) if e.get("type") == "assistant"), "")
+                titles.schedule_title(
+                    conversation_id,
+                    payload.display_message or payload.message,
+                    answer,
+                    str(state.get("model") or "") or None,
+                    session_store,
+                )
         except Exception as exc:  # noqa: BLE001
             log_exception("http.chat_stream_error", exc, message=payload.message)
             error_event = {
@@ -530,11 +555,41 @@ def conversations(limit: int = Query(50, ge=1, le=100), query: str = Query("")) 
 
 
 @app.get("/api/conversations/{conversation_id}")
-def conversation(conversation_id: str) -> dict[str, Any]:
+def conversation(
+    conversation_id: str,
+    limit: int | None = Query(None, ge=1, le=1000),
+    before: int | None = Query(None, ge=0),
+    since: int | None = Query(None, ge=0),
+    state: bool = Query(True),
+) -> dict[str, Any]:
+    """Full conversation, or with ``limit`` a page of events ending before ``before``."""
+
     try:
-        return session_store.read_conversation(conversation_id)
+        if limit is None and before is None and since is None:
+            return session_store.read_conversation(conversation_id)
+        return session_store.read_conversation_page(
+            conversation_id, limit=limit or 80, before=before, since=since, include_state=state
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/conversations/{conversation_id}/truncate")
+def truncate_conversation(conversation_id: str, payload: TruncatePayload) -> dict[str, Any]:
+    try:
+        conversation = session_store.truncate_conversation(conversation_id, payload.event_index)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "truncated", **conversation}
+
+
+@app.delete("/api/conversations/{conversation_id}/plan")
+def delete_conversation_plan(conversation_id: str) -> dict[str, Any]:
+    try:
+        conversation = session_store.clear_plan(conversation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "deleted", **conversation}
 
 
 @app.post("/api/conversations/{conversation_id}/compress")
@@ -549,7 +604,7 @@ def compress_conversation(conversation_id: str) -> dict[str, Any]:
 @app.post("/api/conversations/{conversation_id}/branch")
 def branch_conversation(conversation_id: str, payload: BranchPayload) -> dict[str, Any]:
     try:
-        conversation = session_store.branch_conversation(conversation_id, payload.event_index)
+        conversation = session_store.branch_conversation(conversation_id, payload.event_index, before=payload.before)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "branched", **conversation}
@@ -642,6 +697,16 @@ def resolve_rag_ingestion_options(
     return mode, chunk_model.strip() or str(saved_model or "").strip()
 
 
+def refresh_rag_for(path: Path, split_mode: str | None = None, chunk_model: str = "") -> dict[str, Any] | None:
+    """Reindex only when ``path`` lives in a RAG source (not in e.g. saved plans)."""
+
+    for kind in NON_RAG_KINDS & ALLOWED_DATA_ROOTS.keys():
+        for _, root, _ in iter_data_roots(kind):
+            if is_relative_to(path.resolve(), root.resolve()):
+                return None
+    return refresh_rag(split_mode, chunk_model)
+
+
 def refresh_rag(split_mode: str | None = None, chunk_model: str = "") -> dict[str, Any]:
     mode, model = resolve_rag_ingestion_options(split_mode, chunk_model)
     settings = make_tool_settings(rag_mode="auto")
@@ -721,7 +786,7 @@ def uploaded_file(upload_id: str, filename: str) -> FileResponse:
 
 
 @app.get("/api/data/files")
-def list_data_files(kind: Literal["knowledge", "memory", "skills"] = Query(...)) -> dict[str, Any]:
+def list_data_files(kind: Literal["knowledge", "memory", "skills", "plans"] = Query(...)) -> dict[str, Any]:
     items = list_data_file_items(kind)
     return {"kind": kind, "files": [item["path"] for item in items], "items": items}
 
@@ -751,7 +816,7 @@ def write_data_file(payload: DataFilePayload) -> dict[str, Any]:
     return {
         "path": relative_to_project(resolved),
         "status": "saved",
-        "rag": refresh_rag(payload.split_mode, payload.chunk_model),
+        "rag": refresh_rag_for(resolved, payload.split_mode, payload.chunk_model),
     }
 
 
@@ -772,7 +837,7 @@ def import_data_file(payload: DataImportPayload) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="unsupported text file type")
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(payload.content, encoding="utf-8")
-    status = refresh_rag(payload.split_mode, payload.chunk_model)
+    status = refresh_rag_for(resolved, payload.split_mode, payload.chunk_model)
     return {"path": relative_to_project(resolved), "status": "saved", "rag": status}
 
 
@@ -798,7 +863,7 @@ def rename_data_file(payload: DataRenamePayload) -> dict[str, Any]:
     if target.exists():
         raise HTTPException(status_code=409, detail="target already exists")
     resolved.rename(target)
-    status = refresh_rag(payload.split_mode, payload.chunk_model)
+    status = refresh_rag_for(target, payload.split_mode, payload.chunk_model)
     return {"path": relative_to_project(target), "status": "renamed", "rag": status}
 
 
@@ -812,7 +877,7 @@ def delete_data_file(
     if not writable:
         raise HTTPException(status_code=403, detail="system files are read-only")
     resolved.unlink()
-    status = refresh_rag(split_mode, chunk_model)
+    status = refresh_rag_for(resolved, split_mode, chunk_model)
     return {"path": relative_to_project(resolved), "status": "deleted", "rag": status}
 
 
@@ -1045,7 +1110,7 @@ def resolve_data_path(path_text: str, *, allow_missing: bool = False) -> tuple[P
                     raise HTTPException(status_code=404, detail="file not found")
                 item_scope, item_writable = classify_data_file(resolved, scope, writable)
                 return resolved, item_scope, item_writable
-    allowed = "data/knowledge, data/memory, data/skills, or backend/runtime/user_data"
+    allowed = "data/knowledge, data/memory, data/skills, data/plans, or backend/runtime/user_data"
     raise HTTPException(status_code=400, detail=f"path must stay inside {allowed}")
 
 

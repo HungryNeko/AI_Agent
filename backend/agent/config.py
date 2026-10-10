@@ -126,6 +126,68 @@ def list_model_items(data: dict[str, Any] | None = None) -> list[dict[str, str]]
     return items
 
 
+def default_model_chain(data: dict[str, Any] | None = None) -> list[str]:
+    """Ordered ``provider:model`` values to try for the default model.
+
+    ``model_priority`` is the full user-sorted list and ``model_priority_cutoff`` says how
+    many of its first (still existing) models are used. Models below the cutoff are never
+    tried, even when every model above it fails.
+    """
+
+    config = data if data is not None else load_config()
+    order = config.get("model_priority")
+    cutoff = config.get("model_priority_cutoff")
+    if not isinstance(order, list) or isinstance(cutoff, bool) or not isinstance(cutoff, int) or cutoff < 1:
+        return []
+    available = {item["value"] for item in list_model_items(config)}
+    chain: list[str] = []
+    for value in order:
+        if isinstance(value, str) and value in available and value not in chain:
+            chain.append(value)
+    return chain[:cutoff]
+
+
+def sync_default_from_priority(data: dict[str, Any]) -> dict[str, Any]:
+    """Keep ``default_provider``/``default_model`` pointing at the head of the chain."""
+
+    chain = default_model_chain(data)
+    if chain:
+        provider, _, model_id = chain[0].partition(":")
+        data["default_provider"] = provider
+        data["default_model"] = model_id
+    return data
+
+
+def models_to_try(requested: str | None = None) -> list[str | None]:
+    """Models for one request: the whole default chain, or just the explicit choice.
+
+    A model picked on purpose that is not the chain head never falls back; the
+    ``AI_AGENT_DEFAULT_MODEL`` override also bypasses the chain.
+    """
+
+    if not requested and os.getenv("AI_AGENT_DEFAULT_MODEL"):
+        return [requested]
+    try:
+        chain = default_model_chain()
+    except (OSError, ValueError):
+        return [requested]
+    if not chain:
+        return [requested]
+    if requested and not same_model(requested, chain[0]):
+        return [requested]
+    return list(chain)
+
+
+def same_model(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    try:
+        a, b = get_model_config(left), get_model_config(right)
+    except ValueError:
+        return False
+    return (a.provider, a.model_id) == (b.provider, b.model_id)
+
+
 def local_config_path() -> Path:
     return CONFIG_PATH.with_name("api_configs.local.json")
 
