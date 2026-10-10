@@ -15,9 +15,11 @@ echo "Compose file: $COMPOSE_FILE"
 
 if [ -d .git ]; then
   echo "Fetching latest code..."
-  git fetch --all --prune
+  git fetch --prune origin
   current_branch="$(git rev-parse --abbrev-ref HEAD)"
-  git pull --ff-only origin "$current_branch"
+  # Match the remote exactly. A fast-forward-only pull aborts whenever the remote history was
+  # rewritten; runtime data lives in ignored paths (docker-data, .env) and is not touched.
+  git reset --hard "origin/$current_branch"
 else
   echo "No .git directory found, skip git pull."
 fi
