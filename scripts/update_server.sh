@@ -15,7 +15,17 @@ echo "Compose file: $COMPOSE_FILE"
 
 if [ -d .git ]; then
   echo "Fetching latest code..."
-  git fetch --prune origin
+  # The server reaches GitHub over a flaky link (TLS drops, timeouts), so retry.
+  attempt=1
+  until git -c http.version=HTTP/1.1 fetch --prune origin; do
+    if [ "$attempt" -ge 6 ]; then
+      echo "git fetch failed after $attempt attempts." >&2
+      exit 1
+    fi
+    echo "git fetch failed (attempt $attempt/6), retrying..."
+    attempt=$((attempt + 1))
+    sleep $((attempt * 5))
+  done
   current_branch="$(git rev-parse --abbrev-ref HEAD)"
   # Match the remote exactly. A fast-forward-only pull aborts whenever the remote history was
   # rewritten; runtime data lives in ignored paths (docker-data, .env) and is not touched.

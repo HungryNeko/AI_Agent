@@ -106,7 +106,7 @@ jobs:
             -o ServerAliveCountMax=20 \
             -o TCPKeepAlive=yes \
             "$SERVER_USER@$SERVER_HOST" \
-            "if [ ! -d '$SERVER_APP_DIR/.git' ]; then git clone '$REPO_URL' '$SERVER_APP_DIR'; fi && cd '$SERVER_APP_DIR' && git fetch --prune origin && git reset --hard origin/\$(git rev-parse --abbrev-ref HEAD) && exec sh scripts/update_server.sh" \
+            "if [ ! -d '$SERVER_APP_DIR/.git' ]; then git clone '$REPO_URL' '$SERVER_APP_DIR'; fi && cd '$SERVER_APP_DIR' && { n=0; until git -c http.version=HTTP/1.1 fetch --prune origin; do n=\$((n + 1)); [ \$n -ge 6 ] && exit 1; echo \"git fetch failed (attempt \$n/6), retrying...\"; sleep \$((n * 5)); done; } && git reset --hard origin/\$(git rev-parse --abbrev-ref HEAD) && exec sh scripts/update_server.sh" \
             2>&1 | tee deploy.log
           cat deploy.log >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"

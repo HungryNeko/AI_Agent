@@ -64,6 +64,9 @@ def test_deploy_creates_shared_network_and_checks_gateway():
     assert "git reset --hard origin/" in deploy_workflow
     assert 'git reset --hard "origin/$current_branch"' in update_script
     assert "&& exec sh scripts/update_server.sh" in deploy_workflow
+    # GitHub is reached over a flaky link from the server: fetch must be retried
+    assert "until git -c http.version=HTTP/1.1 fetch --prune origin" in deploy_workflow
+    assert "until git -c http.version=HTTP/1.1 fetch --prune origin" in update_script
     # the verification script must not be fed through ssh stdin (commands inside would eat it)
     assert "base64 -d" in deploy_workflow
     assert "ai via gateway ready" in deploy_workflow
