@@ -3452,3 +3452,268 @@ a:focus-visible,
     width: 96px;
   }
 }
+
+
+/* ---- Background sub-agents ---- */
+.subagentTray {
+  border-top: 1px solid rgba(100, 116, 139, 0.3);
+  background: rgba(100, 116, 139, 0.05);
+  animation: dockUp 160ms ease;
+}
+
+.subagentBar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px max(14px, calc((100% - 860px) / 2));
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.subagentBar span {
+  margin-right: auto;
+  color: #6b7280;
+}
+
+.subagentChevron {
+  transition: transform 140ms ease;
+}
+
+.subagentChevron.open {
+  transform: rotate(90deg);
+}
+
+.subagentList {
+  display: grid;
+  gap: 6px;
+  max-height: 34vh;
+  overflow: auto;
+  padding: 2px max(14px, calc((100% - 860px) / 2)) 10px;
+}
+
+.subagentCard {
+  padding: 7px 10px;
+  border: 1px solid rgba(100, 116, 139, 0.32);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.subagentCard.status-running,
+.subagentCard.status-queued {
+  border-left-color: #2563eb;
+}
+
+.subagentCard.status-done {
+  border-left-color: #16a34a;
+}
+
+.subagentCard.status-failed,
+.subagentCard.status-timeout,
+.subagentCard.status-interrupted {
+  border-left-color: #dc2626;
+}
+
+.subagentCard.status-cancelled {
+  border-left-color: #9ca3af;
+}
+
+.subagentHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.subagentTitle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+
+.subagentTitle b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagentTitle small {
+  flex: none;
+  margin-left: auto;
+}
+
+.subagentStatusDot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #9ca3af;
+}
+
+.status-done .subagentStatusDot {
+  background: #16a34a;
+}
+
+.status-failed .subagentStatusDot,
+.status-timeout .subagentStatusDot,
+.status-interrupted .subagentStatusDot {
+  background: #dc2626;
+}
+
+.subagentLine {
+  margin: 4px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.subagentLine.error {
+  color: #dc2626;
+}
+
+.subagentDetail {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(100, 116, 139, 0.35);
+  font-size: 13px;
+}
+
+.subagentDetail .markdownBody {
+  max-height: 220px;
+  overflow: auto;
+}
+
+.subagentSteps {
+  margin: 0 0 6px;
+  padding-left: 18px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.event-user.wakeNotice {
+  justify-self: center;
+  max-width: 100%;
+  padding: 4px 12px;
+  border: 1px dashed rgba(100, 116, 139, 0.5);
+  border-radius: 999px;
+  background: transparent;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.event-user.wakeNotice .markdownBody {
+  font-size: 12px;
+}
+
+:root[data-theme="dark"] .subagentCard {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .subagentCard {
+    background: rgba(255, 255, 255, 0.04);
+  }
+}
+
+
+/* ---- Task list + background badge in the agents tray ---- */
+.taskList {
+  display: grid;
+  gap: 3px;
+  margin: 0 0 4px;
+  padding: 6px 10px;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  border-radius: 8px;
+  list-style: none;
+}
+
+.taskItem {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.taskMark {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: #6b7280;
+}
+
+.taskTitle {
+  flex: 1;
+  min-width: 0;
+}
+
+.taskItem.task-done .taskMark {
+  color: #16a34a;
+}
+
+.taskItem.task-done .taskTitle {
+  color: #6b7280;
+  text-decoration: line-through;
+}
+
+.taskItem.task-running .taskMark {
+  color: #2563eb;
+}
+
+.taskItem.task-failed .taskMark {
+  color: #dc2626;
+}
+
+.bgBadge {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.16);
+  color: #2563eb;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+
+/* ---- Keep long agent text from widening the chat pane ---- */
+.chatPane {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.chatPane > * {
+  min-width: 0;
+}
+
+.subagentTray,
+.subagentList,
+.subagentCard,
+.subagentHead,
+.taskList {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.subagentList {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.subagentCard {
+  overflow: hidden;
+}
+
+.subagentLine {
+  max-width: 100%;
+}

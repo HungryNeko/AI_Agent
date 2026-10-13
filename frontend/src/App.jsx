@@ -6,6 +6,7 @@ import remarkMath from "remark-math";
 import {
   Archive,
   AtSign,
+  Bot,
   Check,
   ChevronDown,
   ChevronRight,
@@ -254,6 +255,12 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
   // False while local event indices may not match the saved conversation (until the next resync).
   const [indexTrusted, setIndexTrusted] = useState(true);
   const eventOffsetRef = useRef(0);
+  // Background sub-agents of this conversation and the server-started "wake" turn (if one is running).
+  const [subagents, setSubagents] = useState({});
+  const [agentTasks, setAgentTasks] = useState([]);
+  const conversationIdRef = useRef("");
+  const wakeRunIdRef = useRef("");
+  const liveHandlerRef = useRef(() => {});
   const busyRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const scrollRestoreRef = useRef(null);
@@ -294,12 +301,44 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
   // tall stale card cannot cover the new messages; it reappears (and scrolls into
   // view) once the turn ends.
   eventOffsetRef.current = eventOffset;
+  conversationIdRef.current = conversationId;
+  liveHandlerRef.current = handleLiveEvent;
 
   const displayPlan = livePlan || state?.plan || null;
 
   useEffect(() => {
     busyRef.current = busy;
   }, [busy]);
+
+  // Things that happen outside this tab's own request: sub-agent updates and server-started wake turns.
+  useEffect(() => {
+    setSubagents({});
+    setAgentTasks([]);
+    if (!conversationId) return undefined;
+    let closed = false;
+    const controller = new AbortController();
+    (async () => {
+      let attempt = 0;
+      while (!closed) {
+        try {
+          const response = await fetch(`${API_BASE}/api/conversations/${encodeURIComponent(conversationId)}/live`, { signal: controller.signal });
+          if (response.ok && response.body) {
+            attempt = 0;
+            await readSse(response.body, (liveEvent) => liveHandlerRef.current(liveEvent));
+          }
+        } catch (error) {
+          if (closed || error?.name === "AbortError") return;
+        }
+        if (closed) return;
+        attempt += 1;
+        await new Promise((resolve) => window.setTimeout(resolve, Math.min(15000, 1000 * attempt)));
+      }
+    })();
+    return () => {
+      closed = true;
+      controller.abort();
+    };
+  }, [conversationId]);
 
   // Keep the viewport anchored when older events are prepended above it.
   useLayoutEffect(() => {
@@ -521,6 +560,69 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
     await runChatTurn(nextMessage, nextAttachments, nextMessage);
   }
 
+  // Apply one event of a running turn to the view (shared by user turns and server-started wake turns).
+  function applyStreamEvent(eventData) {
+    setEvents((items) => [...items, eventData]);
+    if (eventData.type === "plan_updated" || eventData.type === "plan_ready") {
+      // Show the plan as soon as the tool call returns, even if the turn never reaches a final state.
+      atBottomRef.current = true;
+      setLivePlan({ name: eventData.name, content: eventData.content, status: eventData.status });
+    }
+    if (eventData.type === "question_required" || eventData.type === "approval_request") setPendingQuestion(eventData);
+    if (eventData.type === "model_changed") setConversationModel(eventData.text || "");
+    if (eventData.type === "models_changed") onModelsChanged?.().catch(() => {});
+    if (eventData.type === "assistant" && eventData.state) {
+      setState(eventData.state);
+      setConversationModel(eventData.state.model || conversationModel || "");
+      setPendingQuestion(eventData.state.question_pending || null);
+    }
+    if (eventData.type === "settings_changed") onSettingsChanged?.().catch(() => {});
+  }
+
+  function handleLiveEvent(liveEvent) {
+    if (liveEvent.conversation_id && liveEvent.conversation_id !== conversationIdRef.current) return;
+    switch (liveEvent.type) {
+      case "subagents_snapshot":
+        setSubagents(Object.fromEntries((liveEvent.agents || []).map((agent) => [agent.id, agent])));
+        setAgentTasks(liveEvent.tasks || []);
+        return;
+      case "tasklist_update":
+        setAgentTasks(liveEvent.tasks || []);
+        return;
+      case "subagent_update":
+        if (liveEvent.agent) setSubagents((current) => ({ ...current, [liveEvent.agent.id]: liveEvent.agent }));
+        return;
+      case "wake_started":
+        wakeRunIdRef.current = liveEvent.run_id;
+        activeRunIdRef.current = liveEvent.run_id;
+        atBottomRef.current = true;
+        busyRef.current = true;
+        setBusy(true);
+        return;
+      case "wake_finished":
+        if (wakeRunIdRef.current === liveEvent.run_id) {
+          wakeRunIdRef.current = "";
+          if (activeRunIdRef.current === liveEvent.run_id) activeRunIdRef.current = "";
+          busyRef.current = false;
+          setBusy(false);
+          setPaused(false);
+          resyncEvents(conversationIdRef.current, { force: true });
+          refreshConversations();
+        }
+        return;
+      default:
+        if (liveEvent.run_id && liveEvent.run_id === wakeRunIdRef.current) applyStreamEvent(liveEvent);
+    }
+  }
+
+  async function cancelSubagent(agentId) {
+    try {
+      await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/subagents/${encodeURIComponent(agentId)}/cancel`, { method: "POST" });
+    } catch (error) {
+      setHistoryStatus(`${text("取消失败：", "Cancel failed: ")}${String(error.message || error)}`);
+    }
+  }
+
   async function runChatTurn(nextMessage, nextAttachments = [], displayMessage = nextMessage, overrides = {}) {
     if (!nextMessage.trim() || busy) return;
     atBottomRef.current = true;
@@ -559,7 +661,6 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
       if (!response.body) throw new Error("HTTP response has no stream body");
       await readSse(response.body, (eventData) => {
-        setEvents((items) => [...items, eventData]);
         if (["assistant", "stopped"].includes(eventData.type) || (eventData.type === "error" && eventData.terminal)) {
           streamCompleted = true;
         }
@@ -567,20 +668,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
           activeConversationId = eventData.conversation_id;
           setConversationId(eventData.conversation_id);
         }
-        if (eventData.type === "plan_updated" || eventData.type === "plan_ready") {
-          // Show the plan as soon as the tool call returns, even if the turn never reaches a final state.
-          atBottomRef.current = true;
-          setLivePlan({ name: eventData.name, content: eventData.content, status: eventData.status });
-        }
-        if (eventData.type === "question_required" || eventData.type === "approval_request") setPendingQuestion(eventData);
-        if (eventData.type === "model_changed") setConversationModel(eventData.text || "");
-        if (eventData.type === "models_changed") onModelsChanged?.().catch(() => {});
-        if (eventData.type === "assistant" && eventData.state) {
-          setState(eventData.state);
-          setConversationModel(eventData.state.model || conversationModel || "");
-          setPendingQuestion(eventData.state.question_pending || null);
-        }
-        if (eventData.type === "settings_changed") onSettingsChanged?.().catch(() => {});
+        applyStreamEvent(eventData);
       });
       if (!streamCompleted) {
         throw new Error(text("响应流意外结束，后端没有返回最终结果。", "The response stream ended without a final result."));
@@ -603,7 +691,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
         abortRef.current = null;
         activeRunIdRef.current = "";
         stopRequestedRef.current = false;
-        setBusy(false);
+        if (!wakeRunIdRef.current) setBusy(false);
         setPaused(false);
       }
     }
@@ -712,7 +800,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
   // and puts its text back in the composer, so it can be sent (or changed) as a new path.
   async function branchConversation(event) {
     if (!conversationId || busy || !Number.isInteger(event?.eventIndex)) return;
-    const atUserMessage = event.type === "user";
+    const atUserMessage = event.type === "user" && !event.source;
     try {
       const data = await fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/branch`, {
         method: "POST",
@@ -1008,6 +1096,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
           />
           <PlanReviewCard plan={busy ? null : displayPlan} busy={busy} onApprove={() => reviewPlan("approved")} onReject={() => reviewPlan("rejected")} onRevise={revisePlan} onSave={savePlanCopy} onDelete={deletePlan} text={text} />
         </div>
+        <SubagentTray agents={subagents} tasks={agentTasks} conversationId={conversationId} onCancel={cancelSubagent} text={text} />
         <QuestionDialog
           key={`${pendingQuestion?.run_id || "saved"}:${pendingQuestion?.question || ""}`}
           question={pendingQuestion?.kind === "approval" ? null : pendingQuestion}
@@ -1391,6 +1480,102 @@ function QuestionDialog({ question, busy, onRespond, text }) {
   );
 }
 
+function SubagentTray({ agents, tasks = [], conversationId, onCancel, text }) {
+  const list = Object.values(agents).sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
+  const [open, setOpen] = useState(true);
+  const [expanded, setExpanded] = useState("");
+  const [detail, setDetail] = useState(null);
+  const [now, setNow] = useState(Date.now());
+  const active = (agent) => agent.status === "running" || agent.status === "queued";
+  const runningCount = list.filter(active).length;
+
+  useEffect(() => {
+    if (runningCount === 0) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [runningCount]);
+
+  useEffect(() => {
+    if (!expanded) {
+      setDetail(null);
+      return;
+    }
+    let stale = false;
+    fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/subagents/${encodeURIComponent(expanded)}`)
+      .then((data) => { if (!stale) setDetail(data); })
+      .catch(() => {});
+    return () => { stale = true; };
+  }, [expanded, conversationId, list.find((agent) => agent.id === expanded)?.status]);
+
+  if (list.length === 0 && tasks.length === 0) return null;
+  const elapsed = (agent) => {
+    const seconds = active(agent) ? Math.max(0, now / 1000 - (agent.startedAt || now / 1000)) : agent.elapsedSeconds || 0;
+    return seconds >= 60 ? `${Math.floor(seconds / 60)}m${String(Math.floor(seconds % 60)).padStart(2, "0")}s` : `${Math.floor(seconds)}s`;
+  };
+  const statusLabel = {
+    queued: text("排队中", "Queued"), running: text("运行中", "Running"), done: text("已完成", "Done"),
+    failed: text("失败", "Failed"), cancelled: text("已取消", "Cancelled"), timeout: text("超时", "Timed out"),
+    interrupted: text("已中断", "Interrupted"),
+  };
+
+  return (
+    <section className="subagentTray" aria-label={text("后台任务", "Background agents")}>
+      <button className="subagentBar" type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        <Bot size={15} />
+        <strong>{text("后台任务", "Background agents")}</strong>
+        <span>{runningCount > 0 ? text(`${runningCount} 个运行中`, `${runningCount} running`) : text("全部完成", "All finished")} · {list.length}</span>
+        <ChevronRight size={14} className={open ? "subagentChevron open" : "subagentChevron"} />
+      </button>
+      {open && (
+        <div className="subagentList">
+          {tasks.length > 0 && (
+            <ol className="taskList" aria-label={text("任务列表", "Task list")}>
+              {tasks.map((task) => (
+                <li className={`taskItem task-${task.status}`} key={task.id}>
+                  <span className="taskMark" aria-hidden="true">{{ done: "✓", failed: "✗", cancelled: "–", running: "…", pending: "○" }[task.status] || "○"}</span>
+                  <span className="taskTitle">{task.title}</span>
+                  <small>{{ done: text("完成", "done"), failed: text("失败", "failed"), cancelled: text("已取消", "cancelled"), running: text("进行中", "running"), pending: text("待办", "pending") }[task.status]}</small>
+                </li>
+              ))}
+            </ol>
+          )}
+          {list.map((agent) => (
+            <article className={`subagentCard status-${agent.status}`} key={agent.id}>
+              <div className="subagentHead">
+                <button className="subagentTitle" type="button" onClick={() => setExpanded(expanded === agent.id ? "" : agent.id)}>
+                  {active(agent) ? <span className="runningDot" /> : <span className="subagentStatusDot" />}
+                  <b>{agent.name}</b>
+                  {agent.background && <em className="bgBadge" title={text("有意后台运行：不会随对话结束被终止", "Deliberately in the background: not killed when the turn ends")}>{text("后台", "BG")}</em>}
+                  <small>{statusLabel[agent.status] || agent.status} · {elapsed(agent)}{agent.rounds ? ` · ${agent.rounds} ${text("步", "steps")}` : ""}</small>
+                </button>
+                {active(agent) && (
+                  <button className="miniButton dangerMini" type="button" onClick={() => onCancel(agent.id)} title={text("取消这个任务", "Cancel this agent")} aria-label={text("取消", "Cancel")}>
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+              {active(agent) && agent.activity && <p className="subagentLine">{agent.activity}</p>}
+              {!active(agent) && agent.error && <p className="subagentLine error">{agent.killReason ? `${text("已终止：", "Killed: ")}${agent.killReason}` : agent.error}</p>}
+              {!active(agent) && !agent.error && agent.result && expanded !== agent.id && <p className="subagentLine">{agent.result}</p>}
+              {expanded === agent.id && (
+                <div className="subagentDetail">
+                  {detail?.prompt && <details><summary>{text("任务", "Task")}</summary><MarkdownText text={detail.prompt} /></details>}
+                  {detail?.events?.length > 0 && (
+                    <ul className="subagentSteps">
+                      {detail.events.filter((item) => item.type === "tool_call").slice(-12).map((item, index) => <li key={index}>{item.text}</li>)}
+                    </ul>
+                  )}
+                  {detail?.fullResult ? <MarkdownText text={detail.fullResult} /> : <p className="subagentLine">{text("尚无结果。", "No result yet.")}</p>}
+                </div>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function ApprovalDialog({ approval, busy, onRespond, text }) {
   const [note, setNote] = useState("");
   const [minimized, setMinimized] = useState(false);
@@ -1501,7 +1686,8 @@ function StreamEvent({ event, compact = false, onPreviewImage, onBranch, onEdit 
   const body = stringifyEventText(event, fallback);
   const images = extractLooseImages(body);
   const canFork = Boolean(onBranch) && Number.isInteger(event.eventIndex);
-  const canEdit = type === "user" && Boolean(onEdit) && Number.isInteger(event.eventIndex);
+  const isWake = type === "user" && event.source === "wake";
+  const canEdit = type === "user" && !isWake && Boolean(onEdit) && Number.isInteger(event.eventIndex);
 
   function startEdit() {
     setDraft(event.text || "");
@@ -1516,8 +1702,8 @@ function StreamEvent({ event, compact = false, onPreviewImage, onBranch, onEdit 
   }
 
   return (
-    <article className={`event event-${type}${compact ? " compact" : ""}${editing ? " isEditing" : ""}`}>
-      <div className="eventType">{eventLabel(type)}</div>
+    <article className={`event event-${type}${isWake ? " wakeNotice" : ""}${compact ? " compact" : ""}${editing ? " isEditing" : ""}`}>
+      <div className="eventType">{isWake ? "BACKGROUND" : eventLabel(type)}</div>
       {(canEdit || canFork) && !editing && (
         <div className="eventActions">
           {canEdit && <button className="branchButton" type="button" onClick={startEdit} title="编辑并从这里重新生成 / Edit and regenerate from here" aria-label="Edit"><Pencil size={14} /></button>}
