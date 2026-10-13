@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from tools import filelock
 from tools.settings import FileReaderSettings
 
 TEXT_SUFFIXES = {
@@ -79,6 +80,11 @@ def read(request: FileReadRequest, settings: FileReaderSettings) -> dict[str, An
     """Extract bounded text and metadata from a supported project or uploaded file."""
 
     path = resolve_path(request.path, settings)
+    with filelock.locked(path, write=False):
+        return read_resolved(request, settings, path)
+
+
+def read_resolved(request: FileReadRequest, settings: FileReaderSettings, path: Path) -> dict[str, Any]:
     size = path.stat().st_size
     if size > settings.max_file_bytes:
         raise ValueError(f"file is too large to read: {size} bytes")

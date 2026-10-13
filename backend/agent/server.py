@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import re
@@ -10,7 +11,6 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from threading import Lock
 from typing import Any, AsyncIterator, Literal
 from urllib.parse import quote
 
@@ -22,7 +22,8 @@ from pydantic import BaseModel, Field
 from agent import session_store
 from agent.app_settings import load_app_settings, patch_app_settings, save_app_settings
 from agent.automation_runner import list_run_records, start_runner, stop_runner
-from agent import titles
+from agent import subagents, titles, wakeups
+from agent.runs import clear_cancelled_run, is_cancelled_run, is_paused_run, mark_cancelled_run, set_run_paused
 from agent.config import (
     list_model_items,
     load_config,
@@ -38,6 +39,7 @@ from tools import mcp as mcp_tool
 from tools import models as model_tool
 from tools import createTool as custom_tool
 from tools import plan as plan_tool
+from tools import python as python_tool
 from tools import rag
 from tools import parameterSave
 from tools.mcp import McpRequest
@@ -68,39 +70,6 @@ ARTIFACT_ROOTS = [
     PROJECT_ROOT / "backend" / "runtime" / "mcp_artifacts",
     PROJECT_ROOT / "backend" / "runtime" / "uploads",
 ]
-_CANCELLED_RUNS: set[str] = set()
-_CANCELLED_RUNS_LOCK = Lock()
-_PAUSED_RUNS: set[str] = set()
-
-
-def mark_cancelled_run(run_id: str) -> None:
-    with _CANCELLED_RUNS_LOCK:
-        _CANCELLED_RUNS.add(run_id)
-
-
-def is_cancelled_run(run_id: str) -> bool:
-    with _CANCELLED_RUNS_LOCK:
-        return run_id in _CANCELLED_RUNS
-
-
-def clear_cancelled_run(run_id: str) -> None:
-    with _CANCELLED_RUNS_LOCK:
-        _CANCELLED_RUNS.discard(run_id)
-
-
-def set_run_paused(run_id: str, paused: bool) -> None:
-    with _CANCELLED_RUNS_LOCK:
-        if paused:
-            _PAUSED_RUNS.add(run_id)
-        else:
-            _PAUSED_RUNS.discard(run_id)
-
-
-def is_paused_run(run_id: str) -> bool:
-    with _CANCELLED_RUNS_LOCK:
-        return run_id in _PAUSED_RUNS
-
-
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     start_runner()
@@ -108,6 +77,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         stop_runner()
+        subagents.MANAGER.shutdown()  # no agent or child process outlives the server
 
 
 app = FastAPI(title="AI Agent Backend", version="0.1.0", lifespan=lifespan)
@@ -463,15 +433,25 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     run_id = (payload.run_id or uuid.uuid4().hex).strip() or uuid.uuid4().hex
     state["conversation_id"] = conversation_id
+    state["run_id"] = run_id
+    client_rev = int((payload.state or {}).get("rev") or 0)
     clear_cancelled_run(run_id)
 
     def events():
         turn_events: list[dict[str, Any]] = []
         final_state: dict[str, Any] = {}
+        gate = wakeups.runtime(conversation_id).gate
+        owner = f"user-{run_id}"
+        while not gate.acquire(owner, timeout=1.0):
+            yield ": a background turn is running; waiting for it to finish\n\n"
         try:
+            adopt_saved_history(state, conversation_id, client_rev)
+            base_rev = session_store.current_rev(conversation_id)
             for event in stream_turn(state, payload.message):
+                gate.touch(owner)
                 while is_paused_run(run_id) and not is_cancelled_run(run_id):
                     time.sleep(0.1)
+                    gate.touch(owner)
                 if is_cancelled_run(run_id):
                     stopped_event = {
                         "type": "stopped",
@@ -482,10 +462,12 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
                     turn_events.append(stopped_event)
                     yield encode_sse(stopped_event)
                     break
-                event_with_id = {**event, "conversation_id": conversation_id, "run_id": run_id}
-                turn_events.append(event_with_id)
                 if event.get("type") == "assistant" and isinstance(event.get("state"), dict):
                     final_state = public_state(event["state"])
+                    final_state["rev"] = base_rev + 1
+                    event = {**event, "state": final_state}
+                event_with_id = {**event, "conversation_id": conversation_id, "run_id": run_id}
+                turn_events.append(event_with_id)
                 yield encode_sse(event_with_id)
                 if is_cancelled_run(run_id):
                     stopped_event = {
@@ -534,6 +516,10 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
         finally:
             set_run_paused(run_id, False)
             clear_cancelled_run(run_id)
+            # Foreground agents this turn started and left running die with it; deliberate background ones stay.
+            subagents.MANAGER.close_run(conversation_id, run_id)
+            gate.release(owner)
+            wakeups.kick(conversation_id)  # background work that finished during this turn wakes the agent now
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -572,6 +558,73 @@ def conversation(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def subagent_overview(conversation_id: str) -> dict[str, Any]:
+    """Agents, the stated task list, and the record of deliberate background / killed agents."""
+
+    manager = subagents.MANAGER
+    return {
+        "agents": [agent.summary() for agent in manager.list_agents(conversation_id)],
+        "tasks": manager.task_list(conversation_id),
+        **manager.registry(conversation_id),
+    }
+
+
+@app.get("/api/conversations/{conversation_id}/live")
+async def conversation_live(conversation_id: str, request: Request) -> StreamingResponse:
+    """Server-sent events for things that happen outside a user's own turn: sub-agent updates and wake turns."""
+
+    try:
+        session_store.conversation_path(conversation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    unsubscribe = wakeups.subscribe(conversation_id, lambda event: loop.call_soon_threadsafe(queue.put_nowait, event))
+
+    async def stream() -> AsyncIterator[str]:
+        try:
+            yield encode_sse({**subagent_overview(conversation_id), "type": "subagents_snapshot", "conversation_id": conversation_id})
+            while not await request.is_disconnected():
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                yield encode_sse(event)
+        finally:
+            unsubscribe()
+
+    return StreamingResponse(
+        stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
+
+
+@app.get("/api/conversations/{conversation_id}/subagents")
+def list_conversation_subagents(conversation_id: str) -> dict[str, Any]:
+    try:
+        session_store.conversation_path(conversation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return subagent_overview(conversation_id)
+
+
+@app.get("/api/conversations/{conversation_id}/subagents/{agent_id}")
+def get_conversation_subagent(conversation_id: str, agent_id: str) -> dict[str, Any]:
+    agent = subagents.MANAGER.get(conversation_id, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+    return {**agent.summary(with_result=True), "prompt": agent.prompt, "events": agent.events[-100:], "fullResult": agent.result}
+
+
+@app.post("/api/conversations/{conversation_id}/subagents/{agent_id}/cancel")
+def cancel_conversation_subagent(conversation_id: str, agent_id: str) -> dict[str, Any]:
+    try:
+        agent = subagents.MANAGER.cancel(conversation_id, agent_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "cancelling", "agent": agent.summary()}
 
 
 @app.post("/api/conversations/{conversation_id}/truncate")
@@ -678,6 +731,8 @@ def rename_conversation(conversation_id: str, payload: RenamePayload) -> dict[st
 @app.delete("/api/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str) -> dict[str, str]:
     try:
+        subagents.MANAGER.close_conversation(conversation_id)
+        python_tool.delete_workspaces(PROJECT_ROOT / "backend" / "runtime" / "python_runs", conversation_id)
         session_store.delete_conversation(conversation_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1026,7 +1081,7 @@ def build_chat_state(payload: ChatRequest) -> ChatState:
         "max_tool_rounds": options["max_tool_rounds"],
         "attachments": [model_to_dict(item) for item in payload.attachments],
     }
-    for key in ["messages", "initialized", "tools_announced", "conversation_summary", "web_search_results", "rag_results", "plan"]:
+    for key in HISTORY_STATE_KEYS:
         if key in previous:
             state[key] = previous[key]  # type: ignore[literal-required]
     if options.get("model"):
@@ -1058,7 +1113,26 @@ def encode_sse(event: dict[str, Any]) -> str:
 
 
 def public_state(state: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in state.items() if key not in {"settings", "message"}}
+    return {key: value for key, value in state.items() if key not in {"settings", "message", "run_id", "blocked_tools"}}
+
+
+HISTORY_STATE_KEYS = ["messages", "initialized", "tools_announced", "conversation_summary", "web_search_results", "rag_results", "plan"]
+
+
+def adopt_saved_history(state: dict[str, Any], conversation_id: str, client_rev: int) -> None:
+    """A wake turn may have advanced the conversation while this request waited: server history wins."""
+
+    try:
+        saved = session_store.read_conversation(conversation_id).get("state") or {}
+    except ValueError:
+        return
+    if int(saved.get("rev") or 0) <= client_rev:
+        return
+    for key in HISTORY_STATE_KEYS:
+        if key in saved:
+            state[key] = saved[key]
+        else:
+            state.pop(key, None)
 
 
 def allowed_root(kind: str) -> Path:

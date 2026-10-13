@@ -18,6 +18,16 @@ from tools.models import ModelRequest
 from tools.plan import PlanRequest
 from tools.approval import ApprovalRequest, normalize_risk
 from tools.question import QuestionRequest
+from tools.subagent import (
+    MAX_BLOCKING_SECONDS,
+    MAX_TASK_LIST_ITEMS,
+    MAX_TASK_PROMPT_CHARS,
+    MAX_TASKS_PER_CALL,
+    SUBAGENT_ACTIONS,
+    SubagentRequest,
+    SubagentTask,
+    TaskItem,
+)
 from tools.rag import RagRequest
 from tools.settings import ToolSettings
 
@@ -35,6 +45,7 @@ SYSTEM_TOOL_NAMES = {
     "settings",
     "question",
     "approval",
+    "agent",
     "model",
     "plan",
     "createTool",
@@ -62,6 +73,7 @@ class ToolRequest:
     custom_arguments: dict[str, Any] | None = None
     question_request: QuestionRequest | None = None
     approval_request: ApprovalRequest | None = None
+    subagent_request: SubagentRequest | None = None
     parameter_request: parameterSave.ParameterRequest | None = None
     wrapped_request: ToolRequest | None = None
 
@@ -105,6 +117,8 @@ def build_openai_tools(settings: ToolSettings) -> list[dict[str, Any]]:
         tools.append(question_tool())
     if settings.allows("approval"):
         tools.append(approval_tool())
+    if settings.allows("agent"):
+        tools.append(agent_tool())
     return tools
 
 
@@ -206,6 +220,8 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
         return ToolRequest(id=call_id, name="question", question_request=parse_question_request(parsed_arguments))
     if name == "approval":
         return ToolRequest(id=call_id, name="approval", approval_request=parse_approval_request(parsed_arguments))
+    if name == "agent":
+        return ToolRequest(id=call_id, name="agent", subagent_request=parse_subagent_request(parsed_arguments))
 
     query = require_string(parsed_arguments, "query", "tool")
     return ToolRequest(id=call_id, name=name, query=query)
@@ -393,6 +409,111 @@ def parse_settings_request(arguments: dict[str, Any]) -> SettingsRequest:
     return SettingsRequest(action=action, patch=raw_patch, settings=raw_settings)
 
 
+def parse_task_list(raw: object) -> list[TaskItem]:
+    """The task list the agent must state before it creates any task."""
+
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(
+            "agent spawn requires `taskList`: state the full list of tasks you are about to create "
+            "(array of {id, title}) before spawning any of them."
+        )
+    if len(raw) > MAX_TASK_LIST_ITEMS:
+        raise ValueError(f"taskList may have at most {MAX_TASK_LIST_ITEMS} items.")
+    items: list[TaskItem] = []
+    for index, entry in enumerate(raw):
+        if isinstance(entry, str):
+            entry = {"title": entry}
+        if not isinstance(entry, dict):
+            raise ValueError("each taskList item must be a string or an object with id and title.")
+        title = optional_string(entry.get("title")).strip()
+        if not title:
+            raise ValueError("each taskList item needs a non-empty `title`.")
+        item_id = optional_string(entry.get("id")).strip() or f"t{index + 1}"
+        if any(existing.id == item_id for existing in items):
+            raise ValueError(f"duplicate taskList id: {item_id}.")
+        items.append(TaskItem(id=item_id[:40], title=title[:200]))
+    return items
+
+
+def parse_subagent_request(arguments: dict[str, Any]) -> SubagentRequest:
+    action = require_string(arguments, "action", "agent")
+    if action not in SUBAGENT_ACTIONS:
+        raise ValueError(f"agent action must be one of: {', '.join(SUBAGENT_ACTIONS)}.")
+
+    raw_ids = arguments.get("ids")
+    single = optional_string(arguments.get("id")).strip()
+    if raw_ids is None:
+        raw_ids = [single] if single else []
+    if not isinstance(raw_ids, list) or any(not isinstance(item, str) for item in raw_ids):
+        raise ValueError("agent ids must be an array of strings.")
+    ids = tuple(dict.fromkeys(item.strip() for item in raw_ids if item.strip()))
+
+    task_list: list[TaskItem] = []
+    tasks: list[SubagentTask] = []
+    if action == "spawn":
+        task_list = parse_task_list(arguments.get("taskList"))
+        raw_tasks = arguments.get("tasks")
+        if not isinstance(raw_tasks, list) or not raw_tasks:
+            raise ValueError("agent spawn requires a non-empty `tasks` array.")
+        if len(raw_tasks) > MAX_TASKS_PER_CALL:
+            raise ValueError(f"agent spawn accepts at most {MAX_TASKS_PER_CALL} tasks per call.")
+        for index, item in enumerate(raw_tasks):
+            if not isinstance(item, dict):
+                raise ValueError("each agent task must be an object.")
+            prompt = require_string(item, "prompt", "agent task")
+            if len(prompt) > MAX_TASK_PROMPT_CHARS:
+                raise ValueError(f"agent task prompt is longer than {MAX_TASK_PROMPT_CHARS} characters.")
+            tools_mode = optional_string(item.get("tools")).strip() or "full"
+            if tools_mode not in {"full", "readonly"}:
+                raise ValueError("agent task tools must be full or readonly.")
+            rounds = optional_int(item.get("maxRounds"))
+            python_timeout = item.get("pythonTimeout")
+            known = {entry.id for entry in task_list}
+            task_id = optional_string(item.get("taskId")).strip()
+            if not task_id and len(raw_tasks) == len(task_list):
+                task_id = task_list[index].id  # same length: map by position
+            if task_id not in known:
+                raise ValueError(
+                    "each agent task needs `taskId` pointing at an item of `taskList` "
+                    f"(known ids: {', '.join(sorted(known))})."
+                )
+            tasks.append(
+                SubagentTask(
+                    name=optional_string(item.get("name")).strip()[:60] or f"agent-{index + 1}",
+                    prompt=prompt,
+                    task_id=task_id,
+                    tools=tools_mode,  # type: ignore[arg-type]
+                    model=optional_string(item.get("model")).strip(),
+                    max_rounds=min(max(rounds, 1), 100) if rounds is not None else 30,
+                    python_timeout=float(min(max(python_timeout, 10), 7200))
+                    if isinstance(python_timeout, (int, float)) and not isinstance(python_timeout, bool)
+                    else 1800.0,
+                )
+            )
+    message = optional_string(arguments.get("message")).strip()
+    if action == "send" and (len(ids) != 1 or not message):
+        raise ValueError("agent send requires exactly one `id` and a non-empty `message`.")
+    if action in {"result", "cancel"} and not ids:
+        raise ValueError(f"agent {action} requires `id` or `ids`.")
+
+    timeout = arguments.get("timeout")
+    timeout_seconds = (
+        float(min(max(timeout, 1), MAX_BLOCKING_SECONDS))
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+        else MAX_BLOCKING_SECONDS
+    )
+    wait = arguments.get("wait", True)
+    return SubagentRequest(
+        action=action,  # type: ignore[arg-type]
+        task_list=tuple(task_list),
+        tasks=tuple(tasks),
+        ids=ids,
+        message=message,
+        wait=wait if isinstance(wait, bool) else True,
+        timeout=timeout_seconds,
+    )
+
+
 def parse_approval_request(arguments: dict[str, Any]) -> ApprovalRequest:
     return ApprovalRequest(
         action=require_string(arguments, "action", "approval"),
@@ -561,7 +682,7 @@ def curl_tool() -> dict[str, Any]:
 def python_tool() -> dict[str, Any]:
     return function_tool(
         name="python",
-        description="Run Python for math, statistics, data analysis, plotting, and local scripting. The current working directory is the artifact directory; save charts/files with relative names like chart.png. For lightweight coordinate maps, `from ai_agent_maps import write_osm_scatter` is available to create OpenStreetMap/Leaflet HTML scatter-map artifacts from lat/lon points. If pythonResult lists image files, include them in the final answer as Markdown images using the exact returned path, for example ![chart](backend/runtime/python_runs/run_x/chart.png). Local file reads, network access, imports, and normal Python introspection are available; obvious destructive operations and writes outside the artifact directory are blocked.",
+        description="Run Python for math, statistics, data analysis, plotting, and local scripting. The current working directory is the artifact directory of THIS call only (every call gets a fresh one); save charts/files there with relative names like chart.png. To keep state between python calls (checkpoints, intermediate data, results of a long job) write to the persistent folder named by the predefined string variable WORKSPACE (one per conversation, separate for each sub-agent), e.g. json.dump(state, open(os.path.join(WORKSPACE, 'state.json'), 'w')); WORKSPACE is also listed in the result when it has files. For lightweight coordinate maps, `from ai_agent_maps import write_osm_scatter` is available to create OpenStreetMap/Leaflet HTML scatter-map artifacts from lat/lon points. If pythonResult lists image files, include them in the final answer as Markdown images using the exact returned path, for example ![chart](backend/runtime/python_runs/run_x/chart.png). Local file reads, network access, imports, and normal Python introspection are available; obvious destructive operations and writes outside the artifact directory are blocked.",
         properties={
             "code": {
                 "type": "string",
@@ -755,6 +876,58 @@ def approval_tool() -> dict[str, Any]:
                 "description": "Optional Markdown with commands, files, targets, side effects, or a diff the user should check.",
             },
             "risk": {"type": "string", "enum": ["low", "medium", "high"], "description": "How risky the action is."},
+        },
+        required=["action"],
+    )
+
+
+def agent_tool() -> dict[str, Any]:
+    return function_tool(
+        name="agent",
+        description=(
+            "Delegate work to sub-agents that run in parallel and in the background, each with its own "
+            "context and tools. action=spawn starts one or more tasks (wait=true blocks up to ~90s for them, "
+            "wait=false returns at once). If a sub-agent finishes while you are not waiting, the conversation "
+            "is woken with a systemEvent message, so do not poll in a loop: end your turn instead. "
+            "action=status lists agents, wait blocks for given ids, result reads a finished agent, "
+            "send continues a finished agent with feedback (refine/redo), cancel abandons one."
+        ),
+        properties={
+            "action": {"type": "string", "enum": list(SUBAGENT_ACTIONS)},
+            "taskList": {
+                "type": "array",
+                "description": (
+                    "For spawn, REQUIRED: the task list you state before creating tasks, covering the whole job "
+                    "(items you will delegate now or later). Each item: {id, title}."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}, "title": {"type": "string"}},
+                    "required": ["title"],
+                },
+            },
+            "tasks": {
+                "type": "array",
+                "description": "For spawn: independent tasks, each with a self-contained prompt.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "Short label."},
+                        "taskId": {"type": "string", "description": "Id of the taskList item this agent works on."},
+                        "prompt": {"type": "string", "description": "Complete, self-contained task description and expected report."},
+                        "tools": {"type": "string", "enum": ["full", "readonly"], "description": "readonly = no code execution or file writes."},
+                        "model": {"type": "string", "description": "Optional provider:model; default is the current model."},
+                        "maxRounds": {"type": "integer", "description": "Tool rounds budget (default 30)."},
+                        "pythonTimeout": {"type": "number", "description": "Seconds a python call may run for this agent (default 1800)."},
+                    },
+                    "required": ["prompt"],
+                },
+            },
+            "ids": {"type": "array", "items": {"type": "string"}, "description": "Agent ids for wait/status/result/cancel."},
+            "id": {"type": "string", "description": "Single agent id (send, or shorthand for ids)."},
+            "message": {"type": "string", "description": "For send: feedback or follow-up instructions."},
+            "wait": {"type": "boolean", "description": "For spawn/send: block until done (default true)."},
+            "timeout": {"type": "number", "description": "Seconds to block for wait (max 90)."},
         },
         required=["action"],
     )

@@ -102,6 +102,10 @@ class ChatState(TypedDict):
     question_pending: NotRequired[dict[str, Any] | None]
     plan: NotRequired[dict[str, str] | None]
     tools_announced: NotRequired[bool]
+    rev: NotRequired[int]
+    blocked_tools: NotRequired[list[str]]
+    run_id: NotRequired[str]
+    python_timeout_seconds: NotRequired[float]
 
 
 def first_state(state: ChatState) -> dict[str, Any]:
@@ -121,6 +125,7 @@ def first_state(state: ChatState) -> dict[str, Any]:
         curl_mode=state.get("curl_mode", "auto"),
         python=state.get("python") if "python_mode" not in state else None,
         python_mode=state.get("python_mode", "auto"),
+        python_timeout_seconds=float(state.get("python_timeout_seconds", 10.0)),
         file_reader=state.get("file_reader") if "file_reader_mode" not in state else None,
         file_reader_mode=state.get("file_reader_mode", "auto"),
         file_editor=state.get("file_editor") if "file_editor_mode" not in state else None,
@@ -137,7 +142,13 @@ def first_state(state: ChatState) -> dict[str, Any]:
     )
 
     conversation_id = state.get("conversation_id") or uuid4().hex
-    settings = replace(settings, conversation_id=conversation_id)
+    settings = replace(
+        settings,
+        conversation_id=conversation_id,
+        blocked_tools=tuple(state.get("blocked_tools") or ()),
+        run_id=str(state.get("run_id") or ""),
+        model=str(state.get("model") or ""),
+    )
     if state.get("initialized") and state.get("messages"):
         return {"settings": settings, "conversation_id": conversation_id, "conversation_mode": settings.conversation_mode}
 
@@ -792,6 +803,11 @@ def tool_call_key(request: ToolRequest) -> str:
         return f"{request.name}:{item.question}:{item.options}:{item.multiple}"
     if request.name == "approval" and request.approval_request:
         return f"{request.name}:{request.approval_request.action}:{request.approval_request.details}"
+    if request.name == "agent" and request.subagent_request:
+        item = request.subagent_request
+        if item.action in {"status", "wait", "result"}:
+            return f"{request.name}:{request.id}"  # checking on agents may legitimately repeat
+        return f"{request.name}:{item.action}:{item.ids}:{item.message}:{[(t.name, t.prompt) for t in item.tasks]}"
     return request.name
 
 
@@ -803,6 +819,16 @@ def tool_budget_allows(state: ChatState) -> bool:
 def tool_budget_reached(state: ChatState) -> bool:
     return not tool_budget_allows(state)
 
+
+
+def describe_agent_request(request: ToolRequest) -> str:
+    item = request.subagent_request
+    if item is None:
+        return "missing subagent_request"
+    if item.action == "spawn":
+        names = ", ".join(task.name for task in item.tasks)
+        return f"spawn {len(item.tasks)} ({names}){'' if item.wait else ' in background'}"
+    return f"{item.action} {', '.join(item.ids)}".strip()
 
 
 def describe_file_edit_target(request: ToolRequest) -> str:
@@ -845,6 +871,8 @@ def describe_tool_call_target(request: ToolRequest) -> str:
         return request.question_request.question
     if request.name == "approval" and request.approval_request:
         return request.approval_request.action
+    if request.name == "agent" and request.subagent_request:
+        return describe_agent_request(request)
     return request.query
 
 
@@ -1007,6 +1035,8 @@ def describe_tool_request(request: ToolRequest) -> AgentEvent:
             "tool": request.name,
             "text": f"approval: {request.approval_request.action}",
         }
+    if request.name == "agent" and request.subagent_request:
+        return {"type": "tool_call", "tool": request.name, "text": f"agent: {describe_agent_request(request)}"}
     return {
         "type": "tool_call",
         "tool": request.name,

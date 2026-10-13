@@ -50,6 +50,10 @@ the server separately saves full conversation JSON.
 - `backend/agent/config.py`: model/provider config plus `.env` loading.
 - `backend/agent/session_store.py`: one JSON file per saved conversation and context
   compression.
+- `backend/agent/subagents.py` / `backend/agent/wakeups.py` / `backend/agent/runs.py`: parallel sub-agents,
+  the per-conversation turn gate, live event bus, wake-up turns, and the cancel/pause registries. User turns
+  and wake turns share one gate per conversation; saved chat state carries a `rev` so a client that missed a
+  wake turn cannot overwrite its history.
 - `backend/agent/automation_runner.py`: background scheduler started and stopped by the
   FastAPI lifespan.
 - `backend/agent/reviewer.py`: optional AI review for high-risk tool requests.
@@ -99,9 +103,15 @@ rebuild the RAG index so the new content is searchable.
   IP targets are blocked.
 - `python`: calculations, analysis, local reads/network use, plots, and artifacts under
   `backend/runtime/python_runs`; obvious destructive behavior and direct writes outside
-  the run directory are blocked.
+  the run directory are blocked. Each call gets a fresh run directory; state that must outlive a call goes in
+  the persistent `WORKSPACE` folder (`python_runs/_workspaces/<conversation or sub-agent>`, writable, removed
+  when the conversation is deleted).
 - `fileReader`: read-only text extraction for uploaded or project PDF, DOCX, PPTX,
   XLSX, HTML, CSV, Markdown, source code, and other UTF-8 text files.
+- `fileEditor` / `fileReader` take per-file read/write locks (`tools/filelock.py`) shared by the main agent and
+  all sub-agents; waiting is bounded and the error names the holder. A whole-file `write` is also refused when
+  the file changed after that agent last read it (lost-update protection, per agent); `replace`/`insert`/`append`
+  work on the current text under the lock.
 - `fileEditor`: project-scoped `list`, `read`, `write`, `replace`, `insertAfter`,
   `insertBefore`, and `append`; no delete/move/rename. It protects `.git`, secrets,
   runtime output, and dependency directories.
@@ -115,6 +125,17 @@ rebuild the RAG index so the new content is searchable.
 - `approval`: Agent-mode manual approval; asks the user to approve or reject one action (with optional text),
   ends the turn, and the reply returns as an `approvalResponse` message. It reuses `question_pending`
   with `kind: "approval"` and emits the `approval_request` SSE event.
+- `agent`: Agent-mode sub-agents (`spawn`, `send`, `status`, `wait`, `result`, `cancel`). Each sub-agent is a
+  normal `graph.stream_turn` loop in its own thread with its own context, so several really run in parallel
+  (limits in `agent/subagents.py`); they cannot spawn agents, ask questions or request approval. `wait=false`
+  returns at once; blocking calls cap at 90s. `spawn` requires a stated `taskList` and a `taskId` per task
+  (shown in the UI, statuses derived from the agents). Foreground agents (wait=true) die with the turn that
+  created them, together with their child processes (`tools/procs.py` tracks python runs); background agents
+  (wait=false, or a foreground wait that timed out) are deliberate: they survive the turn and the stop button
+  and are recorded in `_background.json`. Deleting the conversation or stopping the server kills everything.
+  When one finishes and nobody was waiting for it, `agent/wakeups.py` starts a server-side turn in that conversation
+  with a `systemEvent:` message, so the agent is woken instead of polling. Transcripts live under
+  `backend/runtime/subagents/<conversation>/`.
 - `model`: lists/refreshes provider catalogs or switches the current conversation model,
   without exposing backend credentials.
 - `plan`: updates/finalizes a session plan for review; explicit exports use `data/plans`.
@@ -202,11 +223,12 @@ It prefers `.venv/bin/python` and supports an explicit `AI_AGENT_PYTHON` overrid
 - RAG reindex;
 - automation definitions and run history;
 - MCP list/test/upsert/import/delete.
-- provider model refresh and user-created tool management.
+- provider model refresh and user-created tool management;
+- `GET /api/conversations/{id}/live` (SSE for sub-agent updates and wake turns) and `/subagents` endpoints.
 
 When adding an API capability, update both the Pydantic request model/server route and
 the matching frontend call. Preserve SSE event types already consumed by the UI:
-`assistant_progress`, `tool_call`, `approval_required`, `approval_request`, `ai_review`, `error`, `stopped`,
+`assistant_progress`, `tool_call`, `approval_required`, `approval_request`, `subagent_update`, `wake_started`, `wake_finished`, `ai_review`, `error`, `stopped`,
 `settings_changed`, and final `assistant`.
 
 ## Change guidelines

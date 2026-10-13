@@ -82,6 +82,7 @@ def save_turn(
     turn_events: list[dict[str, Any]],
     state: dict[str, Any],
     attachments: list[dict[str, Any]] | None = None,
+    user_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = utc_now()
     conversation = read_conversation(conversation_id)
@@ -92,6 +93,11 @@ def save_turn(
     user_event: dict[str, Any] = {"type": "user", "text": user_text, "ts": now}
     if attachments:
         user_event["attachments"] = attachments
+    if user_extra:
+        user_event.update(user_extra)
+    # Turns that did not stamp a new revision (stopped/failed) keep the saved one.
+    state = dict(state)
+    state.setdefault("rev", int((conversation.get("state") or {}).get("rev") or 0))
     events.append(user_event)
     for event in turn_events:
         public_event = {key: value for key, value in event.items() if key != "state"}
@@ -124,6 +130,14 @@ def set_auto_title(conversation_id: str, title: str) -> None:
         return
     conversation["title"] = make_title(title)
     write_conversation(conversation)
+
+
+def current_rev(conversation_id: str) -> int:
+    """Revision of the saved chat state; clients send theirs so stale state can be detected."""
+
+    if not conversation_path(conversation_id).exists():
+        return 0
+    return int((read_conversation(conversation_id).get("state") or {}).get("rev") or 0)
 
 
 def rename_conversation(conversation_id: str, title: str) -> dict[str, Any]:

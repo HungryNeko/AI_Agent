@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from tools import parameterSave
+from tools import parameterSave, procs
 from tools.settings import PythonSettings
 
 DESTRUCTIVE_METHODS = {"remove", "unlink", "rmdir", "rmtree", "removedirs"}
@@ -24,28 +24,35 @@ class SafetyError(ValueError):
     pass
 
 
-def run(code: str, settings: PythonSettings, *, bindings: Any = None, capture_result: bool = False) -> dict[str, Any]:
+def run(
+    code: str,
+    settings: PythonSettings,
+    *,
+    bindings: Any = None,
+    capture_result: bool = False,
+    workspace_key: str = "",
+) -> dict[str, Any]:
     clean_code = code.strip()
     if not clean_code:
         raise ValueError("python code must not be empty.")
     check_code_safety(clean_code)
 
     run_dir = make_run_dir(settings)
+    workspace = make_workspace(settings, workspace_key) if workspace_key else None
     write_helper_modules(run_dir)
     parameterSave.prepare_python_bridge(run_dir, bindings)
     script_path = run_dir / "snippet.py"
-    script_path.write_text(build_wrapped_code(clean_code, run_dir), encoding="utf-8")
+    script_path.write_text(build_wrapped_code(clean_code, run_dir, workspace), encoding="utf-8")
 
-    completed = subprocess.run(
+    # Tracked so that cancelling the owning sub-agent also kills this process tree.
+    completed = procs.run_tracked(
         [sys.executable, "-I", str(script_path)],
         cwd=run_dir,
-        env=build_child_env(run_dir),
-        capture_output=True,
+        env=build_child_env(run_dir, workspace),
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=settings.timeout_seconds,
-        check=False,
     )
 
     result = {
@@ -55,6 +62,9 @@ def run(code: str, settings: PythonSettings, *, bindings: Any = None, capture_re
         "artifact_dir": str(run_dir),
         "files": list_artifacts(run_dir, settings),
     }
+    if workspace is not None:
+        result["workspace_dir"] = str(workspace)
+        result["workspace_files"] = list_workspace(workspace)
     if completed.returncode == 0:
         exports = parameterSave.collect_python_exports(run_dir)
         if exports:
@@ -104,7 +114,43 @@ def literal_command(node: ast.Call) -> str:
     return ""
 
 
-def build_child_env(run_dir: Path) -> dict[str, str]:
+def workspace_name(key: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", key).strip("._")[:80] or "default"
+
+
+def delete_workspaces(artifact_root: Path | str, conversation_id: str) -> None:
+    """Remove a conversation's workspace and those of its sub-agents (named `<conversation>-<agent>`)."""
+
+    import shutil
+
+    root = Path(artifact_root).resolve() / "_workspaces"
+    name = workspace_name(conversation_id)
+    if not root.is_dir() or name == "default":
+        return
+    for path in root.iterdir():
+        if path.is_dir() and (path.name == name or path.name.startswith(name + "-")):
+            shutil.rmtree(path, ignore_errors=True)
+
+
+def make_workspace(settings: PythonSettings, key: str) -> Path:
+    """Persistent scratch folder for one conversation (or one sub-agent): survives between python calls."""
+
+    path = Path(settings.artifact_root).resolve() / "_workspaces" / workspace_name(key)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def list_workspace(workspace: Path, limit: int = 30) -> list[str]:
+    files: list[str] = []
+    for path in sorted(workspace.rglob("*")):
+        if path.is_file() and "__pycache__" not in path.parts:
+            files.append(str(path.relative_to(workspace)).replace("\\", "/"))
+        if len(files) >= limit:
+            break
+    return files
+
+
+def build_child_env(run_dir: Path, workspace: Path | None = None) -> dict[str, str]:
     env: dict[str, str] = {}
     for key in ("SYSTEMROOT", "WINDIR", "PATH"):
         value = __import__("os").environ.get(key)
@@ -117,16 +163,22 @@ def build_child_env(run_dir: Path) -> dict[str, str]:
     env["PYTHONIOENCODING"] = "utf-8"
     env["MPLBACKEND"] = "Agg"
     env["AI_AGENT_PYTHON_ARTIFACT_DIR"] = str(run_dir)
+    if workspace is not None:
+        env["AI_AGENT_WORKSPACE"] = str(workspace)
     env["AI_AGENT_PARAMETER_BRIDGE"] = str(run_dir / "_parameters" / "bridge.json")
     return env
 
 
-def build_wrapped_code(user_code: str, run_dir: Path) -> str:
+def build_wrapped_code(user_code: str, run_dir: Path, workspace: Path | None = None) -> str:
+    workspace_text = str(workspace) if workspace is not None else ''
     prelude = f"""
 import os
 import sys
 
 _ARTIFACT_DIR = os.path.realpath({str(run_dir)!r})
+_WS = {workspace_text!r}
+_WORKSPACE = os.path.realpath(_WS) if _WS else ""
+WORKSPACE = _WORKSPACE or _ARTIFACT_DIR  # persists across python calls when a workspace exists
 os.environ["AI_AGENT_PYTHON_ARTIFACT_DIR"] = _ARTIFACT_DIR
 os.environ.setdefault("MPLBACKEND", "Agg")
 if _ARTIFACT_DIR not in sys.path:
@@ -142,10 +194,14 @@ def _inside(path, parent):
         return False
 
 
+def _writable(path):
+    return _inside(path, _ARTIFACT_DIR) or (bool(_WORKSPACE) and _inside(path, _WORKSPACE))
+
+
 def _audit(event, args):
     if event in {{"os.remove", "os.rmdir", "shutil.rmtree"}}:
         target = args[0] if args else ""
-        if not _inside(os.fspath(target), _ARTIFACT_DIR):
+        if not _writable(os.fspath(target)):
             raise RuntimeError(f"blocked runtime event outside artifact dir: {{event}}")
     if event == "open" and args:
         target = args[0]
@@ -157,8 +213,8 @@ def _audit(event, args):
         if os.path.basename(os.path.realpath(target_text)).lower() in protected_names:
             raise RuntimeError("protected secret file cannot be opened")
         is_write = any(flag in mode for flag in ("w", "a", "+", "x"))
-        if is_write and not _inside(target_text, _ARTIFACT_DIR):
-            raise RuntimeError("file writes are only allowed inside AI_AGENT_PYTHON_ARTIFACT_DIR")
+        if is_write and not _writable(target_text):
+            raise RuntimeError("file writes are only allowed inside AI_AGENT_PYTHON_ARTIFACT_DIR or WORKSPACE")
 
 
 sys.addaudithook(_audit)

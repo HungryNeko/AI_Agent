@@ -177,9 +177,15 @@ class ToolSettings:
     question: QuestionSettings = QuestionSettings()
     conversation_mode: ConversationMode = "agent"
     conversation_id: str = ""
+    # Sub-agent plumbing: tools a sub-agent must not have, the run it belongs to (for stop), and the model to inherit.
+    blocked_tools: tuple[str, ...] = ()
+    run_id: str = ""
+    model: str = ""
 
     def allows(self, tool: str) -> bool:
-        if tool == "approval":
+        if tool in self.blocked_tools:
+            return False
+        if tool in {"approval", "agent"}:
             return self.conversation_mode == "agent"
         if tool in {"model", "question", "parameterSave"}:
             return tool != "question" or self.question.can_model_call
@@ -224,6 +230,8 @@ class ToolSettings:
             available.append("question")
         if self.allows("approval"):
             available.append("approval")
+        if self.allows("agent"):
+            available.append("agent")
         return {"available": available}
 
 

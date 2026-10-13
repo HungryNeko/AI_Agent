@@ -23,6 +23,7 @@ from tools import (
     plan,
     question,
     rag,
+    subagent,
 )
 from tools import python as python_tool
 from tools.request import ToolRequest, parse_one_tool_call
@@ -79,7 +80,7 @@ def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
         result = curl.get(request.url, settings.curl)
         return format_curl_result(result)
     if request.name == "python":
-        result = python_tool.run(request.code, settings.python)
+        result = python_tool.run(request.code, settings.python, workspace_key=settings.conversation_id)
         return format_python_result(result)
     if request.name == "fileReader":
         if request.file_read is None:
@@ -129,6 +130,10 @@ def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
         if request.approval_request is None:
             return 'toolError: "approval request is missing approval_request."'
         return approval.waiting_result(request.approval_request)
+    if request.name == "agent":
+        if request.subagent_request is None:
+            return 'toolError: "agent request is missing subagent_request."'
+        return subagent.execute(request.subagent_request, settings)
     return f'toolError: "unknown tool: {request.name}"'
 
 
@@ -153,7 +158,7 @@ def execute_parameter_request(request: ToolRequest, settings: ToolSettings) -> s
                 code += "\nfrom ai_agent_parameters import select_path\n"
                 for spec in item.save:
                     code += f"save_parameter({spec['name']!r}, select_path(globals(), {spec['path']!r}), {spec['type']!r})\n"
-            execution = python_tool.run(code, settings.python)
+            execution = python_tool.run(code, settings.python, workspace_key=settings.conversation_id)
             if execution["return_code"] != 0:
                 raise ValueError(execution["stderr"] or "Python execution failed")
             if not item.save:
@@ -301,6 +306,10 @@ def format_python_result(result: dict[str, Any]) -> str:
 
     prefix = "pythonResult" if return_code == 0 else "toolError"
     lines = [f"{prefix}:", f"returnCode: {return_code}", f"artifactDir: {artifact_dir}"]
+    workspace_files = result.get("workspace_files")
+    if isinstance(workspace_files, list) and workspace_files:
+        lines.append(f"workspace (persists across python calls, variable WORKSPACE): {result.get('workspace_dir', '')}")
+        lines.append("workspaceFiles: " + ", ".join(str(name) for name in workspace_files[:20]))
     if result.get("parameters"):
         lines.append("savedParameters: " + json.dumps(result["parameters"], ensure_ascii=False))
     if files:

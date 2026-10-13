@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from tools import filelock, procs
 from tools.settings import FileEditorSettings
 
 
@@ -40,6 +41,27 @@ class FileEditRequest:
 
 
 def execute(request: FileEditRequest, settings: FileEditorSettings) -> dict[str, Any]:
+    if request.action == "list" or not request.path.strip():
+        return execute_unlocked(request, settings)
+    try:
+        path = resolve_path(request.path, settings, allow_missing=True)
+    except ValueError:
+        return execute_unlocked(request, settings)  # let the action report its own path error
+    owner = procs.current_owner() or "main"
+    label = procs.current_label()
+    with filelock.locked(path, write=request.action != "read"):
+        before = filelock.digest(path)
+        if request.action == "write":
+            filelock.check_fresh(owner, path)
+        result = execute_unlocked(request, settings)
+        if request.action == "read":
+            filelock.note_seen(owner, path, filelock.digest(path))
+        else:
+            filelock.note_written(owner, label, path, before)
+        return result
+
+
+def execute_unlocked(request: FileEditRequest, settings: FileEditorSettings) -> dict[str, Any]:
     if request.action == "list":
         return list_files(request, settings)
     if request.action == "read":

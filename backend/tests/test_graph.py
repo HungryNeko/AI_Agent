@@ -70,13 +70,13 @@ def test_run_agent_calls_model_once(monkeypatch):
 
     assert result == "hi"
     assert payloads[0]["model"] == "deepseek-chat"
-    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["webSearch", "rag", "model", "parameterSave", "createTool", "question", "approval"]
+    assert [tool["function"]["name"] for tool in payloads[0]["tools"]] == ["webSearch", "rag", "model", "parameterSave", "createTool", "question", "approval", "agent"]
     assert payloads[0]["messages"][0]["role"] == "system"
     assert "Tool request format reminder:" in payloads[0]["messages"][0]["content"]
     assert payloads[0]["messages"][-1]["role"] == "user"
     assert 'currentTime: "2026-09-02T12:00:00-07:00"' in payloads[0]["messages"][-1]["content"]
     assert 'conversationSummary: "summary"' in payloads[0]["messages"][-1]["content"]
-    assert 'available: ["webSearch", "rag", "createTool", "custom__*", "model", "parameterSave", "question", "approval"]' in payloads[0]["messages"][-1]["content"]
+    assert 'available: ["webSearch", "rag", "createTool", "custom__*", "model", "parameterSave", "question", "approval", "agent"]' in payloads[0]["messages"][-1]["content"]
 
 
 def test_turn_context_includes_question_and_developer_modes(monkeypatch):
