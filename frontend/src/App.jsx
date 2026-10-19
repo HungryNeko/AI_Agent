@@ -103,6 +103,7 @@ function App() {
   const [tab, setTab] = useState("chat");
   const [visited, setVisited] = useState({ chat: true });
   const [models, setModels] = useState([]);
+  const [nativeWebProviders, setNativeWebProviders] = useState([]);
   const [options, setOptionsState] = useState(emptyOptions);
   const [theme, setThemeState] = useState("system");
   const [language, setLanguageState] = useState("zh");
@@ -145,6 +146,7 @@ function App() {
   async function reloadModels() {
     const data = await fetchJson("/api/models");
     setModels(data.models || []);
+    setNativeWebProviders(data.nativeWebProviders || []);
     setOptionsState((current) => ({ ...current, model: current.model || data.defaultModel || "" }));
     return data;
   }
@@ -198,6 +200,7 @@ function App() {
       <TabPane id="chat" tab={tab} visited={visited}>
         <ChatView
           models={models}
+          nativeWebProviders={nativeWebProviders}
           options={options}
           setOptions={setOptions}
           label={label}
@@ -236,7 +239,7 @@ function TabButton({ active, onClick, icon, label }) {
   );
 }
 
-function ChatView({ models, options, setOptions, label, text, onSettingsChanged, onModelsChanged }) {
+function ChatView({ models, nativeWebProviders = [], options, setOptions, label, text, onSettingsChanged, onModelsChanged }) {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [events, setEvents] = useState([]);
@@ -994,6 +997,7 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
         {settingsOpen ? (
           <SettingsPanel
             models={models}
+            nativeWebProviders={nativeWebProviders}
             options={options}
             setOptions={setOptions}
             currentModel={conversationModel || options.model}
@@ -1199,7 +1203,59 @@ function ChatView({ models, options, setOptions, label, text, onSettingsChanged,
   );
 }
 
-function SettingsPanel({ models, options, setOptions, currentModel, setCurrentModel, clearState, text }) {
+const WEB_MODES = ["off", "tool", "native", "both"];
+
+// "auto" is the older name for "tool".
+function normalizeWebMode(value) {
+  if (value === "auto") return "tool";
+  return WEB_MODES.includes(value) ? value : "tool";
+}
+
+function WebModeSlider({ value, onChange, nativeReady, text }) {
+  const index = WEB_MODES.indexOf(normalizeWebMode(value));
+  const labels = [text("关闭", "Off"), text("工具", "Tool"), text("原生", "Native"), text("两者", "Both")];
+  const hints = [
+    text("不联网。", "No web access."),
+    text("模型调用 webSearch 工具搜索（DuckDuckGo / SearXNG / Tavily）。", "The model calls the webSearch tool (DuckDuckGo / SearXNG / Tavily)."),
+    text("使用供应商 API 自带的联网搜索与网页抓取，不提供 webSearch 工具。", "Use the provider's built-in web search and fetch; no webSearch tool."),
+    text("同时提供 webSearch 工具和供应商原生联网。", "Offer the webSearch tool and the provider's native web access."),
+  ];
+  return (
+    <div className="webMode">
+      <div className="webModeHead">
+        <span>{text("联网", "Web")}</span>
+        <strong>{labels[index]}</strong>
+      </div>
+      <input
+        className="webModeRange"
+        type="range"
+        min="0"
+        max="3"
+        step="1"
+        value={index}
+        onChange={(event) => onChange(WEB_MODES[Number(event.target.value)])}
+        aria-label={text("联网方式", "Web access")}
+        aria-valuetext={labels[index]}
+        style={{ "--fill": `${(index / 3) * 100}%` }}
+      />
+      <div className="webModeTicks">
+        {labels.map((label, position) => (
+          <button key={label} type="button" className={position === index ? "active" : ""} onClick={() => onChange(WEB_MODES[position])}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <p className="webModeHint">{hints[index]}</p>
+      {index >= 2 && !nativeReady && (
+        <p className="webModeWarn">
+          {text("当前模型的供应商还没有配置原生联网搜索：请到「模型」页，在该供应商下选择“原生联网搜索”。", "This model's provider has no native web search configured: choose one under that provider on the Models page.")}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SettingsPanel({ models, nativeWebProviders = [], options, setOptions, currentModel, setCurrentModel, clearState, text }) {
   const update = (key, value) => setOptions((current) => ({ ...current, [key]: value }));
   return (
     <div className="settingsPane embeddedSettings">
@@ -1229,8 +1285,13 @@ function SettingsPanel({ models, options, setOptions, currentModel, setCurrentMo
         <span>{text("额外提示", "Extra Prompt")}</span>
         <textarea className="smallTextArea" value={options.system_prompt} onChange={(event) => update("system_prompt", event.target.value)} placeholder={text("仅当前对话追加到首个 system prompt", "Append only to the first system prompt in this chat")} />
       </label>
+      <WebModeSlider
+        value={options.web_search_mode}
+        onChange={(value) => update("web_search_mode", value)}
+        nativeReady={nativeWebProviders.includes(String(currentModel || "").split(":")[0])}
+        text={text}
+      />
       <div className="settingGrid">
-        <SelectField label={text("联网", "Web")} value={options.web_search_mode} onChange={(value) => update("web_search_mode", value)} values={["off", "auto"]} />
         <SelectField label={text("搜索", "Search")} value={options.web_search_provider} onChange={(value) => update("web_search_provider", value)} values={["duckduckgo", "searxng", "tavily"]} />
         <SelectField label={text("自动切换", "Search Fallback")} value={String(options.web_search_auto_switch)} onChange={(value) => update("web_search_auto_switch", value === "true")} values={["true", "false"]} />
         <SelectField label="RAG" value={options.rag_mode} onChange={(value) => update("rag_mode", value)} values={["off", "on", "auto"]} />
@@ -1733,7 +1794,22 @@ function StreamEvent({ event, compact = false, onPreviewImage, onBranch, onEdit 
       {event.attachments?.length > 0 && <AttachmentList attachments={event.attachments} onPreviewImage={onPreviewImage} />}
       {images.length > 0 && <ImageStrip images={images} onPreviewImage={onPreviewImage} />}
       {type === "assistant" && <ReferenceList refs={extractReferences(body)} />}
+      {type === "assistant" && event.usage && <UsageLine usage={event.usage} />}
     </article>
+  );
+}
+
+// Token usage of one turn (all its model requests). The cache figure only shows when the provider reports it.
+function UsageLine({ usage }) {
+  const format = (value) => Number(value || 0).toLocaleString();
+  const hit = usage.cached !== undefined && usage.prompt > 0 ? Math.round((usage.cached / usage.prompt) * 100) : null;
+  return (
+    <div className="usageLine" title="本轮所有模型请求合计 / Totals over every model request of this turn">
+      {hit !== null && <span className={hit >= 70 ? "cacheHit good" : hit >= 30 ? "cacheHit" : "cacheHit low"}>缓存命中 {hit}%</span>}
+      <span>输入 {format(usage.prompt)}{hit !== null ? `（缓存 ${format(usage.cached)}）` : ""}</span>
+      <span>输出 {format(usage.completion)}</span>
+      {usage.requests > 1 && <span>{usage.requests} 次请求</span>}
+    </div>
   );
 }
 
@@ -2198,6 +2274,58 @@ function reconcilePriority(items, config) {
   return [...kept, ...missing];
 }
 
+function NativeWebField({ provider, update, text }) {
+  const current = provider.native_web;
+  const kind = typeof current === "string" ? current : current && typeof current === "object" ? "custom" : "";
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setDraft(current && typeof current === "object" ? JSON.stringify(current, null, 2) : '{\n  "body": {},\n  "tools": []\n}');
+    setError("");
+  }, [kind]);
+
+  function changeKind(value) {
+    if (value === "") update(undefined);
+    else if (value === "custom") update({ body: {}, tools: [] });
+    else update(value);
+  }
+
+  function changeDraft(value) {
+    setDraft(value);
+    try {
+      const parsed = JSON.parse(value);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object expected");
+      setError("");
+      update(parsed);
+    } catch (problem) {
+      setError(String(problem.message || problem));
+    }
+  }
+
+  return (
+    <div className="fullWidth nativeWeb">
+      <label>
+        <span>{text("原生联网搜索", "Native web search")}</span>
+        <select value={kind} onChange={(event) => changeKind(event.target.value)}>
+          <option value="">{text("未配置", "Not configured")}</option>
+          <option value="openrouter">OpenRouter (web plugin)</option>
+          <option value="dashscope">{text("阿里云百炼 / Qwen (enable_search)", "Alibaba DashScope / Qwen (enable_search)")}</option>
+          <option value="custom">{text("自定义请求参数", "Custom request fields")}</option>
+        </select>
+      </label>
+      {kind === "custom" && (
+        <>
+          <textarea className="codeEditor" value={draft} onChange={(event) => changeDraft(event.target.value)} spellCheck={false} />
+          <small>{text('body 会合并进每次请求；tools 会追加到请求的 tools。例如 {"body":{"enable_search":true}}。', 'body is merged into every request; tools are appended to the request tools. Example: {"body":{"enable_search":true}}.')}</small>
+          {error && <small className="webModeWarn">{error}</small>}
+        </>
+      )}
+      {kind !== "" && kind !== "custom" && <small>{text("在聊天设置里把“联网”调到“原生”或“两者”后生效。", "Takes effect when Web is set to Native or Both in the chat settings.")}</small>}
+    </div>
+  );
+}
+
 function ConfigView({ onSaved, text }) {
   const [config, setConfig] = useState({ providers: {} });
   const [selectedProvider, setSelectedProvider] = useState("");
@@ -2498,6 +2626,7 @@ function ConfigView({ onSaved, text }) {
             <label><span>Base URL</span><input value={provider.base_url || ""} onChange={(event) => updateProvider("base_url", event.target.value)} placeholder="https://api.deepseek.com/v1" /></label>
             <label><span>API Key</span><input type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={provider.has_api_key ? text("已保存，留空则保持不变", "Saved; leave blank to keep") : text("输入 API Key", "Enter API Key")} /></label>
             <label><span>API Key Env</span><input value={provider.api_key_env || ""} onChange={(event) => updateProvider("api_key_env", event.target.value)} placeholder="DEEPSEEK_API_KEY" /></label>
+            <NativeWebField provider={provider} update={(value) => updateProvider("native_web", value)} text={text} />
             <label><span>{text("默认供应商", "Default Provider")}</span><input value={config.default_provider || ""} readOnly /></label>
             <div className="fullWidth modelCatalog">
               <div className="modelCatalogHeader">
@@ -3034,7 +3163,7 @@ async function fetchJson(path, options = {}) {
 }
 
 function normalizeOptions(options) {
-  return { ...options, conversation_mode: normalizeConversationMode(options.conversation_mode), model: options.model || null, system_prompt: options.system_prompt || null };
+  return { ...options, web_search_mode: normalizeWebMode(options.web_search_mode), conversation_mode: normalizeConversationMode(options.conversation_mode), model: options.model || null, system_prompt: options.system_prompt || null };
 }
 
 function normalizeConversationMode(mode) {

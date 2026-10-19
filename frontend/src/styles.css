@@ -3717,3 +3717,129 @@ a:focus-visible,
 .subagentLine {
   max-width: 100%;
 }
+
+
+/* ---- Four-step web access slider ---- */
+.webMode {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  border-radius: 8px;
+}
+
+.webModeHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.webModeHead strong {
+  color: #2563eb;
+}
+
+.webModeRange {
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: #2563eb;
+  cursor: pointer;
+}
+
+.webModeTicks {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  margin-top: -4px;
+}
+
+.webModeTicks button {
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: #6b7280;
+  font-size: 12px;
+  text-align: center;
+}
+
+.webModeTicks button:first-child {
+  text-align: left;
+}
+
+.webModeTicks button:last-child {
+  text-align: right;
+}
+
+.webModeTicks button.active {
+  color: #2563eb;
+  font-weight: 800;
+}
+
+.webModeHint {
+  margin: 0;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.webModeWarn {
+  margin: 0;
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+:root[data-theme="dark"] .webModeWarn {
+  color: #fbbf24;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .webModeWarn {
+    color: #fbbf24;
+  }
+}
+
+.nativeWeb {
+  display: grid;
+  gap: 6px;
+}
+
+/* ---- History list icons keep their size however long a title is ---- */
+.historyItem svg,
+.fileItem svg {
+  flex: 0 0 auto;
+}
+
+.historyItem svg {
+  width: 15px;
+  height: 15px;
+}
+
+
+/* ---- Token usage / prompt-cache hit line under an answer ---- */
+.usageLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 6px;
+  color: #9ca3af;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cacheHit {
+  font-weight: 700;
+}
+
+.cacheHit.good {
+  color: #16a34a;
+}
+
+.cacheHit.low {
+  color: #d97706;
+}
