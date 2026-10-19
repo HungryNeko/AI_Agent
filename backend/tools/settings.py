@@ -190,11 +190,14 @@ class ToolSettings:
     blocked_tools: tuple[str, ...] = ()
     run_id: str = ""
     model: str = ""
+    native_tools: tuple[str, ...] = ()  # hosted endpoints of the model's provider: "search" and/or "fetch"
     bridge_depth: int = 0  # how many agents deep this is when started from python code or as a sub-agent
 
     def allows(self, tool: str) -> bool:
         if tool in self.blocked_tools:
             return False
+        if tool in {"nativeWebSearch", "webFetch"}:
+            return ("search" if tool == "nativeWebSearch" else "fetch") in self.native_tools
         if tool in {"approval", "agent"}:
             return self.conversation_mode == "agent"
         if tool in {"model", "question", "parameterSave"}:
@@ -212,6 +215,10 @@ class ToolSettings:
         available = []
         if self.web_search.can_model_call and self.allows("webSearch"):
             available.append("webSearch")
+        if self.allows("nativeWebSearch"):
+            available.append("nativeWebSearch")
+        if self.allows("webFetch"):
+            available.append("webFetch")
         if self.rag.can_model_call and self.allows("rag"):
             available.append("rag")
         if self.curl.can_model_call and self.allows("curl"):

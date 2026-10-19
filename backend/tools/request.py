@@ -17,6 +17,7 @@ from tools.mcp import McpRequest
 from tools.models import ModelRequest
 from tools.plan import PlanRequest
 from tools.approval import ApprovalRequest, normalize_risk
+from tools.nativeWeb import NativeWebRequest
 from tools.question import QuestionRequest
 from tools.subagent import (
     MAX_BLOCKING_SECONDS,
@@ -34,6 +35,8 @@ from tools.settings import ToolSettings
 ToolName = str
 SYSTEM_TOOL_NAMES = {
     "webSearch",
+    "nativeWebSearch",
+    "webFetch",
     "rag",
     "curl",
     "python",
@@ -73,6 +76,7 @@ class ToolRequest:
     custom_arguments: dict[str, Any] | None = None
     question_request: QuestionRequest | None = None
     approval_request: ApprovalRequest | None = None
+    native_web_request: NativeWebRequest | None = None
     subagent_request: SubagentRequest | None = None
     parameter_request: parameterSave.ParameterRequest | None = None
     wrapped_request: ToolRequest | None = None
@@ -89,6 +93,10 @@ def build_openai_tools(settings: ToolSettings) -> list[dict[str, Any]]:
                 description="Search the public web when current or external information is needed. If webSearchResult includes image URLs, include useful ones in the final answer as Markdown images using the exact URL.",
             )
         )
+    if settings.allows("nativeWebSearch"):
+        tools.append(native_web_tool("nativeWebSearch"))
+    if settings.allows("webFetch"):
+        tools.append(native_web_tool("webFetch"))
     if settings.rag.can_model_call and settings.allows("rag"):
         tools.append(rag_tool(read_only=settings.conversation_mode != "agent"))
     if settings.curl.can_model_call and settings.allows("curl"):
@@ -189,6 +197,17 @@ def parse_one_tool_call(raw_tool_call: object, settings: ToolSettings) -> ToolRe
         return ToolRequest(id=call_id, name="rag", rag_request=rag_request)
     if name.startswith("custom__"):
         return ToolRequest(id=call_id, name=name, custom_arguments=parsed_arguments)
+    if name == "nativeWebSearch":
+        count = optional_int(parsed_arguments.get("count"))
+        item = NativeWebRequest(
+            kind="search",
+            query=require_string(parsed_arguments, "query", "nativeWebSearch"),
+            count=min(max(count, 1), 20) if count is not None else 5,
+        )
+        return ToolRequest(id=call_id, name="nativeWebSearch", native_web_request=item)
+    if name == "webFetch":
+        item = NativeWebRequest(kind="fetch", url=require_string(parsed_arguments, "url", "webFetch"))
+        return ToolRequest(id=call_id, name="webFetch", native_web_request=item)
     if name == "curl":
         url = require_string(parsed_arguments, "url", "curl")
         return ToolRequest(id=call_id, name="curl", url=url)
@@ -627,6 +646,28 @@ def validate_tool_allowed(name: str, settings: ToolSettings) -> None:
         raise ValueError("automation can only be called when automation_mode is auto.")
     if name == "settings" and not settings.automation.can_model_call:
         raise ValueError("settings can only be called when automation_mode is auto.")
+
+
+def native_web_tool(name: Literal["nativeWebSearch", "webFetch"]) -> dict[str, Any]:
+    if name == "nativeWebSearch":
+        return function_tool(
+            name=name,
+            description=(
+                "Search the web with the model provider's own search engine. Supports operators such as site:, -site:, "
+                "lang:, after: and before:. Use it for current or external information; read a promising result in full with webFetch."
+            ),
+            properties={
+                "query": {"type": "string", "description": "The search query (up to 128 characters)."},
+                "count": {"type": "integer", "description": "Number of results, 1-20 (default 5)."},
+            },
+            required=["query"],
+        )
+    return function_tool(
+        name=name,
+        description="Fetch one public web page through the provider's fetch service and return its text as Markdown.",
+        properties={"url": {"type": "string", "description": "An http(s) URL without credentials."}},
+        required=["url"],
+    )
 
 
 def query_tool(*, name: Literal["webSearch", "rag"], description: str) -> dict[str, Any]:

@@ -17,7 +17,7 @@ from langgraph.graph import END, START, StateGraph
 from agent.config import PROJECT_ROOT, load_system_prompt
 from agent.debug_log import log_event, log_exception
 from agent.instructions import load_instruction
-from agent.config import native_web_supported
+from agent.config import native_endpoint_kinds, native_web_supported
 from agent.llm import add_usage, complete_chat_once, consume_usage
 from agent.references import resolve_reference_context
 from agent.reviewer import ReviewDecision, review_tool_request
@@ -156,6 +156,7 @@ def first_state(state: ChatState) -> dict[str, Any]:
         run_id=str(state.get("run_id") or ""),
         model=str(state.get("model") or ""),
         bridge_depth=int(state.get("bridge_depth") or 0),
+        native_tools=native_endpoint_kinds(state.get("model") or None) if settings.web_search.native else (),
     )
     if state.get("initialized") and state.get("messages"):
         return {"settings": settings, "conversation_id": conversation_id, "conversation_mode": settings.conversation_mode}
@@ -834,6 +835,9 @@ def run_agent(
 def tool_call_key(request: ToolRequest) -> str:
     if request.name == "webSearch":
         return f"{request.name}:{request.query}"
+    if request.name in {"nativeWebSearch", "webFetch"} and request.native_web_request:
+        item = request.native_web_request
+        return f"{request.name}:{item.query}:{item.url}:{item.count}"
     if request.name == "rag" and request.rag_request:
         item = request.rag_request
         return f"rag:{item.action}:{item.query}:{item.path}:{item.name}:{item.split_mode}:{item.chunk_model}:{item.overwrite}"
@@ -994,6 +998,15 @@ def describe_tool_call_events(state: ChatState) -> Iterator[AgentEvent]:
 
 
 def describe_tool_request(request: ToolRequest) -> AgentEvent:
+    if request.name in {"nativeWebSearch", "webFetch"} and request.native_web_request:
+        item = request.native_web_request
+        target = item.query or item.url
+        event: AgentEvent = {"type": "tool_call", "tool": request.name, "text": f"{request.name}: {target}"}
+        if item.query:
+            event["query"] = item.query
+        if item.url:
+            event["url"] = item.url
+        return event
     if request.name == "webSearch":
         return {
             "type": "tool_call",

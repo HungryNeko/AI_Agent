@@ -97,7 +97,9 @@ rebuild the RAG index so the new content is searchable.
 - `webSearch`: DuckDuckGo (`ddgs`) by default; optional SearXNG or Tavily. The chat setting `web_search_mode` has four steps:
   `off`, `tool` (the webSearch tool; `auto` is the old name), `native` (the provider's own web search/fetch, switched on
   through the provider's `native_web` config: a preset such as `openrouter`/`dashscope` or `{"body": {...}, "tools": [...]}`
-  merged into the request) and `both`.
+  merged into the request, or `endpoints` for providers that host search/fetch as separate authenticated endpoints:
+  DeepSeek's `POST /v1/tools/search` and `/v1/tools/fetch` are used automatically for api.deepseek.com and become the
+  `nativeWebSearch` and `webFetch` tools, see `tools/nativeWeb.py`) and `both`.
 - `rag`: local TF-IDF character n-gram index with cosine-similarity
   search across system and user knowledge, memory, and skills. Its upload-to-Markdown,
   simple/LLM chunking, token limits, and incremental cache route are documented in

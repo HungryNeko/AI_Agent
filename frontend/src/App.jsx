@@ -1217,7 +1217,7 @@ function WebModeSlider({ value, onChange, nativeReady, text }) {
   const hints = [
     text("不联网。", "No web access."),
     text("模型调用 webSearch 工具搜索（DuckDuckGo / SearXNG / Tavily）。", "The model calls the webSearch tool (DuckDuckGo / SearXNG / Tavily)."),
-    text("使用供应商 API 自带的联网搜索与网页抓取，不提供 webSearch 工具。", "Use the provider's built-in web search and fetch; no webSearch tool."),
+    text("使用供应商自带的联网：OpenRouter / 百炼在请求里开启搜索；DeepSeek 通过官方 Search / Fetch 接口提供 nativeWebSearch 与 webFetch 工具。不提供 webSearch 工具。", "Use the provider's own web access: OpenRouter / DashScope switch search on in the request; DeepSeek offers nativeWebSearch and webFetch tools through its Search / Fetch API. No webSearch tool."),
     text("同时提供 webSearch 工具和供应商原生联网。", "Offer the webSearch tool and the provider's native web access."),
   ];
   return (
@@ -2309,6 +2309,7 @@ function NativeWebField({ provider, update, text }) {
         <span>{text("原生联网搜索", "Native web search")}</span>
         <select value={kind} onChange={(event) => changeKind(event.target.value)}>
           <option value="">{text("未配置", "Not configured")}</option>
+          <option value="deepseek">{text("DeepSeek（Search / Fetch 接口）", "DeepSeek (Search / Fetch API)")}</option>
           <option value="openrouter">OpenRouter (web plugin)</option>
           <option value="dashscope">{text("阿里云百炼 / Qwen (enable_search)", "Alibaba DashScope / Qwen (enable_search)")}</option>
           <option value="custom">{text("自定义请求参数", "Custom request fields")}</option>
@@ -2320,6 +2321,9 @@ function NativeWebField({ provider, update, text }) {
           <small>{text('body 会合并进每次请求；tools 会追加到请求的 tools。例如 {"body":{"enable_search":true}}。', 'body is merged into every request; tools are appended to the request tools. Example: {"body":{"enable_search":true}}.')}</small>
           {error && <small className="webModeWarn">{error}</small>}
         </>
+      )}
+      {kind === "" && String(provider.base_url || "").includes("api.deepseek.com") && (
+        <small>{text("已自动识别为 DeepSeek 官方接口：原生模式下提供 nativeWebSearch 与 webFetch 工具，无需配置。", "Recognised as the official DeepSeek API: Native mode offers the nativeWebSearch and webFetch tools, no setup needed.")}</small>
       )}
       {kind !== "" && kind !== "custom" && <small>{text("在聊天设置里把“联网”调到“原生”或“两者”后生效。", "Takes effect when Web is set to Native or Both in the chat settings.")}</small>}
     </div>

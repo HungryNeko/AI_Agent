@@ -19,6 +19,7 @@ from tools import (
     history,
     mcp,
     models,
+    nativeWeb,
     parameterSave,
     plan,
     question,
@@ -69,6 +70,10 @@ def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
     if request.name == "webSearch":
         results = WebSearch.search(request.query, settings.web_search)
         return format_web_search_results(results)
+    if request.name in {"nativeWebSearch", "webFetch"}:
+        if request.native_web_request is None:
+            return f'toolError: "{request.name} request is missing native_web_request."'
+        return nativeWeb.execute(request.native_web_request, settings)
     if request.name == "rag":
         if request.rag_request is None:
             return 'toolError: "rag request is missing rag_request."'

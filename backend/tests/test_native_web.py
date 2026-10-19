@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -133,3 +135,139 @@ def test_chat_options_settings_and_models_endpoint_accept_the_new_values(monkeyp
     }
     monkeypatch.setattr(server, "load_config", lambda: fake)
     assert TestClient(server.app).get("/api/models").json()["nativeWebProviders"] == ["p"]
+
+
+# ------------------------------------------------------------------ DeepSeek: hosted search/fetch endpoints
+
+
+def deepseek_config(**extra):
+    return config.ModelConfig(
+        provider="deepseek",
+        model_id="deepseek-chat",
+        base_url="https://api.deepseek.com/v1",
+        api_key="sk-test",
+        native_web=config.resolve_native_web({"base_url": "https://api.deepseek.com/v1", **extra}),
+    )
+
+
+def test_deepseek_works_out_of_the_box_and_other_providers_do_not():
+    assert config.resolve_native_web({"base_url": "https://api.deepseek.com/v1"})["endpoints"] == {
+        "search": "/v1/tools/search",
+        "fetch": "/v1/tools/fetch",
+    }
+    assert config.resolve_native_web({"base_url": "https://api.openai.com/v1"}) is None
+    assert config.resolve_native_web({"base_url": "https://api.deepseek.com/v1", "native_web": "dashscope"})["body"] == {"enable_search": True}
+    custom = config.resolve_native_web({"native_web": {"endpoints": {"search": "/s", "fetch": "nope", "other": "/x"}}})
+    assert custom["endpoints"] == {"search": "/s"}  # only known kinds with absolute paths
+    assert config.native_web_providers({"providers": {"deepseek": {"base_url": "https://api.deepseek.com/v1"}, "x": {}}}) == ["deepseek"]
+
+
+def test_endpoint_urls_do_not_double_the_version_segment():
+    from tools import nativeWeb
+
+    assert nativeWeb.endpoint_url("https://api.deepseek.com/v1", "/v1/tools/search") == "https://api.deepseek.com/v1/tools/search"
+    assert nativeWeb.endpoint_url("https://api.deepseek.com", "/v1/tools/fetch") == "https://api.deepseek.com/v1/tools/fetch"
+    assert nativeWeb.endpoint_url("https://host/api/", "/search") == "https://host/api/search"
+
+
+def test_hosted_tools_appear_only_in_native_modes_for_a_provider_that_has_them():
+    from dataclasses import replace
+
+    names = lambda s: [t["function"]["name"] for t in build_openai_tools(s)]
+    base = make_tool_settings(web_search_mode="native")
+    assert "nativeWebSearch" not in names(base) and "webFetch" not in names(base)  # no endpoints known
+    native = replace(base, native_tools=("search", "fetch"))
+    assert names(native)[:2] == ["nativeWebSearch", "webFetch"]
+    assert "webSearch" not in names(native)  # native only: the third-party search tool is gone
+    both = replace(make_tool_settings(web_search_mode="both"), native_tools=("search",))
+    assert "webSearch" in names(both) and "nativeWebSearch" in names(both) and "webFetch" not in names(both)
+    assert {"nativeWebSearch", "webFetch"} <= set(native.model_view()["available"])
+    for mode in ("ask", "plan"):  # read-only modes may browse too
+        assert "webFetch" in names(replace(native, conversation_mode=mode))
+
+
+def test_hosted_tool_calls_are_parsed_and_gated():
+    from dataclasses import replace
+
+    from tools.request import parse_openai_tool_calls
+
+    call = lambda name, args: {"tool_calls": [{"id": "1", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}]}
+    native = replace(make_tool_settings(web_search_mode="native"), native_tools=("search", "fetch"))
+    search = parse_openai_tool_calls(call("nativeWebSearch", {"query": "q", "count": 99}), native)[0].native_web_request
+    assert (search.kind, search.query, search.count) == ("search", "q", 20)
+    fetch = parse_openai_tool_calls(call("webFetch", {"url": "https://example.com"}), native)[0].native_web_request
+    assert (fetch.kind, fetch.url) == ("fetch", "https://example.com")
+    with pytest.raises(ValueError, match="not available"):
+        parse_openai_tool_calls(call("webFetch", {"url": "https://example.com"}), make_tool_settings())
+    with pytest.raises(ValueError, match="query"):
+        parse_openai_tool_calls(call("nativeWebSearch", {}), native)
+
+
+class FakeResponse:
+    def __init__(self, status, body):
+        self.status_code, self._body, self.text = status, body, json.dumps(body)
+
+    def json(self):
+        return self._body
+
+
+def run_hosted(monkeypatch, request, response):
+    from dataclasses import replace
+
+    from tools import nativeWeb
+
+    sent = []
+    monkeypatch.setattr(config, "get_model_config", lambda model=None: deepseek_config())
+    monkeypatch.setattr(nativeWeb.httpx, "post", lambda url, **kw: sent.append((url, kw)) or response)
+    settings = replace(make_tool_settings(web_search_mode="native"), native_tools=("search", "fetch"), model="deepseek:deepseek-chat")
+    return nativeWeb.execute(request, settings), sent
+
+
+def test_search_calls_the_provider_endpoint_with_the_provider_key(monkeypatch):
+    from tools.nativeWeb import NativeWebRequest
+
+    body = {"results": [{"title": "DeepSeek V4", "url": "https://x.example/a", "summary": "S" * 2000, "site_name": "X", "date": "2026-10-01"}]}
+    text, sent = run_hosted(monkeypatch, NativeWebRequest(kind="search", query="DeepSeek V4 release", count=3), FakeResponse(200, body))
+    url, kw = sent[0]
+    assert url == "https://api.deepseek.com/v1/tools/search"
+    assert kw["headers"]["Authorization"] == "Bearer sk-test" and kw["json"] == {"query": "DeepSeek V4 release", "count": 3}
+    assert text.startswith("nativeWebSearchResult:") and "1. DeepSeek V4 - https://x.example/a (X | 2026-10-01)" in text
+    assert "S" * 900 in text and "S" * 901 not in text  # summaries are bounded
+    empty, _ = run_hosted(monkeypatch, NativeWebRequest(kind="search", query="nothing"), FakeResponse(200, {"results": []}))
+    assert "no results" in empty
+
+
+def test_fetch_returns_bounded_markdown(monkeypatch):
+    from tools import nativeWeb
+    from tools.nativeWeb import NativeWebRequest
+
+    page = {"title": "Article", "content": "# Heading\n" + "x" * 50_000}
+    text, sent = run_hosted(monkeypatch, NativeWebRequest(kind="fetch", url="https://example.com/a"), FakeResponse(200, page))
+    assert sent[0][0] == "https://api.deepseek.com/v1/tools/fetch" and sent[0][1]["json"] == {"url": "https://example.com/a"}
+    assert text.startswith("webFetchResult:\nurl: https://example.com/a\ntitle: Article") and "truncated" in text
+    assert len(text) < nativeWeb.FETCH_CHARS + 300
+
+
+@pytest.mark.parametrize("status, hint", [(402, "insufficient balance"), (429, "rate limit"), (403, "blocked"), (401, "rejected")])
+def test_provider_errors_become_readable_tool_errors(monkeypatch, status, hint):
+    from tools.nativeWeb import NativeWebRequest
+
+    error = {"error": {"message": "boom", "type": "x", "code": "c"}}
+    with pytest.raises(ValueError, match=hint):
+        run_hosted(monkeypatch, NativeWebRequest(kind="fetch", url="https://example.com"), FakeResponse(status, error))
+
+
+def test_graph_offers_the_hosted_tools_when_the_current_provider_has_them(monkeypatch):
+    captured = []
+
+    def fake_complete(messages, *, model=None, tools=None, **kwargs):
+        captured.append([t["function"]["name"] for t in tools or []])
+        return {"role": "assistant", "content": "ok"}
+
+    monkeypatch.setattr(graph, "complete_chat_once", fake_complete)
+    monkeypatch.setattr(config, "get_model_config", lambda model=None: deepseek_config())
+    monkeypatch.setattr(graph, "native_web_supported", lambda model=None: True)
+    list(graph.stream_turn(graph.new_chat_state(web_search_mode="native", model="deepseek:deepseek-chat"), "latest news?"))
+    list(graph.stream_turn(graph.new_chat_state(web_search_mode="tool", model="deepseek:deepseek-chat"), "latest news?"))
+    assert captured[0][:2] == ["nativeWebSearch", "webFetch"] and "webSearch" not in captured[0]
+    assert "webSearch" in captured[1] and "nativeWebSearch" not in captured[1]

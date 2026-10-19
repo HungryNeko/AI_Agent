@@ -249,14 +249,21 @@ def get_model_config(model: str | None = None) -> ModelConfig:
 # Providers expose their built-in web search/fetch differently. A provider's `native_web` setting is either
 # the name of a preset or {"body": {...}, "tools": [...]}: `body` is merged into the chat-completions request
 # and `tools` are appended to the request's tools.
+#
+# A third shape exists: providers that offer search and fetch as separate authenticated endpoints instead of a
+# request flag (DeepSeek: POST /v1/tools/search and /v1/tools/fetch). Those are `endpoints`: {"search": path,
+# "fetch": path}, exposed to the model as the nativeWebSearch and webFetch tools.
 NATIVE_WEB_PRESETS: dict[str, dict[str, Any]] = {
     "openrouter": {"body": {"plugins": [{"id": "web"}]}},
     "dashscope": {"body": {"enable_search": True}},
+    "deepseek": {"endpoints": {"search": "/v1/tools/search", "fetch": "/v1/tools/fetch"}},
 }
 
 
 def resolve_native_web(provider: dict[str, Any]) -> dict[str, Any] | None:
     raw = provider.get("native_web")
+    if raw is None and "api.deepseek.com" in str(provider.get("base_url") or provider.get("url") or ""):
+        raw = "deepseek"  # DeepSeek's official API works out of the box
     if isinstance(raw, str):
         preset = NATIVE_WEB_PRESETS.get(raw.strip().lower())
         return copy.deepcopy(preset) if preset else None
@@ -264,7 +271,14 @@ def resolve_native_web(provider: dict[str, Any]) -> dict[str, Any] | None:
         return None
     body = raw.get("body") if isinstance(raw.get("body"), dict) else {}
     tools = raw.get("tools") if isinstance(raw.get("tools"), list) else []
-    return {"body": copy.deepcopy(body), "tools": copy.deepcopy(tools)} if body or tools else None
+    endpoints = raw.get("endpoints") if isinstance(raw.get("endpoints"), dict) else {}
+    endpoints = {k: v for k, v in endpoints.items() if k in {"search", "fetch"} and isinstance(v, str) and v.startswith("/")}
+    if not (body or tools or endpoints):
+        return None
+    resolved: dict[str, Any] = {"body": copy.deepcopy(body), "tools": copy.deepcopy(tools)}
+    if endpoints:
+        resolved["endpoints"] = endpoints
+    return resolved
 
 
 def native_web_providers(data: dict[str, Any] | None = None) -> list[str]:
@@ -275,6 +289,17 @@ def native_web_providers(data: dict[str, Any] | None = None) -> list[str]:
     if not isinstance(providers, dict):
         return []
     return [name for name, provider in providers.items() if isinstance(provider, dict) and resolve_native_web(provider)]
+
+
+def native_endpoint_kinds(model: str | None = None) -> tuple[str, ...]:
+    """Which hosted endpoints ("search", "fetch") the model's provider offers as tools."""
+
+    try:
+        native = get_model_config(model).native_web or {}
+    except (OSError, ValueError):
+        return ()
+    endpoints = native.get("endpoints") or {}
+    return tuple(kind for kind in ("search", "fetch") if kind in endpoints)
 
 
 def native_web_supported(model: str | None = None) -> bool:
