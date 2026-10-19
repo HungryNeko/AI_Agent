@@ -380,32 +380,14 @@ class SubagentManager:
         return created
 
     def _initial_state(self, agent: SubAgent, settings: Any) -> dict[str, Any]:
-        state: dict[str, Any] = {
-            "message": "",
-            "conversation_id": f"{agent.conversation_id}-{agent.id}",
-            "conversation_mode": "agent" if agent.tools == "full" else "ask",
-            "web_search_mode": settings.web_search.mode,
-            "web_search_provider": settings.web_search.provider,
-            "rag_mode": settings.rag.mode,
-            "rag_include_knowledge": settings.rag.include_knowledge,
-            "rag_include_memory": settings.rag.include_memory,
-            "rag_include_skills": settings.rag.include_skills,
-            "curl_mode": settings.curl.mode,
-            "python_mode": settings.python.mode,
-            "python_timeout_seconds": agent.python_timeout,
-            "file_reader_mode": settings.file_reader.mode,
-            "file_editor_mode": settings.file_editor.mode,
-            "file_editor_approval": settings.file_editor.approval,
-            "mcp_mode": settings.mcp.mode,
-            "history_mode": settings.history.mode,
-            "automation_mode": "off",
-            "question_mode": "off",
-            "max_tool_rounds": agent.max_rounds,
-            "blocked_tools": list(BLOCKED_TOOLS),
-        }
-        if agent.model:
-            state["model"] = agent.model
-        return state
+        return build_state(
+            settings,
+            conversation_id=f"{agent.conversation_id}-{agent.id}",
+            tools=agent.tools,
+            model=agent.model,
+            max_rounds=agent.max_rounds,
+            python_timeout=agent.python_timeout,
+        )
 
     def _start(self, agent: SubAgent, message: str) -> None:
         threading.Thread(target=self._run, args=(agent, message), daemon=True, name=f"subagent-{agent.id}").start()
@@ -631,6 +613,77 @@ class SubagentManager:
 
 
 MANAGER = SubagentManager()
+
+
+def build_state(
+    settings: Any,
+    *,
+    conversation_id: str,
+    tools: str,
+    model: str,
+    max_rounds: int,
+    python_timeout: float,
+) -> dict[str, Any]:
+    """Chat state for an agent started by another agent (sub-agent) or by python code (run_agent)."""
+
+    state: dict[str, Any] = {
+        "message": "",
+        "conversation_id": conversation_id,
+        "conversation_mode": "agent" if tools == "full" else "ask",
+        "web_search_mode": settings.web_search.ui_mode,
+        "web_search_provider": settings.web_search.provider,
+        "rag_mode": settings.rag.mode,
+        "rag_include_knowledge": settings.rag.include_knowledge,
+        "rag_include_memory": settings.rag.include_memory,
+        "rag_include_skills": settings.rag.include_skills,
+        "curl_mode": settings.curl.mode,
+        "python_mode": settings.python.mode,
+        "python_timeout_seconds": python_timeout,
+        "file_reader_mode": settings.file_reader.mode,
+        "file_editor_mode": settings.file_editor.mode,
+        "file_editor_approval": settings.file_editor.approval,
+        "mcp_mode": settings.mcp.mode,
+        "history_mode": settings.history.mode,
+        "automation_mode": "off",
+        "question_mode": "off",
+        "max_tool_rounds": max_rounds,
+        "blocked_tools": list(BLOCKED_TOOLS),
+        "bridge_depth": int(getattr(settings, "bridge_depth", 0) or 0) + 1,
+    }
+    if model:
+        state["model"] = model
+    return state
+
+
+def run_inline_agent(
+    settings: Any,
+    prompt: str,
+    *,
+    tools: str = "full",
+    model: str = "",
+    max_rounds: int = 20,
+    python_timeout: float = 1800.0,
+    should_stop: Any = None,
+) -> str:
+    """Run an agent loop right here on a custom prompt and return its final answer (used by `run_agent`)."""
+
+    state = build_state(
+        settings,
+        conversation_id=f"{getattr(settings, 'conversation_id', '') or 'inline'}-inline-{uuid.uuid4().hex[:6]}",
+        tools=tools,
+        model=model or str(getattr(settings, "model", "") or ""),
+        max_rounds=max_rounds,
+        python_timeout=python_timeout,
+    )
+    answer = ""
+    for event in stream_turn(state, prompt):
+        if should_stop is not None and should_stop():
+            raise RuntimeError("stopped")
+        if event.get("type") == "assistant":
+            answer = str(event.get("text") or "").strip()
+    if not answer:
+        raise RuntimeError("the agent produced no final answer")
+    return answer
 
 
 # ---------------------------------------------------------------- tool entry point

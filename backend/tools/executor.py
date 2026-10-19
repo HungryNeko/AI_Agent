@@ -26,6 +26,7 @@ from tools import (
     subagent,
 )
 from tools import python as python_tool
+from tools.bridge import ToolBridge
 from tools.request import ToolRequest, parse_one_tool_call
 from tools.settings import ToolSettings
 
@@ -64,7 +65,7 @@ def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
     if request.name == "parameterSave":
         return execute_parameter_request(request, settings)
     if request.name.startswith("custom__"):
-        return createTool.execute_custom(request.name, request.custom_arguments or {}, settings.python)
+        return createTool.execute_custom(request.name, request.custom_arguments or {}, settings.python, bridge=ToolBridge(settings))
     if request.name == "webSearch":
         results = WebSearch.search(request.query, settings.web_search)
         return format_web_search_results(results)
@@ -80,7 +81,9 @@ def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
         result = curl.get(request.url, settings.curl)
         return format_curl_result(result)
     if request.name == "python":
-        result = python_tool.run(request.code, settings.python, workspace_key=settings.conversation_id)
+        result = python_tool.run(
+            request.code, settings.python, workspace_key=settings.conversation_id, bridge=ToolBridge(settings)
+        )
         return format_python_result(result)
     if request.name == "fileReader":
         if request.file_read is None:
@@ -158,7 +161,9 @@ def execute_parameter_request(request: ToolRequest, settings: ToolSettings) -> s
                 code += "\nfrom ai_agent_parameters import select_path\n"
                 for spec in item.save:
                     code += f"save_parameter({spec['name']!r}, select_path(globals(), {spec['path']!r}), {spec['type']!r})\n"
-            execution = python_tool.run(code, settings.python, workspace_key=settings.conversation_id)
+            execution = python_tool.run(
+                code, settings.python, workspace_key=settings.conversation_id, bridge=ToolBridge(settings)
+            )
             if execution["return_code"] != 0:
                 raise ValueError(execution["stderr"] or "Python execution failed")
             if not item.save:
@@ -180,7 +185,9 @@ def execute_parameter_request(request: ToolRequest, settings: ToolSettings) -> s
 
 def execute_raw_data_tool(request: ToolRequest, settings: ToolSettings) -> tuple[Any, list[str]]:
     if request.name.startswith("custom__"):
-        result = createTool.execute_custom(request.name, request.custom_arguments or {}, settings.python, raw=True)
+        result = createTool.execute_custom(
+            request.name, request.custom_arguments or {}, settings.python, raw=True, bridge=ToolBridge(settings)
+        )
         return result["result"], result["files"]
     if request.name == "mcp" and request.mcp_request:
         item = request.mcp_request

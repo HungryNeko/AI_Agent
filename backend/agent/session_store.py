@@ -261,6 +261,8 @@ def rewind_state(source: dict[str, Any], kept_events: list[dict[str, Any]]) -> d
         state["messages"] = sliced
         state["web_search_results"] = []
         state["rag_results"] = []
+        state.pop("injected_results", None)
+        state.pop("plan_sent", None)  # unknown which message carried the plan after a cut: show it again
         state["tool_events"] = []
         state["response"] = ""
         state["conversation_summary"] = ""
@@ -384,6 +386,8 @@ def compact_state(state: dict[str, Any], events: list[dict[str, Any]]) -> dict[s
     compacted["conversation_summary"] = summary
     compacted["web_search_results"] = []
     compacted["rag_results"] = []
+    compacted.pop("injected_results", None)  # the history is gone, so results and plan must be shown again
+    compacted.pop("plan_sent", None)
     compacted["tool_events"] = []
     compacted["response"] = ""
     return compacted

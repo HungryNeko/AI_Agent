@@ -25,7 +25,8 @@ WebSearchProvider = Literal["duckduckgo", "searxng", "tavily"]
 
 @dataclass(frozen=True)
 class WebSearchSettings:
-    mode: WebSearchMode = "auto"
+    mode: WebSearchMode = "auto"  # whether the webSearch *tool* is offered
+    native: bool = False  # whether the provider's own web search is switched on for model requests
     provider: WebSearchProvider = "duckduckgo"
     auto_switch: bool = False
     api_key_env: str = "TAVILY_API_KEY"
@@ -39,6 +40,14 @@ class WebSearchSettings:
     @property
     def can_model_call(self) -> bool:
         return self.mode == "auto"
+
+    @property
+    def ui_mode(self) -> str:
+        """The four-step setting this pair of flags came from: off, tool, native or both."""
+
+        if self.mode == "auto":
+            return "both" if self.native else "tool"
+        return "native" if self.native else "off"
 
 
 @dataclass(frozen=True)
@@ -181,6 +190,7 @@ class ToolSettings:
     blocked_tools: tuple[str, ...] = ()
     run_id: str = ""
     model: str = ""
+    bridge_depth: int = 0  # how many agents deep this is when started from python code or as a sub-agent
 
     def allows(self, tool: str) -> bool:
         if tool in self.blocked_tools:
@@ -322,6 +332,7 @@ def make_tool_settings(
     return ToolSettings(
         web_search=WebSearchSettings(
             mode=normalize_web_search_mode(web_search_mode),
+            native=web_search_native(web_search_mode),
             provider=provider,
             auto_switch=bool(web_search_auto_switch),
             base_url=default_web_search_base_url(provider, web_search_base_url),
@@ -394,11 +405,30 @@ def make_tool_settings(
     )
 
 
-def normalize_web_search_mode(web_search_mode: str) -> WebSearchMode:
+# Web access has four settings: off, tool (the webSearch tool), native (the provider's own search),
+# and both. "auto" is the older name for "tool".
+WEB_SEARCH_UI_MODES = ("off", "tool", "native", "both")
+
+
+def _clean_web_search_mode(web_search_mode: str) -> str:
     mode = web_search_mode.strip().lower()
-    if mode not in {"off", "auto"}:
-        raise ValueError("web_search_mode must be one of: off, auto.")
+    if mode == "auto":
+        mode = "tool"
+    if mode not in WEB_SEARCH_UI_MODES:
+        raise ValueError("web_search_mode must be one of: off, tool, native, both.")
     return mode
+
+
+def normalize_web_search_mode(web_search_mode: str) -> WebSearchMode:
+    """Whether the webSearch tool is offered ('auto') or not ('off')."""
+
+    return "auto" if _clean_web_search_mode(web_search_mode) in {"tool", "both"} else "off"
+
+
+def web_search_native(web_search_mode: str) -> bool:
+    """Whether the provider's native web search is requested."""
+
+    return _clean_web_search_mode(web_search_mode) in {"native", "both"}
 
 
 def normalize_curl_mode(curl_mode: str) -> CurlMode:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 import httpx
@@ -96,6 +97,7 @@ def complete_chat_once(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
     max_tokens: int | None = None,
+    native_web: bool = False,
 ) -> dict[str, Any]:
     """Send one request and return the assistant message.
 
@@ -107,8 +109,14 @@ def complete_chat_once(
     last_error: Exception | None = None
     for index, candidate in enumerate(candidates):
         try:
+            extra: dict[str, Any] = {"native_web": True} if native_web else {}
             return complete_chat_with_model(
-                messages, model=candidate, tools=tools, tool_choice=tool_choice, max_tokens=max_tokens
+                messages,
+                model=candidate,
+                tools=tools,
+                tool_choice=tool_choice,
+                max_tokens=max_tokens,
+                **extra,
             )
         except Exception as exc:  # noqa: BLE001 - any failure of this model moves on to the next
             last_error = exc
@@ -125,6 +133,7 @@ def complete_chat_with_model(
     tools: list[dict[str, Any]] | None = None,
     tool_choice: str | dict[str, Any] | None = None,
     max_tokens: int | None = None,
+    native_web: bool = False,
 ) -> dict[str, Any]:
     """Send one request to exactly one model."""
 
@@ -140,6 +149,11 @@ def complete_chat_with_model(
         tool_choice=tool_choice,
         max_tokens=max_tokens,
     )
+    if native_web:
+        if getattr(config, "native_web", None):
+            apply_native_web(payload, config.native_web)
+        else:
+            log_event("llm.native_web_unavailable", provider=config.provider, model=config.model_id)
     log_event(
         "llm.request",
         provider=config.provider,
@@ -162,12 +176,14 @@ def complete_chat_with_model(
             tool_count=len(tools or []),
         )
         raise
+    _USAGE.last = normalize_usage(data.get("usage"))
     log_event(
         "llm.response",
         provider=config.provider,
         base_url=config.base_url,
         model=config.model_id,
         response=data,
+        usage=_USAGE.last,
     )
     return read_assistant_message(data)
 
@@ -189,6 +205,70 @@ def build_chat_payload(
         payload["tool_choice"] = tool_choice or "auto"
     if max_tokens is not None:
         payload["max_tokens"] = max(1, int(max_tokens))
+    return payload
+
+
+_USAGE = threading.local()
+
+
+def normalize_usage(raw: Any) -> dict[str, int] | None:
+    """Token usage in one shape across providers.
+
+    `cached` is the part of the prompt served from the provider's prompt cache; it is left out when the
+    provider does not report it (DeepSeek: prompt_cache_hit_tokens, OpenAI-style: prompt_tokens_details
+    .cached_tokens, Anthropic-style: cache_read_input_tokens).
+    """
+
+    if not isinstance(raw, dict):
+        return None
+    usage: dict[str, int] = {
+        "prompt": int(raw.get("prompt_tokens") or 0),
+        "completion": int(raw.get("completion_tokens") or 0),
+    }
+    details = raw.get("prompt_tokens_details")
+    cached = raw.get("prompt_cache_hit_tokens")
+    if cached is None and isinstance(details, dict):
+        cached = details.get("cached_tokens")
+    if cached is None:
+        cached = raw.get("cache_read_input_tokens")
+    if cached is not None:
+        usage["cached"] = int(cached or 0)
+    return usage
+
+
+def consume_usage() -> dict[str, int] | None:
+    """Usage of the last model request made on this thread (cleared by reading it)."""
+
+    usage = getattr(_USAGE, "last", None)
+    _USAGE.last = None
+    return usage
+
+
+def add_usage(total: dict[str, int] | None, usage: dict[str, int] | None) -> dict[str, int] | None:
+    if not usage:
+        return total
+    merged = dict(total or {"prompt": 0, "completion": 0, "requests": 0})
+    merged["prompt"] = merged.get("prompt", 0) + usage.get("prompt", 0)
+    merged["completion"] = merged.get("completion", 0) + usage.get("completion", 0)
+    merged["requests"] = merged.get("requests", 0) + 1
+    if "cached" in usage:
+        merged["cached"] = merged.get("cached", 0) + usage["cached"]
+    return merged
+
+
+PROTECTED_PAYLOAD_KEYS = {"model", "messages", "stream"}
+
+
+def apply_native_web(payload: dict[str, Any], native: dict[str, Any]) -> dict[str, Any]:
+    """Switch on a provider's own web search: merge its request fields and tools into the payload."""
+
+    for key, value in (native.get("body") or {}).items():
+        if key not in PROTECTED_PAYLOAD_KEYS:
+            payload[key] = value
+    extra_tools = native.get("tools") or []
+    if extra_tools:
+        payload["tools"] = [*(payload.get("tools") or []), *extra_tools]
+        payload.setdefault("tool_choice", "auto")
     return payload
 
 

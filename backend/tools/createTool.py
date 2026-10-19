@@ -91,7 +91,9 @@ def delete_tool(name: str) -> dict[str, Any]:
     return {"status": "deleted", "name": clean_name(name)}
 
 
-def execute_custom(function_name: str, arguments: dict[str, Any], settings: PythonSettings, *, raw: bool = False) -> Any:
+def execute_custom(
+    function_name: str, arguments: dict[str, Any], settings: PythonSettings, *, raw: bool = False, bridge: Any = None
+) -> Any:
     if not function_name.startswith("custom__"):
         raise ValueError("custom tool name must start with custom__")
     item = read_tool(function_name.removeprefix("custom__"), include_code=True)
@@ -106,7 +108,7 @@ def execute_custom(function_name: str, arguments: dict[str, Any], settings: Pyth
         "_result = run(_arguments)\n"
         + ("export_result(_result)\n" if raw else "print(_json.dumps(_result, ensure_ascii=False, default=str))\n")
     )
-    execution = python_tool.run(wrapped, settings, bindings=arguments, capture_result=raw)
+    execution = python_tool.run(wrapped, settings, bindings=arguments, capture_result=raw, bridge=bridge)
     if raw:
         if execution["return_code"] != 0 or "result" not in execution:
             raise ValueError(execution.get("stderr") or "custom tool returned no result")

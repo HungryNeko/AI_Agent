@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import mimetypes
 from collections.abc import Iterator
 from dataclasses import replace
@@ -16,7 +17,8 @@ from langgraph.graph import END, START, StateGraph
 from agent.config import PROJECT_ROOT, load_system_prompt
 from agent.debug_log import log_event, log_exception
 from agent.instructions import load_instruction
-from agent.llm import complete_chat_once
+from agent.config import native_web_supported
+from agent.llm import add_usage, complete_chat_once, consume_usage
 from agent.references import resolve_reference_context
 from agent.reviewer import ReviewDecision, review_tool_request
 from prompts.context import build_context_prompt, format_current_time
@@ -49,6 +51,7 @@ class AgentEvent(TypedDict, total=False):
     status: str
     state: ChatState
     parameters: list[dict[str, Any]]
+    usage: dict[str, int]
 
 
 class ChatState(TypedDict):
@@ -106,6 +109,10 @@ class ChatState(TypedDict):
     blocked_tools: NotRequired[list[str]]
     run_id: NotRequired[str]
     python_timeout_seconds: NotRequired[float]
+    bridge_depth: NotRequired[int]
+    turn_usage: NotRequired[dict[str, int] | None]
+    injected_results: NotRequired[list[int]]
+    plan_sent: NotRequired[str]
 
 
 def first_state(state: ChatState) -> dict[str, Any]:
@@ -148,6 +155,7 @@ def first_state(state: ChatState) -> dict[str, Any]:
         blocked_tools=tuple(state.get("blocked_tools") or ()),
         run_id=str(state.get("run_id") or ""),
         model=str(state.get("model") or ""),
+        bridge_depth=int(state.get("bridge_depth") or 0),
     )
     if state.get("initialized") and state.get("messages"):
         return {"settings": settings, "conversation_id": conversation_id, "conversation_mode": settings.conversation_mode}
@@ -200,11 +208,15 @@ def conversation_begin(state: ChatState) -> dict[str, Any]:
     context_text = build_context_prompt(
         conversation_summary=state.get("conversation_summary"),
     )
+    # Results already shown to the model (they sit in the history as tool messages / earlier context) are
+    # not injected again: repeating them every turn grows the prompt quadratically and is all cache misses.
+    web_results = list(state.get("web_search_results") or [])
+    seen_web, seen_rag = seen_result_counts(state, len(web_results), len(rag_results))
     tool_text = build_tools_prompt_from_settings(
         settings,
         rag_context=state.get("rag_context"),
-        web_search_results=state.get("web_search_results"),
-        rag_results=rag_results,
+        web_search_results=web_results[seen_web:],
+        rag_results=rag_results[seen_rag:],
         include_available=not state.get("tools_announced", False),
     )
     time_text = format_current_time()
@@ -212,12 +224,26 @@ def conversation_begin(state: ChatState) -> dict[str, Any]:
     attachment_text, image_parts = build_attachment_context(state.get("attachments") or [])
     active_plan = state.get("plan") or {}
     plan_text = ""
+    plan_sent = state.get("plan_sent", "")
     if active_plan and settings.conversation_mode in {"plan", "agent"}:
         plan_text = (
             "activePlan:\n"
             f"name: {active_plan.get('name', 'implementation-plan')}\n"
             f"status: {active_plan.get('status', 'draft')}\n"
             f"content:\n{active_plan.get('content', '')}"
+        )
+        # The plan is only repeated when it changed; otherwise the earlier copy is still in the history.
+        digest = hashlib.sha1(plan_text.encode("utf-8")).hexdigest()
+        if digest == plan_sent:
+            plan_text = ""
+        else:
+            plan_sent = digest
+    native_web_text = ""
+    if settings.web_search.native:
+        native_web_text = (
+            'nativeWebSearch: "enabled"'
+            if native_web_supported(state.get("model"))
+            else 'nativeWebSearch: "unavailable: the current provider has no native web search configured"'
         )
     user_parts = [
         part
@@ -226,6 +252,7 @@ def conversation_begin(state: ChatState) -> dict[str, Any]:
             f'conversationMode: "{settings.conversation_mode}"',
             f'questionMode: "{state.get("question_mode", "light")}"',
             'developerMode: "enabled"' if state.get("developer_mode") else "",
+            native_web_text,
             context_text,
             tool_text,
             reference_text,
@@ -254,7 +281,17 @@ def conversation_begin(state: ChatState) -> dict[str, Any]:
         "question_pending": None,
         "tools_announced": True,
         "conversation_mode": settings.conversation_mode,
+        "turn_usage": None,
+        "plan_sent": plan_sent,
     }
+
+
+def seen_result_counts(state: ChatState, web_total: int, rag_total: int) -> tuple[int, int]:
+    """How many web/RAG results earlier turns already showed (0 after compression or when out of range)."""
+
+    counts = state.get("injected_results") or [0, 0]
+    seen_web, seen_rag = (int(counts[0]), int(counts[1])) if len(counts) == 2 else (0, 0)
+    return (seen_web if seen_web <= web_total else 0, seen_rag if seen_rag <= rag_total else 0)
 
 
 def build_attachment_context(attachments: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
@@ -331,7 +368,8 @@ def assistant_step(state: ChatState) -> dict[str, Any]:
     settings = state["settings"]
     messages = list(state["messages"])
     tools = build_openai_tools(settings)
-    if tool_budget_reached(state):
+    budget_spent = tool_budget_reached(state)
+    if budget_spent:
         log_event(
             "tool_budget.exceeded",
             tool_rounds=state.get("tool_rounds", 0),
@@ -348,26 +386,34 @@ def assistant_step(state: ChatState) -> dict[str, Any]:
                 ),
             }
         )
-        tools = None
+        # Keep the same tools array and forbid calling them: dropping `tools` would change the very
+        # start of the prompt and miss the provider's prompt cache for the whole conversation.
 
     request_messages = list(messages)
+    extra_options: dict[str, Any] = {"native_web": True} if settings.web_search.native else {}
+    if budget_spent:
+        extra_options["tool_choice"] = "none"
     assistant_message = complete_chat_once(
         request_messages,
         model=state.get("model"),
         tools=tools,
+        **extra_options,
     )
+    turn_usage = add_usage(state.get("turn_usage"), consume_usage())
     messages = request_messages + [assistant_message]
 
     has_tool_calls = bool(assistant_message.get("tool_calls") or [])
-    if tools is None and has_tool_calls:
+    if budget_spent and has_tool_calls:
         return {
             "messages": messages,
             "response": str(assistant_message.get("content") or "Unable to produce a final answer."),
+            "turn_usage": turn_usage,
         }
 
     return {
         "messages": messages,
         "response": "" if has_tool_calls else str(assistant_message.get("content") or ""),
+        "turn_usage": turn_usage,
     }
 
 
@@ -518,8 +564,11 @@ def tool_error(state: ChatState) -> dict[str, Any]:
     }
 
 
-def conversation_end(state: ChatState) -> dict[str, str]:
-    return {"response": state.get("response", "")}
+def conversation_end(state: ChatState) -> dict[str, Any]:
+    return {
+        "response": state.get("response", ""),
+        "injected_results": [len(state.get("web_search_results") or []), len(state.get("rag_results") or [])],
+    }
 
 
 def build_graph():
@@ -694,11 +743,14 @@ def stream_turn(state: ChatState, message: str) -> Iterator[AgentEvent]:
         raise
 
     log_event("turn.end", response=current_state.get("response", ""), state=current_state)
-    yield {
+    final_event: AgentEvent = {
         "type": "assistant",
         "text": current_state.get("response", ""),
         "state": current_state,
     }
+    if current_state.get("turn_usage"):
+        final_event["usage"] = current_state["turn_usage"]
+    yield final_event
 
 
 def run_agent(

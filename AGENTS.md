@@ -94,7 +94,10 @@ rebuild the RAG index so the new content is searchable.
 
 ## Built-in tools
 
-- `webSearch`: DuckDuckGo (`ddgs`) by default; optional SearXNG or Tavily.
+- `webSearch`: DuckDuckGo (`ddgs`) by default; optional SearXNG or Tavily. The chat setting `web_search_mode` has four steps:
+  `off`, `tool` (the webSearch tool; `auto` is the old name), `native` (the provider's own web search/fetch, switched on
+  through the provider's `native_web` config: a preset such as `openrouter`/`dashscope` or `{"body": {...}, "tools": [...]}`
+  merged into the request) and `both`.
 - `rag`: local TF-IDF character n-gram index with cosine-similarity
   search across system and user knowledge, memory, and skills. Its upload-to-Markdown,
   simple/LLM chunking, token limits, and incremental cache route are documented in
@@ -106,6 +109,9 @@ rebuild the RAG index so the new content is searchable.
   the run directory are blocked. Each call gets a fresh run directory; state that must outlive a call goes in
   the persistent `WORKSPACE` folder (`python_runs/_workspaces/<conversation or sub-agent>`, writable, removed
   when the conversation is deleted).
+  Code run by `python` and by custom tools can call back into the backend through `tools/bridge.py` (file-based RPC, no
+  port): `call_mcp`, `list_mcp_servers`, `list_mcp_tools`, `ask_llm` (one completion) and `run_agent` (a full agent loop on a
+  custom prompt, depth-limited). Time spent waiting on those calls does not count against the python timeout.
 - `fileReader`: read-only text extraction for uploaded or project PDF, DOCX, PPTX,
   XLSX, HTML, CSV, Markdown, source code, and other UTF-8 text files.
 - `fileEditor` / `fileReader` take per-file read/write locks (`tools/filelock.py`) shared by the main agent and
@@ -239,6 +245,12 @@ the matching frontend call. Preserve SSE event types already consumed by the UI:
 - Keep the fixed first system prompt stable for prompt-cache reuse. Put time, current
   tool availability, references, RAG hits, attachments, and the user message in the
   per-turn user content.
+- Prompt cache: providers match the exact start of a request (tools, system prompt, then messages in order). Never
+  rewrite earlier messages, never drop or reorder `tools` within a conversation (the tool budget uses
+  `tool_choice: "none"` instead), and never inject the same text into every turn: results, the plan and context are
+  injected once and then live in the history (`injected_results`, `plan_sent`). `backend/tests/test_prompt_cache.py`
+  replays turns and checks the prefix. The final `assistant` event carries `usage` (prompt, cached, completion) which the
+  UI shows as the cache-hit line.
 - Preserve bounded outputs, project-root checks, secret redaction, SSRF protection, and
   file approval semantics when changing tools.
 - Treat `backend/runtime` and ignored local config as user-owned local state. Do not

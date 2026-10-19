@@ -596,11 +596,13 @@ def test_repeated_tool_call_is_not_blocked_by_backend(monkeypatch):
 
 def test_max_tool_rounds_forces_final_answer_without_tools(monkeypatch):
     tool_payloads = []
+    tool_choices = []
     calls = []
 
-    def fake_complete_chat_once(messages, *, model=None, tools=None):
+    def fake_complete_chat_once(messages, *, model=None, tools=None, tool_choice=None):
         calls.append(messages)
         tool_payloads.append(tools)
+        tool_choices.append(tool_choice)
         if len(calls) == 1:
             return {
                 "role": "assistant",
@@ -623,8 +625,9 @@ def test_max_tool_rounds_forces_final_answer_without_tools(monkeypatch):
 
     events = list(graph.stream_turn(graph.new_chat_state(curl_mode="auto", max_tool_rounds=1), "weather"))
 
-    assert tool_payloads[0]
-    assert tool_payloads[1] is None
+    # the tools stay in the request (same prompt prefix, so the provider cache still hits) but may not be called
+    assert tool_payloads[0] and tool_payloads[1] == tool_payloads[0]
+    assert tool_choices == [None, "none"]
     assert "toolBudgetExceeded" in calls[1][-1]["content"]
     assert events[-1]["type"] == "assistant"
     assert events[-1]["text"] == "The API did not return live data, so I cannot provide current weather."

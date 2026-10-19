@@ -12,7 +12,8 @@ import os
 import signal
 import subprocess
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from typing import Any
 
 _local = threading.local()
@@ -59,9 +60,17 @@ def kill_tree(proc: subprocess.Popen) -> None:
 
 
 def run_tracked(
-    args: list[str], *, timeout: float | None = None, capture_output: bool = True, **kwargs: Any
+    args: list[str],
+    *,
+    timeout: float | None = None,
+    capture_output: bool = True,
+    grace: Callable[[], float] | None = None,
+    **kwargs: Any,
 ) -> subprocess.CompletedProcess:
-    """Like `subprocess.run`, but the process is registered under the current owner while it runs."""
+    """Like `subprocess.run`, but the process is registered under the current owner while it runs.
+
+    `grace` returns seconds that do not count against the timeout (time spent waiting on the tool bridge).
+    """
 
     kwargs.pop("check", None)
     if capture_output:
@@ -79,7 +88,17 @@ def run_tracked(
         if owner:
             _PROCS.setdefault(owner, set()).add(proc)
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        if grace is None or timeout is None:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        else:
+            started = time.monotonic()
+            while True:
+                try:
+                    stdout, stderr = proc.communicate(timeout=0.2)
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() - started - grace() > timeout:
+                        raise
     except subprocess.TimeoutExpired:
         kill_tree(proc)
         proc.communicate()

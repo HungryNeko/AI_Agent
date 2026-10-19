@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--system-prompt", default=None)
     parser.add_argument("--loop", action="store_true", help="Keep chatting until exit/quit/q.")
     parser.add_argument("--web-search", action="store_true", help="Alias for --web-search-mode auto.")
-    parser.add_argument("--web-search-mode", choices=["off", "auto"], default="auto")
+    parser.add_argument("--web-search-mode", choices=["off", "tool", "native", "both", "auto"], default="auto")
     parser.add_argument(
         "--web-search-provider",
         choices=["duckduckgo", "searxng", "tavily"],

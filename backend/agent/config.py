@@ -24,6 +24,7 @@ class ModelConfig:
     base_url: str
     api_key_env: str | None = None
     api_key: str | None = None
+    native_web: dict[str, Any] | None = None  # how to switch on the provider's own web search
 
     @property
     def api_key_value(self) -> str | None:
@@ -241,7 +242,46 @@ def get_model_config(model: str | None = None) -> ModelConfig:
         base_url=base_url,
         api_key_env=optional_string(provider.get("api_key_env")),
         api_key=optional_string(provider.get("api_key")),
+        native_web=resolve_native_web(provider),
     )
+
+
+# Providers expose their built-in web search/fetch differently. A provider's `native_web` setting is either
+# the name of a preset or {"body": {...}, "tools": [...]}: `body` is merged into the chat-completions request
+# and `tools` are appended to the request's tools.
+NATIVE_WEB_PRESETS: dict[str, dict[str, Any]] = {
+    "openrouter": {"body": {"plugins": [{"id": "web"}]}},
+    "dashscope": {"body": {"enable_search": True}},
+}
+
+
+def resolve_native_web(provider: dict[str, Any]) -> dict[str, Any] | None:
+    raw = provider.get("native_web")
+    if isinstance(raw, str):
+        preset = NATIVE_WEB_PRESETS.get(raw.strip().lower())
+        return copy.deepcopy(preset) if preset else None
+    if not isinstance(raw, dict):
+        return None
+    body = raw.get("body") if isinstance(raw.get("body"), dict) else {}
+    tools = raw.get("tools") if isinstance(raw.get("tools"), list) else []
+    return {"body": copy.deepcopy(body), "tools": copy.deepcopy(tools)} if body or tools else None
+
+
+def native_web_providers(data: dict[str, Any] | None = None) -> list[str]:
+    """Names of the providers that have native web search configured."""
+
+    config = data if data is not None else load_config()
+    providers = config.get("providers", {})
+    if not isinstance(providers, dict):
+        return []
+    return [name for name, provider in providers.items() if isinstance(provider, dict) and resolve_native_web(provider)]
+
+
+def native_web_supported(model: str | None = None) -> bool:
+    try:
+        return get_model_config(model).native_web is not None
+    except (OSError, ValueError):
+        return False
 
 
 def find_model_id(provider: dict[str, Any], model_name: str) -> str:

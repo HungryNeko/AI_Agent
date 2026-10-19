@@ -101,7 +101,7 @@ def normalize_app_settings(raw: dict[str, Any]) -> dict[str, Any]:
     ]:
         chat[key] = str(chat.get(key, DEFAULT_SETTINGS["chat"][key]) or "")
     for key, allowed in {
-        "web_search_mode": {"off", "auto"},
+        "web_search_mode": {"off", "tool", "native", "both", "auto"},
         "web_search_provider": {"duckduckgo", "searxng", "tavily"},
         "rag_mode": {"off", "on", "auto"},
         "curl_mode": {"off", "auto"},

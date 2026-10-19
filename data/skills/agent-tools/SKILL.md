@@ -36,3 +36,9 @@ Use this skill when a task may need local tools, conversation history, RAG, MCP,
 - Uploaded text files should be included as a bounded text preview in the current user message.
 - Uploaded images should be sent as OpenAI-compatible `image_url` content blocks when the selected model supports vision input.
 - Binary non-image files should be listed with filename, path, MIME type, and size, allowing the model to decide whether MCP or another tool should process them.
+
+## Custom tools and python can call MCP and the model
+
+- Code run by the `python` tool and by custom tools (`createTool`) has `call_mcp(server, tool, arguments)`, `list_mcp_servers()`, `list_mcp_tools(server)`, `ask_llm(prompt, system="")` and `run_agent(prompt, tools="full")` predefined.
+- Put a repeated chain of MCP operations in one custom tool instead of driving each step from the agent. Use `ask_llm` for a single judgement step and `run_agent` when a step needs tools; write the prompt for that step in the tool's code.
+- Waiting on these calls does not count against the python timeout; MCP must be enabled for `call_mcp`, and `run_agent` may be nested at most two levels.

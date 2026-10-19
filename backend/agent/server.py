@@ -26,6 +26,7 @@ from agent import subagents, titles, wakeups
 from agent.runs import clear_cancelled_run, is_cancelled_run, is_paused_run, mark_cancelled_run, set_run_paused
 from agent.config import (
     list_model_items,
+    native_web_providers,
     load_config,
     merge_config_secrets,
     public_config,
@@ -121,7 +122,7 @@ async def log_http_request(request: Request, call_next):
 class ChatOptions(BaseModel):
     model: str | None = None
     system_prompt: str | None = None
-    web_search_mode: Literal["off", "auto"] = "auto"
+    web_search_mode: Literal["off", "tool", "native", "both", "auto"] = "auto"
     web_search_provider: Literal["duckduckgo", "searxng", "tavily"] = "duckduckgo"
     web_search_auto_switch: bool = False
     rag_mode: Literal["off", "on", "auto"] = "auto"
@@ -311,6 +312,7 @@ def models() -> dict[str, Any]:
     return {
         "defaultProvider": default_provider,
         "defaultModel": default_model,
+        "nativeWebProviders": native_web_providers(config),
         "models": list_model_items(config),
     }
 
@@ -1116,7 +1118,17 @@ def public_state(state: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in state.items() if key not in {"settings", "message", "run_id", "blocked_tools"}}
 
 
-HISTORY_STATE_KEYS = ["messages", "initialized", "tools_announced", "conversation_summary", "web_search_results", "rag_results", "plan"]
+HISTORY_STATE_KEYS = [
+    "messages",
+    "initialized",
+    "tools_announced",
+    "conversation_summary",
+    "web_search_results",
+    "rag_results",
+    "injected_results",
+    "plan_sent",
+    "plan",
+]
 
 
 def adopt_saved_history(state: dict[str, Any], conversation_id: str, client_rev: int) -> None:

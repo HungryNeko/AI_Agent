@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import re
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from tools import parameterSave, procs
+from tools.bridge import BRIDGE_HELPER_SOURCE
 from tools.settings import PythonSettings
 
 DESTRUCTIVE_METHODS = {"remove", "unlink", "rmdir", "rmtree", "removedirs"}
@@ -31,6 +33,7 @@ def run(
     bindings: Any = None,
     capture_result: bool = False,
     workspace_key: str = "",
+    bridge: Any = None,
 ) -> dict[str, Any]:
     clean_code = code.strip()
     if not clean_code:
@@ -44,16 +47,20 @@ def run(
     script_path = run_dir / "snippet.py"
     script_path.write_text(build_wrapped_code(clean_code, run_dir, workspace), encoding="utf-8")
 
-    # Tracked so that cancelling the owning sub-agent also kills this process tree.
-    completed = procs.run_tracked(
-        [sys.executable, "-I", str(script_path)],
-        cwd=run_dir,
-        env=build_child_env(run_dir, workspace),
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=settings.timeout_seconds,
-    )
+    # Tracked so that cancelling the owning sub-agent also kills this process tree. When a bridge serves
+    # MCP/model calls for the code, the time spent waiting on them does not count against the timeout.
+    bridge_dir = run_dir / "_bridge" if bridge is not None else None
+    with bridge.serve(bridge_dir) if bridge is not None else contextlib.nullcontext():
+        completed = procs.run_tracked(
+            [sys.executable, "-I", str(script_path)],
+            cwd=run_dir,
+            env=build_child_env(run_dir, workspace, bridge_dir),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=settings.timeout_seconds,
+            grace=bridge.busy_seconds if bridge is not None else None,
+        )
 
     result = {
         "return_code": completed.returncode,
@@ -150,7 +157,7 @@ def list_workspace(workspace: Path, limit: int = 30) -> list[str]:
     return files
 
 
-def build_child_env(run_dir: Path, workspace: Path | None = None) -> dict[str, str]:
+def build_child_env(run_dir: Path, workspace: Path | None = None, bridge_dir: Path | None = None) -> dict[str, str]:
     env: dict[str, str] = {}
     for key in ("SYSTEMROOT", "WINDIR", "PATH"):
         value = __import__("os").environ.get(key)
@@ -165,6 +172,8 @@ def build_child_env(run_dir: Path, workspace: Path | None = None) -> dict[str, s
     env["AI_AGENT_PYTHON_ARTIFACT_DIR"] = str(run_dir)
     if workspace is not None:
         env["AI_AGENT_WORKSPACE"] = str(workspace)
+    if bridge_dir is not None:
+        env["AI_AGENT_BRIDGE_DIR"] = str(bridge_dir)
     env["AI_AGENT_PARAMETER_BRIDGE"] = str(run_dir / "_parameters" / "bridge.json")
     return env
 
@@ -220,7 +229,13 @@ def _audit(event, args):
 sys.addaudithook(_audit)
 os.chdir(_ARTIFACT_DIR)
 """.lstrip()
-    return prelude + "\nfrom ai_agent_parameters import load_parameter, save_parameter\n" + user_code + "\n"
+    return (
+        prelude
+        + "\nfrom ai_agent_parameters import load_parameter, save_parameter\n"
+        + "from ai_agent_bridge import call_mcp, list_mcp_servers, list_mcp_tools, ask_llm, run_agent\n"
+        + user_code
+        + "\n"
+    )
 
 
 def make_run_dir(settings: PythonSettings) -> Path:
@@ -234,6 +249,7 @@ def make_run_dir(settings: PythonSettings) -> Path:
 
 def write_helper_modules(run_dir: Path) -> None:
     (run_dir / "ai_agent_maps.py").write_text(MAP_HELPER_SOURCE, encoding="utf-8")
+    (run_dir / "ai_agent_bridge.py").write_text(BRIDGE_HELPER_SOURCE, encoding="utf-8")
 
 
 def trim_output(text: str, max_chars: int) -> str:
@@ -245,11 +261,11 @@ def trim_output(text: str, max_chars: int) -> str:
 def list_artifacts(run_dir: Path, settings: PythonSettings) -> list[str]:
     files: list[str] = []
     for path in sorted(run_dir.rglob("*")):
-        if not path.is_file() or path.name in {"snippet.py", "ai_agent_maps.py", "ai_agent_parameters.py"}:
+        if not path.is_file() or path.name in {"snippet.py", "ai_agent_maps.py", "ai_agent_parameters.py", "ai_agent_bridge.py"}:
             continue
         if "matplotlib" in path.relative_to(run_dir).parts:
             continue
-        if any(part in path.relative_to(run_dir).parts for part in {"_parameters", "__pycache__"}):
+        if any(part in path.relative_to(run_dir).parts for part in {"_parameters", "_bridge", "__pycache__"}):
             continue
         try:
             size = path.stat().st_size
