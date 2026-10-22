@@ -14,7 +14,10 @@ import pytest
 def isolated_app_settings(tmp_path_factory, monkeypatch):
     """Tests must not depend on the developer's own settings (for instance a security level set in Docker)."""
 
-    from agent import app_settings
+    try:
+        from agent import app_settings
+    except ImportError:
+        return  # backend dependencies are not installed (the CI deployment-config check): nothing to isolate
 
     # A directory of its own: many tests treat every JSON file in tmp_path as their data.
     path = tmp_path_factory.mktemp("app-settings") / "settings.json"
