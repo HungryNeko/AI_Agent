@@ -5,17 +5,21 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import {
   Archive,
+  ArrowUp,
   AtSign,
   Bot,
+  Brain,
   Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
   Code2,
+  Copy,
   Database,
   Download,
   FileText,
   GitBranch,
+  Globe,
   GripVertical,
   Image,
   Key,
@@ -37,6 +41,7 @@ import {
   Send,
   Settings,
   ShieldCheck,
+  SlidersHorizontal,
   Square,
   Sun,
   Trash2,
@@ -46,6 +51,7 @@ import {
 import "katex/dist/katex.min.css";
 import "./styles.css";
 import { currentOperation, toolPreviewText } from "./operationPreview.js";
+import { MenuItem, Pill, PopPill, Resizer, Segmented, StepSlider, splitColumns, usePane } from "./ui.jsx";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 // Events fetched per page; long conversations load newest-first and fetch older pages on scroll-up.
@@ -77,6 +83,9 @@ const emptyOptions = {
   developer_mode: false,
   conversation_mode: "agent",
   max_tool_rounds: 20,
+  subagent_model: "",
+  reasoning_effort: "default",
+  subagent_reasoning_effort: "default",
 };
 
 const TEXT = {
@@ -95,7 +104,6 @@ const TEXT = {
   stop: ["\u505c\u6b62", "Stop"],
   uploadFile: ["批量上传文件", "Upload files"],
   uploadImage: ["批量上传图片", "Upload images"],
-  autoApproval: ["自动批准", "Auto approval"],
   system: ["系统", "System"],
 };
 
@@ -271,7 +279,9 @@ function ChatView({ models, nativeWebProviders = [], options, setOptions, label,
   const [conversationModel, setConversationModel] = useState("");
   const [conversations, setConversations] = useState([]);
   const [historyStatus, setHistoryStatus] = useState("");
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const historyPane = usePane("chat-history", { size: 280, min: 200, max: 480, side: "start" });
+  const [security, setSecurity] = useState(null);
+  const [securityError, setSecurityError] = useState("");
   const [mentionOptions, setMentionOptions] = useState([]);
   const [mentionQuery, setMentionQuery] = useState("");
   const [mentionOpen, setMentionOpen] = useState(false);
@@ -281,6 +291,7 @@ function ChatView({ models, nativeWebProviders = [], options, setOptions, label,
   const [paused, setPaused] = useState(false);
   const [inputMode, setInputMode] = useState("queue");
   const [queuedMessages, setQueuedMessages] = useState([]);
+  const elapsed = useElapsed(busy);
   const outputRef = useRef(null);
   const composerRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -292,7 +303,17 @@ function ChatView({ models, nativeWebProviders = [], options, setOptions, label,
 
   useEffect(() => {
     refreshConversations();
+    fetchJson("/api/security").then(setSecurity).catch(() => {});
   }, []);
+
+  async function changeSecurity(level) {
+    setSecurityError("");
+    try {
+      setSecurity(await fetchJson("/api/security/level", { method: "PUT", body: { level } }));
+    } catch (error) {
+      setSecurityError(errorDetail(error));
+    }
+  }
 
   // Authoritative state replaces any plan streamed ahead of the final event.
   function setState(next) {
@@ -880,7 +901,9 @@ function ChatView({ models, nativeWebProviders = [], options, setOptions, label,
       text: response.text || "",
     };
     const approved = payload.status === "approved";
-    const displayMessage = `${approved ? text("已批准：", "Approved: ") : text("已拒绝：", "Rejected: ")}${payload.action}${payload.text ? `\n${payload.text}` : ""}`;
+    const edits = pendingQuestion.source === "fileEditor" && Array.isArray(pendingQuestion.pending_edits) ? pendingQuestion.pending_edits : null;
+    const shownAction = edits ? text(`应用 ${edits.length} 处文件修改：${[...new Set(edits.map((edit) => edit.path))].join(", ")}`, payload.action) : payload.action;
+    const displayMessage = `${approved ? text("已批准：", "Approved: ") : text("已拒绝：", "Rejected: ")}${shownAction}${payload.text ? `\n${payload.text}` : ""}`;
     setPendingQuestion(null);
     await runChatTurn(`approvalResponse:\n${JSON.stringify(payload)}`, [], displayMessage);
   }
@@ -944,36 +967,43 @@ function ChatView({ models, nativeWebProviders = [], options, setOptions, label,
     })
     .slice(0, 10);
 
+  const modelNow = conversationModel || options.model || "";
+  const modelEntry = models.find((model) => model.value === modelNow);
+  const modelName = modelEntry?.label || modelNow.split(":").pop() || text("默认模型", "Default model");
+  const effort = options.reasoning_effort || "default";
+  const agentSummary = summarizeAgents(subagents);
+  const securityLevel = security?.level || "L3";
+  const modeNow = normalizeConversationMode(options.conversation_mode);
+  const modeInfo = {
+    ask: { icon: <MessageSquare size={14} />, label: text("问答", "Ask"), hint: text("只读理解与查询", "Read-only answers") },
+    plan: { icon: <ListChecks size={14} />, label: text("计划", "Plan"), hint: text("研究并等待批准", "Research, then wait for approval") },
+    agent: { icon: <Bot size={14} />, label: "Agent", hint: text("执行、测试、迭代", "Implement, test, iterate") },
+  };
+  const updateOption = (key, value) => setOptions((current) => ({ ...current, [key]: value }));
+  const nativeReady = nativeWebProviders.includes(String(modelNow).split(":")[0]);
+  const currentTitle = conversations.find((item) => item.id === conversationId)?.title;
+
   return (
-    <section className="chatLayout">
-      <aside className="historyPane">
+    <section className="chatLayout" style={{ gridTemplateColumns: splitColumns(historyPane, "r", null) }}>
+      <aside className="historyPane" aria-hidden={historyPane.collapsed || undefined}>
         <div className="paneHeader">
-          <div className="sidebarTabs">
-            <button className={!settingsOpen ? "sidebarTab active" : "sidebarTab"} onClick={() => setSettingsOpen(false)} type="button">
-              {label("history")}
+          <h2>{label("history")}</h2>
+          <div className="historyHeaderActions">
+            <button
+              className={selectMode ? "iconButton active" : "iconButton"}
+              onClick={toggleSelectMode}
+              type="button"
+              title={selectMode ? text("退出选择", "Exit selection") : text("批量选择", "Select multiple")}
+              aria-pressed={selectMode}
+            >
+              <ListChecks size={16} />
             </button>
-            <button className={settingsOpen ? "sidebarTab active" : "sidebarTab"} onClick={() => setSettingsOpen(true)} type="button">
-              {label("settings")}
+            <button className="iconButton" onClick={newConversation} type="button" title={label("newChat")}>
+              <Plus size={16} />
             </button>
           </div>
-          {!settingsOpen && (
-            <div className="historyHeaderActions">
-              <button
-                className={selectMode ? "iconButton neutral active" : "iconButton neutral"}
-                onClick={toggleSelectMode}
-                type="button"
-                title={selectMode ? text("退出选择", "Exit selection") : text("批量选择", "Select multiple")}
-                aria-pressed={selectMode}
-              >
-                <ListChecks size={17} />
-              </button>
-              <button className="iconButton neutral" onClick={newConversation} type="button" title={label("newChat")}>
-                <Plus size={17} />
-              </button>
-            </div>
-          )}
         </div>
-        {!settingsOpen && selectMode && (
+        {selectMode && (
           <div className="historyBulkBar">
             <label className="historyCheck">
               <input type="checkbox" checked={allSelected} onChange={toggleSelectAll} disabled={conversations.length === 0} />
@@ -994,90 +1024,71 @@ function ChatView({ models, nativeWebProviders = [], options, setOptions, label,
             )}
           </div>
         )}
-        {settingsOpen ? (
-          <SettingsPanel
-            models={models}
-            nativeWebProviders={nativeWebProviders}
-            options={options}
-            setOptions={setOptions}
-            currentModel={conversationModel || options.model}
-            setCurrentModel={setConversationModel}
-            text={text}
-            clearState={newConversation}
-          />
-        ) : (
-          <div className="historyList">
-            {conversations.map((item) => (
-              <div
-                className={`historyRow${conversationId === item.id ? " active" : ""}${selectMode ? " selecting" : ""}${selectedIds.includes(item.id) ? " checked" : ""}`}
-                key={item.id}
-              >
-                {selectMode && (
+        <div className="historyList">
+          {conversations.map((item) => (
+            <div
+              className={`historyRow${conversationId === item.id ? " active" : ""}${selectMode ? " selecting" : ""}${selectedIds.includes(item.id) ? " checked" : ""}`}
+              key={item.id}
+            >
+              {selectMode && (
+                <input
+                  className="historyCheckbox"
+                  type="checkbox"
+                  checked={selectedIds.includes(item.id)}
+                  onChange={() => toggleSelected(item.id)}
+                  aria-label={item.title || "未命名"}
+                />
+              )}
+              {renamingId === item.id ? (
+                <form className="historyRename" onSubmit={(event) => { event.preventDefault(); commitRename(); }}>
                   <input
-                    className="historyCheckbox"
-                    type="checkbox"
-                    checked={selectedIds.includes(item.id)}
-                    onChange={() => toggleSelected(item.id)}
-                    aria-label={item.title || "未命名"}
+                    autoFocus
+                    value={renameDraft}
+                    onChange={(event) => setRenameDraft(event.target.value)}
+                    onKeyDown={(event) => { if (event.key === "Escape") setRenamingId(""); }}
+                    onFocus={(event) => event.target.select()}
+                    maxLength={80}
+                    aria-label={text("对话名称", "Conversation name")}
                   />
-                )}
-                {renamingId === item.id ? (
-                  <form className="historyRename" onSubmit={(event) => { event.preventDefault(); commitRename(); }}>
-                    <input
-                      autoFocus
-                      value={renameDraft}
-                      onChange={(event) => setRenameDraft(event.target.value)}
-                      onKeyDown={(event) => { if (event.key === "Escape") setRenamingId(""); }}
-                      onFocus={(event) => event.target.select()}
-                      maxLength={80}
-                      aria-label={text("对话名称", "Conversation name")}
-                    />
-                    <button className="miniButton" type="submit" title={text("保存", "Save")} aria-label={text("保存", "Save")}><Check size={14} /></button>
-                    <button className="miniButton" type="button" onClick={() => setRenamingId("")} title={text("取消", "Cancel")} aria-label={text("取消", "Cancel")}><X size={14} /></button>
-                  </form>
-                ) : (
-                  <button
-                    className="historyItem"
-                    onClick={() => (selectMode ? toggleSelected(item.id) : openConversation(item.id))}
-                    type="button"
-                    title={item.title || "未命名"}
-                  >
-                    <MessageSquare size={15} />
-                    <span>{item.title || "未命名"}</span>
+                  <button className="miniButton" type="submit" title={text("保存", "Save")} aria-label={text("保存", "Save")}><Check size={14} /></button>
+                  <button className="miniButton" type="button" onClick={() => setRenamingId("")} title={text("取消", "Cancel")} aria-label={text("取消", "Cancel")}><X size={14} /></button>
+                </form>
+              ) : (
+                <button
+                  className="historyItem"
+                  onClick={() => (selectMode ? toggleSelected(item.id) : openConversation(item.id))}
+                  type="button"
+                  title={item.title || "未命名"}
+                >
+                  <span>{item.title || "未命名"}</span>
+                </button>
+              )}
+              {!selectMode && renamingId !== item.id && (confirmDeleteId === item.id ? (
+                <div className="historyRowActions confirming">
+                  <span>{text("删除？", "Delete?")}</span>
+                  <button className="miniButton dangerMini" onClick={() => deleteConversation(item.id)} type="button" title={text("确认删除", "Confirm delete")} aria-label={text("确认删除", "Confirm delete")}><Check size={14} /></button>
+                  <button className="miniButton" onClick={() => setConfirmDeleteId("")} type="button" title={text("取消", "Cancel")} aria-label={text("取消", "Cancel")}><X size={14} /></button>
+                </div>
+              ) : (
+                <div className="historyRowActions">
+                  <button className="miniButton" onClick={() => startRename(item)} type="button" title={text("重命名", "Rename")} aria-label={text("重命名", "Rename")}>
+                    <Pencil size={14} />
                   </button>
-                )}
-                {!selectMode && renamingId !== item.id && (confirmDeleteId === item.id ? (
-                  <div className="historyRowActions confirming">
-                    <span>{text("删除？", "Delete?")}</span>
-                    <button className="miniButton dangerMini" onClick={() => deleteConversation(item.id)} type="button" title={text("确认删除", "Confirm delete")} aria-label={text("确认删除", "Confirm delete")}><Check size={14} /></button>
-                    <button className="miniButton" onClick={() => setConfirmDeleteId("")} type="button" title={text("取消", "Cancel")} aria-label={text("取消", "Cancel")}><X size={14} /></button>
-                  </div>
-                ) : (
-                  <div className="historyRowActions">
-                    <button className="miniButton" onClick={() => startRename(item)} type="button" title={text("重命名", "Rename")} aria-label={text("重命名", "Rename")}>
-                      <Pencil size={14} />
-                    </button>
-                    <button className="miniButton dangerMini" onClick={() => setConfirmDeleteId(item.id)} type="button" title={text("删除", "Delete")} aria-label={text("删除", "Delete")}>
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            ))}
-          </div>
-        )}
+                  <button className="miniButton dangerMini" onClick={() => setConfirmDeleteId(item.id)} type="button" title={text("删除", "Delete")} aria-label={text("删除", "Delete")}>
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
         {historyStatus && <p className="miniStatus">{historyStatus}</p>}
       </aside>
+      <Resizer pane={historyPane} label={text("调整历史栏宽度", "Resize history")} />
       <div className="chatPane">
         <div className="chatHeader">
-          <div>
-            <h2>{conversationId ? "对话" : label("newChat")}</h2>
-            <span>{conversationModel || options.model || "默认模型"}</span>
-          </div>
-          <button className="secondaryButton" onClick={compressConversation} disabled={!conversationId || busy} type="button">
-            <Archive size={16} />
-            <span>{label("compress")}</span>
-          </button>
+          <h2>{conversationId ? (currentTitle || text("对话", "Chat")) : label("newChat")}</h2>
+          <span>{modelName}</span>
         </div>
         <div className="stream" ref={outputRef} onScroll={trackScroll}>
           {events.length === 0 && <div className="emptyState">输入消息，或用 @ 指定工具、历史、技能、记忆和知识。</div>}
@@ -1085,7 +1096,7 @@ function ChatView({ models, nativeWebProviders = [], options, setOptions, label,
             <div className="olderLoader">
               {loadingOlder
                 ? <span><span className="spinner" /> {text("正在加载更早的消息…", "Loading earlier messages...")}</span>
-                : <button className="secondaryButton" type="button" onClick={loadOlderEvents}>{text("加载更早的消息", "Load earlier messages")}</button>}
+                : <button className="quietButton" type="button" onClick={loadOlderEvents}>{text("加载更早的消息", "Load earlier messages")}</button>}
             </div>
           )}
           <StreamEvents
@@ -1100,7 +1111,6 @@ function ChatView({ models, nativeWebProviders = [], options, setOptions, label,
           />
           <PlanReviewCard plan={busy ? null : displayPlan} busy={busy} onApprove={() => reviewPlan("approved")} onReject={() => reviewPlan("rejected")} onRevise={revisePlan} onSave={savePlanCopy} onDelete={deletePlan} text={text} />
         </div>
-        <SubagentTray agents={subagents} tasks={agentTasks} conversationId={conversationId} onCancel={cancelSubagent} text={text} />
         <QuestionDialog
           key={`${pendingQuestion?.run_id || "saved"}:${pendingQuestion?.question || ""}`}
           question={pendingQuestion?.kind === "approval" ? null : pendingQuestion}
@@ -1159,38 +1169,133 @@ function ChatView({ models, nativeWebProviders = [], options, setOptions, label,
               onFocus={loadMentionOptions}
               placeholder="输入消息，Enter 发送，Shift+Enter 换行..."
             />
-            <div className="composerFooter">
-              <div className="composerTools">
-                <button className="composerIcon" type="button" onClick={() => fileInputRef.current?.click()} title={label("uploadFile")}><Paperclip size={17} /></button>
-                <button className="composerIcon" type="button" onClick={() => imageInputRef.current?.click()} title={label("uploadImage")}><Image size={17} /></button>
-                <select className="composerPicker modePicker" value={normalizeConversationMode(options.conversation_mode)} onChange={(event) => setOptions((current) => ({ ...current, conversation_mode: event.target.value }))} title={text("对话模式", "Conversation mode")} aria-label={text("对话模式", "Conversation mode")}>
-                  <option value="ask">{text("问答", "Ask")}</option>
-                  <option value="plan">{text("计划", "Plan")}</option>
-                  <option value="agent">Agent</option>
-                </select>
-                <select className="composerPicker modelPicker" value={conversationModel || options.model || ""} onChange={(event) => setConversationModel(event.target.value)} title={text("当前模型", "Current model")} aria-label={text("当前模型", "Current model")}>
-                  <option value="">{text("默认模型", "Default model")}</option>
-                  {models.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
-                </select>
-                <select className="composerPicker queuePicker" value={inputMode} onChange={(event) => setInputMode(event.target.value)} title={text("运行中发送方式", "Send while running")} aria-label={text("运行中发送方式", "Send while running")}>
-                  <option value="queue">{text("排队", "Queue")}</option>
-                  <option value="insert">{text("打断", "Interrupt")}</option>
-                </select>
-              </div>
-              <div className="composerActions">
-                {busy && <button className="composerIcon" type="button" onClick={togglePause} title={paused ? text("继续", "Resume") : text("暂停", "Pause")}>{paused ? <Play size={17} /> : <Pause size={17} />}</button>}
-                {busy && <button className="composerIcon dangerIcon" type="button" onClick={stopOutput} title={label("stop")}><Square size={15} /></button>}
-                <button
-                  className={options.file_editor_approval === "auto" ? "composerToggle active" : "composerToggle"}
-                  type="button"
-                  onClick={() => setOptions((current) => ({ ...current, file_editor_approval: current.file_editor_approval === "auto" ? "manual" : "auto" }))}
-                  title={label("autoApproval")}
-                  aria-pressed={options.file_editor_approval === "auto"}
+            <div className="composerBar">
+              <div className="composerGroup">
+                <PopPill iconOnly icon={<Plus size={16} />} title={text("添加", "Add")} width={230}>
+                  {({ close }) => (
+                    <div className="menuList">
+                      <MenuItem icon={<Paperclip size={15} />} label={label("uploadFile")} onClick={() => { close(); fileInputRef.current?.click(); }} />
+                      <MenuItem icon={<Image size={15} />} label={label("uploadImage")} onClick={() => { close(); imageInputRef.current?.click(); }} />
+                      <MenuItem icon={<AtSign size={15} />} label={text("引用工具 / 历史 / 技能…", "Mention tool / history / skill…")} onClick={() => { close(); updateMessage(`${message}@`, message.length + 1); composerRef.current?.focus(); }} />
+                      <MenuItem icon={<Archive size={15} />} label={label("compress")} hint={text("压缩当前上下文，完整历史保留", "Shrink the context; the full history stays")} disabled={!conversationId || busy} onClick={() => { close(); compressConversation(); }} />
+                      <MenuItem icon={<RefreshCw size={15} />} label={text("重置对话", "Reset conversation")} disabled={busy} onClick={() => { close(); newConversation(); }} />
+                    </div>
+                  )}
+                </PopPill>
+                <PopPill icon={modeInfo[modeNow].icon} label={modeInfo[modeNow].label} title={text("对话模式", "Conversation mode")} width={250} caret>
+                  {({ close }) => (
+                    <div className="menuList">
+                      {["ask", "plan", "agent"].map((mode) => (
+                        <MenuItem key={mode} icon={modeInfo[mode].icon} label={modeInfo[mode].label} hint={modeInfo[mode].hint} selected={mode === modeNow} onClick={() => { updateOption("conversation_mode", mode); close(); }} />
+                      ))}
+                    </div>
+                  )}
+                </PopPill>
+                <PopPill
+                  icon={<Globe size={14} />}
+                  label={webModeLabel(normalizeWebMode(options.web_search_mode), text)}
+                  title={text("联网", "Web access")}
+                  tone={normalizeWebMode(options.web_search_mode) === "off" ? "" : "on"}
+                  width={330}
                 >
-                  <Check size={14} />
-                  <span>{label("autoApproval")}</span>
-                </button>
-                <button className="composerSend" type="submit" disabled={!message.trim() && attachments.length === 0} title={busy ? (inputMode === "insert" ? text("打断并发送", "Interrupt and send") : text("加入队列", "Add to queue")) : label("send")} aria-label={label("send")}><Send size={17} /></button>
+                  <WebAccessControl options={options} update={updateOption} nativeReady={nativeReady} text={text} />
+                </PopPill>
+                <PopPill
+                  icon={<ShieldCheck size={14} />}
+                  label={securityLevel}
+                  title={text("安全级别", "Security level")}
+                  tone={{ L1: "safe", L2: "sandbox", L3: "full" }[securityLevel]}
+                  width={340}
+                >
+                  <SecurityControl security={security} error={securityError} onChange={changeSecurity} text={text} />
+                </PopPill>
+                <PopPill iconOnly icon={<SlidersHorizontal size={15} />} title={text("更多设置", "More settings")} width={460}>
+                  <MoreSettings options={options} update={updateOption} text={text} clearState={newConversation} />
+                </PopPill>
+              </div>
+              <div className="composerGroup right">
+                {busy && <span className="busyTag" title={text("本轮已运行", "Running for")}><span className="spinner" />{formatElapsed(elapsed)}</span>}
+                <PopPill
+                  icon={agentSummary.running > 0 ? <span className="runningDot" /> : <span className={`statusDot tone-${agentSummary.tone || "idle"}`} />}
+                  label={text(`${agentSummary.total} 个代理`, `${agentSummary.total} agents`)}
+                  title={text("子代理", "Sub-agents")}
+                  tone={agentSummary.tone}
+                  align="right"
+                  width={440}
+                >
+                  <div className="popBody">
+                    <SubagentPanel agents={subagents} tasks={agentTasks} conversationId={conversationId} onCancel={cancelSubagent} text={text} />
+                    <div className="popSection">
+                    <div className="formGrid">
+                      <label className="field">
+                        <span>{text("子代理模型", "Sub-agent model")}</span>
+                        <select value={options.subagent_model || ""} onChange={(event) => updateOption("subagent_model", event.target.value)}>
+                          <option value="">{text("跟随主模型", "Same as main")}</option>
+                          {models.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                    <StepSlider
+                      title={text("子代理思考强度", "Sub-agent thinking")}
+                      steps={reasoningSteps(text)}
+                      value={options.subagent_reasoning_effort || "default"}
+                      onChange={(value) => updateOption("subagent_reasoning_effort", value)}
+                    />
+                    <p className="popFoot">{text("派发任务时，Agent 也可以按难度自己为每个任务选模型。", "When spawning, the agent can also pick a model per task by difficulty.")}</p>
+                    </div>
+                  </div>
+                </PopPill>
+                <PopPill
+                  icon={<Brain size={14} />}
+                  label={<><span className="pillModel">{modelName}</span>{effort !== "default" && <span className="pillTag">{reasoningLabel(effort, text)}</span>}</>}
+                  title={text("模型与思考强度", "Model and thinking")}
+                  align="right"
+                  width={340}
+                  className="modelPill"
+                >
+                  {({ close }) => (
+                    <div className="popBody">
+                      <div className="menuList scroll">
+                        <MenuItem label={text("默认模型", "Default model")} selected={!modelNow} onClick={() => { setConversationModel(""); close(); }} />
+                        {models.map((model) => (
+                          <MenuItem key={model.value} label={model.label} selected={model.value === modelNow} onClick={() => { setConversationModel(model.value); close(); }} />
+                        ))}
+                      </div>
+                      <StepSlider
+                        title={text("思考强度", "Thinking effort")}
+                        steps={reasoningSteps(text)}
+                        value={effort}
+                        onChange={(value) => updateOption("reasoning_effort", value)}
+                      />
+                    </div>
+                  )}
+                </PopPill>
+                <PopPill
+                  icon={<ShieldCheck size={13} />}
+                  label={(approvalModes(text).find((mode) => mode.value === options.file_editor_approval) || approvalModes(text)[0]).short}
+                  title={text("批准方式", "Approval mode")}
+                  active={options.file_editor_approval === "auto"}
+                  align="right"
+                  width={320}
+                >
+                  {({ close }) => (
+                    <div className="menuList">
+                      {approvalModes(text).map((mode) => (
+                        <MenuItem key={mode.value} label={mode.label} hint={mode.hint} selected={options.file_editor_approval === mode.value} onClick={() => { updateOption("file_editor_approval", mode.value); close(); }} />
+                      ))}
+                    </div>
+                  )}
+                </PopPill>
+                {busy && (
+                  <Pill
+                    label={inputMode === "insert" ? text("打断", "Interrupt") : text("排队", "Queue")}
+                    title={text("运行中发送新消息的方式：点击切换", "What sending does while running: click to switch")}
+                    onClick={() => setInputMode((mode) => (mode === "insert" ? "queue" : "insert"))}
+                  />
+                )}
+                {busy && <button className="roundButton" type="button" onClick={togglePause} title={paused ? text("继续", "Resume") : text("暂停", "Pause")}>{paused ? <Play size={15} /> : <Pause size={15} />}</button>}
+                {busy && <button className="roundButton danger" type="button" onClick={stopOutput} title={label("stop")}><Square size={13} /></button>}
+                <button className="sendButton" type="submit" disabled={!message.trim() && attachments.length === 0} title={busy ? (inputMode === "insert" ? text("打断并发送", "Interrupt and send") : text("加入队列", "Add to queue")) : label("send")} aria-label={label("send")}><ArrowUp size={17} /></button>
               </div>
             </div>
           </div>
@@ -1211,134 +1316,198 @@ function normalizeWebMode(value) {
   return WEB_MODES.includes(value) ? value : "tool";
 }
 
-function WebModeSlider({ value, onChange, nativeReady, text }) {
-  const index = WEB_MODES.indexOf(normalizeWebMode(value));
-  const labels = [text("关闭", "Off"), text("工具", "Tool"), text("原生", "Native"), text("两者", "Both")];
-  const hints = [
-    text("不联网。", "No web access."),
-    text("模型调用 webSearch 工具搜索（DuckDuckGo / SearXNG / Tavily）。", "The model calls the webSearch tool (DuckDuckGo / SearXNG / Tavily)."),
-    text("使用供应商自带的联网：OpenRouter / 百炼在请求里开启搜索；DeepSeek 通过官方 Search / Fetch 接口提供 nativeWebSearch 与 webFetch 工具。不提供 webSearch 工具。", "Use the provider's own web access: OpenRouter / DashScope switch search on in the request; DeepSeek offers nativeWebSearch and webFetch tools through its Search / Fetch API. No webSearch tool."),
-    text("同时提供 webSearch 工具和供应商原生联网。", "Offer the webSearch tool and the provider's native web access."),
+function webModeLabel(mode, text) {
+  return { off: text("关闭", "Off"), tool: text("工具", "Tool"), native: text("原生", "Native"), both: text("两者", "Both") }[mode];
+}
+
+function reasoningSteps(text) {
+  return [
+    { value: "default", label: text("默认", "Default"), hint: text("不向供应商发送思考参数，使用模型自己的默认值。", "Send no reasoning parameter; the model keeps its own default.") },
+    { value: "off", label: text("关闭", "Off"), hint: text("尽量不思考（供应商支持时）。", "Ask for no thinking where the provider supports it.") },
+    { value: "low", label: text("低", "Low"), hint: text("少量思考，更快更省。", "A little thinking: faster and cheaper.") },
+    { value: "medium", label: text("中", "Medium"), hint: text("均衡。", "Balanced.") },
+    { value: "high", label: text("高", "High"), hint: text("深入思考，适合复杂任务。", "Deep thinking for hard tasks.") },
+    { value: "max", label: text("最大", "Max"), hint: text("最大思考强度，最慢也最贵。", "Maximum effort: slowest and most expensive.") },
   ];
+}
+
+function reasoningLabel(value, text) {
+  return reasoningSteps(text).find((step) => step.value === value)?.label || "";
+}
+
+function securitySteps(text) {
+  return [
+    { value: "L1", label: text("L1 只读", "L1 Read"), hint: text("只读且无害：读取 agent 自己的数据、RAG、历史、联网搜索。不执行任何代码，不能修改文件。", "Read-only and harmless: the agent's own data, RAG, history and web search. No code runs and nothing is edited.") },
+    { value: "L2", label: text("L2 隔离", "L2 Sandbox"), hint: text("所有工具可用，但 python、自定义工具和 stdio MCP 以无权限的系统用户运行，读不到密钥、配置和源码。需要 Linux 且后端以 root 启动（Docker 部署）。", "Every tool, but python, custom tools and stdio MCP run as an unprivileged OS user that cannot read secrets, configuration or source. Needs Linux and a backend started as root (Docker).") },
+    { value: "L3", label: text("L3 完全", "L3 Full"), hint: text("所有工具以后端自身的权限运行，等同于后端进程能做的一切。", "Everything runs with the backend's own rights: whatever the backend process can do.") },
+  ];
+}
+
+function WebAccessControl({ options, update, nativeReady, text }) {
+  const mode = normalizeWebMode(options.web_search_mode);
+  const steps = WEB_MODES.map((value) => ({
+    value,
+    label: webModeLabel(value, text),
+    hint: {
+      off: text("不联网。", "No web access."),
+      tool: text("模型调用 webSearch 工具搜索（DuckDuckGo / SearXNG / Tavily）。", "The model calls the webSearch tool (DuckDuckGo / SearXNG / Tavily)."),
+      native: text("使用供应商自带的联网：OpenRouter / 百炼在请求里开启搜索；DeepSeek 通过官方 Search / Fetch 接口提供 nativeWebSearch 与 webFetch 工具。不提供 webSearch 工具。", "Use the provider's own web access: OpenRouter / DashScope switch search on in the request; DeepSeek offers nativeWebSearch and webFetch tools through its Search / Fetch API. No webSearch tool."),
+      both: text("同时提供 webSearch 工具和供应商原生联网。", "Offer the webSearch tool and the provider's native web access."),
+    }[value],
+  }));
   return (
-    <div className="webMode">
-      <div className="webModeHead">
-        <span>{text("联网", "Web")}</span>
-        <strong>{labels[index]}</strong>
-      </div>
-      <input
-        className="webModeRange"
-        type="range"
-        min="0"
-        max="3"
-        step="1"
-        value={index}
-        onChange={(event) => onChange(WEB_MODES[Number(event.target.value)])}
-        aria-label={text("联网方式", "Web access")}
-        aria-valuetext={labels[index]}
-        style={{ "--fill": `${(index / 3) * 100}%` }}
-      />
-      <div className="webModeTicks">
-        {labels.map((label, position) => (
-          <button key={label} type="button" className={position === index ? "active" : ""} onClick={() => onChange(WEB_MODES[position])}>
-            {label}
-          </button>
-        ))}
-      </div>
-      <p className="webModeHint">{hints[index]}</p>
-      {index >= 2 && !nativeReady && (
-        <p className="webModeWarn">
+    <div className="popBody">
+      <StepSlider title={text("联网", "Web access")} steps={steps} value={mode} onChange={(value) => update("web_search_mode", value)} />
+      {(mode === "native" || mode === "both") && !nativeReady && (
+        <p className="notice warn">
           {text("当前模型的供应商还没有配置原生联网搜索：请到「模型」页，在该供应商下选择“原生联网搜索”。", "This model's provider has no native web search configured: choose one under that provider on the Models page.")}
         </p>
       )}
+      <div className="formGrid">
+        <SelectField label={text("搜索引擎", "Search engine")} value={options.web_search_provider} onChange={(value) => update("web_search_provider", value)} values={choices("searchEngine", text)} />
+        <SelectField label={text("失败自动切换", "Fallback")} value={String(options.web_search_auto_switch)} onChange={(value) => update("web_search_auto_switch", value === "true")} values={choices("onOff", text)} />
+      </div>
     </div>
   );
 }
 
-function SettingsPanel({ models, nativeWebProviders = [], options, setOptions, currentModel, setCurrentModel, clearState, text }) {
-  const update = (key, value) => setOptions((current) => ({ ...current, [key]: value }));
+function SecurityControl({ security, error, onChange, text }) {
+  const steps = securitySteps(text);
+  const level = security?.level || "L3";
+  const l2 = security?.l2;
   return (
-    <div className="settingsPane embeddedSettings">
-      <div className="paneHeader">
-        <h2>{text("设置", "SETTINGS")}</h2>
-        <Settings size={17} />
-      </div>
-      <label>
-        <span>{text("模型", "Model")}</span>
-        <select value={currentModel || ""} onChange={(event) => setCurrentModel(event.target.value)}>
-          <option value="">{text("默认", "Default")}</option>
-          {models.map((model) => <option key={model.value} value={model.value}>{model.label}</option>)}
-        </select>
-      </label>
-      <QuestionLevelControl value={options.question_mode} onChange={(value) => update("question_mode", value)} text={text} />
-      <button
-        className={options.developer_mode ? "developerToggle active" : "developerToggle"}
-        type="button"
-        onClick={() => update("developer_mode", !options.developer_mode)}
-        aria-pressed={options.developer_mode}
-      >
-        <Code2 size={16} />
-        <span>{text("开发者模式", "Developer mode")}</span>
-        <strong>{options.developer_mode ? "ON" : "OFF"}</strong>
-      </button>
-      <label>
-        <span>{text("额外提示", "Extra Prompt")}</span>
-        <textarea className="smallTextArea" value={options.system_prompt} onChange={(event) => update("system_prompt", event.target.value)} placeholder={text("仅当前对话追加到首个 system prompt", "Append only to the first system prompt in this chat")} />
-      </label>
-      <WebModeSlider
-        value={options.web_search_mode}
-        onChange={(value) => update("web_search_mode", value)}
-        nativeReady={nativeWebProviders.includes(String(currentModel || "").split(":")[0])}
-        text={text}
+    <div className="popBody">
+      <StepSlider title={text("安全级别", "Security level")} steps={steps} value={level} onChange={onChange} tone={level.toLowerCase()} />
+      {l2 && !l2.available && <p className="notice warn">{text("L2 当前不可用：", "L2 is unavailable here: ")}{l2.reason}</p>}
+      {error && error !== l2?.reason && <p className="notice error">{error}</p>}
+      <p className="popFoot">{text("随时可调，立即生效（包括正在运行的回合）。只能在这里修改，模型和后端代码都改不了。", "Changes apply at once, mid-turn included. Only this slider can change it - not the model, not agent code.")}</p>
+    </div>
+  );
+}
+
+function MoreSettings({ options, update, text, clearState }) {
+  return (
+    <div className="popBody">
+      <StepSlider
+        title={text("提问强度", "Clarification")}
+        steps={[
+          { value: "off", label: text("跳过", "Skip") },
+          { value: "light", label: text("轻度", "Light") },
+          { value: "heavy", label: text("重度", "Heavy") },
+        ]}
+        value={options.question_mode}
+        onChange={(value) => update("question_mode", value)}
       />
-      <div className="settingGrid">
-        <SelectField label={text("搜索", "Search")} value={options.web_search_provider} onChange={(value) => update("web_search_provider", value)} values={["duckduckgo", "searxng", "tavily"]} />
-        <SelectField label={text("自动切换", "Search Fallback")} value={String(options.web_search_auto_switch)} onChange={(value) => update("web_search_auto_switch", value === "true")} values={["true", "false"]} />
-        <SelectField label="RAG" value={options.rag_mode} onChange={(value) => update("rag_mode", value)} values={["off", "on", "auto"]} />
-        <SelectField label="HTTP" value={options.curl_mode} onChange={(value) => update("curl_mode", value)} values={["off", "auto"]} />
-        <SelectField label="Python" value={options.python_mode} onChange={(value) => update("python_mode", value)} values={["off", "auto"]} />
-        <SelectField label={text("文件阅读", "File Reader")} value={options.file_reader_mode} onChange={(value) => update("file_reader_mode", value)} values={["off", "auto"]} />
-        <SelectField label={text("文件", "File")} value={options.file_editor_mode} onChange={(value) => update("file_editor_mode", value)} values={["off", "auto"]} />
-        <SelectField label={text("批准", "Approval")} value={options.file_editor_approval} onChange={(value) => update("file_editor_approval", value)} values={["manual", "auto", "aiReview", "readOnly"]} />
-        <SelectField label="MCP" value={options.mcp_mode} onChange={(value) => update("mcp_mode", value)} values={["off", "auto"]} />
-        <SelectField label={text("历史", "History")} value={options.history_mode} onChange={(value) => update("history_mode", value)} values={["off", "auto"]} />
-        <SelectField label={text("自动化", "Automation")} value={options.automation_mode} onChange={(value) => update("automation_mode", value)} values={["off", "auto"]} />
-        <label>
-          <span>{text("对话模式", "Mode")}</span>
-          <select value={normalizeConversationMode(options.conversation_mode)} onChange={(event) => update("conversation_mode", event.target.value)}>
-            <option value="ask">{text("问答 - 只读理解与查询", "Ask - read-only answers")}</option>
-            <option value="plan">{text("计划 - 研究并等待批准", "Plan - research and review")}</option>
-            <option value="agent">{text("Agent - 执行、测试、迭代", "Agent - implement and verify")}</option>
-          </select>
+      <div className="formGrid three">
+        <SelectField label="RAG" value={options.rag_mode} onChange={(value) => update("rag_mode", value)} values={choices("rag", text)} />
+        <SelectField label="HTTP" value={options.curl_mode} onChange={(value) => update("curl_mode", value)} values={choices("switch", text)} />
+        <SelectField label="Python" value={options.python_mode} onChange={(value) => update("python_mode", value)} values={choices("switch", text)} />
+        <SelectField label={text("文件阅读", "File reader")} value={options.file_reader_mode} onChange={(value) => update("file_reader_mode", value)} values={choices("switch", text)} />
+        <SelectField label={text("文件编辑", "File editor")} value={options.file_editor_mode} onChange={(value) => update("file_editor_mode", value)} values={choices("switch", text)} />
+        <SelectField label={text("编辑批准", "Edit approval")} value={options.file_editor_approval} onChange={(value) => update("file_editor_approval", value)} values={choices("approval", text)} />
+        <SelectField label="MCP" value={options.mcp_mode} onChange={(value) => update("mcp_mode", value)} values={choices("switch", text)} />
+        <SelectField label={text("历史", "History")} value={options.history_mode} onChange={(value) => update("history_mode", value)} values={choices("switch", text)} />
+        <SelectField label={text("自动化", "Automation")} value={options.automation_mode} onChange={(value) => update("automation_mode", value)} values={choices("switch", text)} />
+        <label className="field">
+          <span>{text("工具轮次", "Tool rounds")}</span>
+          <input type="number" min="-1" value={options.max_tool_rounds} onChange={(event) => update("max_tool_rounds", Number(event.target.value))} />
         </label>
       </div>
-      <div className="checkGrid">
-        <label className="checkLine"><input type="checkbox" checked={options.rag_include_memory} onChange={(event) => update("rag_include_memory", event.target.checked)} /><span>{text("RAG 记忆", "RAG Memory")}</span></label>
-        <label className="checkLine"><input type="checkbox" checked={options.rag_include_skills} onChange={(event) => update("rag_include_skills", event.target.checked)} /><span>{text("RAG 技能", "RAG Skill")}</span></label>
-        <label className="checkLine"><input type="checkbox" checked={options.rag_include_knowledge} onChange={(event) => update("rag_include_knowledge", event.target.checked)} /><span>{text("RAG 知识", "RAG Knowledge")}</span></label>
+      <small className="muted">{text("工具轮次：-1 = 无限制，0 = 禁用工具", "Tool rounds: -1 = unlimited, 0 = tools disabled")}</small>
+      <div className="checkRow">
+        <label className="checkLine"><input type="checkbox" checked={options.rag_include_memory} onChange={(event) => update("rag_include_memory", event.target.checked)} /><span>{text("记忆", "Memory")}</span></label>
+        <label className="checkLine"><input type="checkbox" checked={options.rag_include_skills} onChange={(event) => update("rag_include_skills", event.target.checked)} /><span>{text("技能", "Skills")}</span></label>
+        <label className="checkLine"><input type="checkbox" checked={options.rag_include_knowledge} onChange={(event) => update("rag_include_knowledge", event.target.checked)} /><span>{text("知识", "Knowledge")}</span></label>
+        <label className="checkLine"><input type="checkbox" checked={Boolean(options.developer_mode)} onChange={(event) => update("developer_mode", event.target.checked)} /><span>{text("开发者模式", "Developer mode")}</span></label>
       </div>
-      <label>
-        <span>{text("工具轮次", "Tool Rounds")}</span>
-        <input type="number" min="-1" value={options.max_tool_rounds} onChange={(event) => update("max_tool_rounds", Number(event.target.value))} />
-        <small>{text("-1 = 无限制，0 = 禁用工具", "-1 = unlimited, 0 = tools disabled")}</small>
+      <label className="field">
+        <span>{text("额外提示", "Extra prompt")}</span>
+        <textarea className="smallTextArea" value={options.system_prompt || ""} onChange={(event) => update("system_prompt", event.target.value)} placeholder={text("仅当前对话追加到首个 system prompt", "Append only to the first system prompt in this chat")} />
       </label>
-      <button className="secondaryButton" type="button" onClick={clearState} title={text("重置对话", "Clear conversation")}>
-        <RefreshCw size={16} />
-        <span>{text("重置对话", "Reset")}</span>
+      <button className="quietButton" type="button" onClick={clearState}>
+        <RefreshCw size={14} />
+        <span>{text("重置对话", "Reset conversation")}</span>
       </button>
     </div>
   );
 }
 
+// What the composer's approval pill offers. No mode involves a model except AI review.
+function approvalModes(text) {
+  return [
+    {
+      value: "auto",
+      short: text("自动批准", "Auto"),
+      label: text("自动执行", "Run automatically"),
+      hint: text("文件修改、Python、MCP 等直接执行，不经过任何审查。", "File edits, Python, MCP and the rest run directly, without any review."),
+    },
+    {
+      value: "manual",
+      short: text("手动批准", "Manual"),
+      label: text("手动批准文件修改", "Approve file edits"),
+      hint: text("每次改文件先暂停并显示 diff，你批准后由系统按原样写入；其他操作照常执行。", "Each file edit pauses with its diff and the system writes exactly that when you approve; other calls run as usual."),
+    },
+    {
+      value: "aiReview",
+      short: text("AI 审查", "AI review"),
+      label: text("AI 审查", "AI review"),
+      hint: text("高风险操作（Python、写文件、MCP 调用、改设置等）先交给模型审查，拒绝则不执行。", "High-risk calls (Python, file writes, MCP calls, settings…) are checked by a model first and skipped when it refuses."),
+    },
+    {
+      value: "readOnly",
+      short: text("只读", "Read-only"),
+      label: text("禁止写文件", "No file writes"),
+      hint: text("文件编辑只能读，不能写；其他操作照常执行。", "The file editor can only read; other calls run as usual."),
+    },
+  ];
+}
+
+// Option labels for every fixed-choice select, in both UI languages: [value, 中文, English].
+const CHOICES = {
+  switch: [["off", "关闭", "Off"], ["auto", "自动", "Auto"]],
+  rag: [["off", "关闭", "Off"], ["on", "开启", "On"], ["auto", "自动", "Auto"]],
+  onOff: [["true", "开启", "On"], ["false", "关闭", "Off"]],
+  searchEngine: [["duckduckgo", "DuckDuckGo", "DuckDuckGo"], ["searxng", "SearXNG", "SearXNG"], ["tavily", "Tavily", "Tavily"]],
+  approval: [["manual", "手动批准", "Manual"], ["auto", "自动", "Auto"], ["aiReview", "AI 审查", "AI review"], ["readOnly", "只读", "Read-only"]],
+  automation: [["reminder", "提醒", "Reminder"], ["llm", "模型任务", "LLM task"], ["script", "Python 脚本", "Python script"], ["mcp", "MCP 调用", "MCP call"], ["configureMcp", "配置 MCP", "Configure MCP"]],
+  transport: [["streamable_http", "Streamable HTTP（远程）", "Streamable HTTP (remote)"], ["stdio", "stdio（本地命令）", "stdio (local command)"]],
+};
+
+function choices(kind, text) {
+  return CHOICES[kind].map(([value, zh, en]) => [value, text(zh, en)]);
+}
+
+// values: plain strings or [value, label] pairs. A bare value is shown with a capital letter, never raw.
 function SelectField({ label, value, onChange, values, icon = null }) {
   return (
-    <label>
+    <label className="field">
       <span>{icon}{label}</span>
       <select value={value} onChange={(event) => onChange(event.target.value)}>
-        {values.map((item) => <option key={item} value={item}>{item}</option>)}
+        {values.map((item) => {
+          const [optionValue, optionLabel] = Array.isArray(item) ? item : [item, item.charAt(0).toUpperCase() + item.slice(1)];
+          return <option key={optionValue} value={optionValue}>{optionLabel}</option>;
+        })}
       </select>
     </label>
   );
+}
+
+function formatElapsed(seconds) {
+  return seconds >= 60 ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}` : `${seconds}s`;
+}
+
+function useElapsed(active) {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    if (!active) {
+      setSeconds(0);
+      return undefined;
+    }
+    const started = Date.now();
+    const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return seconds;
 }
 
 function StreamEvents({ events, indexOffset = 0, busy = false, canAct = false, onPreviewImage, onBranch, onEdit, text }) {
@@ -1397,29 +1566,6 @@ function PlanReviewCard({ plan, busy, onApprove, onReject, onRevise, onSave, onD
         {ready && <button className="primaryButton" type="button" onClick={onApprove} disabled={busy}><Check size={16} /><span>{text("批准并执行", "Approve and implement")}</span></button>}
       </div>
     </section>
-  );
-}
-
-function QuestionLevelControl({ value, onChange, text }) {
-  const levels = ["off", "light", "heavy"];
-  const index = Math.max(0, levels.indexOf(value));
-  return (
-    <label className="questionLevel">
-      <span>{text("提问强度", "Clarification")}</span>
-      <input
-        type="range"
-        min="0"
-        max="2"
-        step="1"
-        value={index}
-        onChange={(event) => onChange(levels[Number(event.target.value)])}
-      />
-      <div className="questionLevelLabels" aria-hidden="true">
-        <span>{text("跳过", "Skip")}</span>
-        <span>{text("轻度", "Light")}</span>
-        <span>{text("重度", "Heavy")}</span>
-      </div>
-    </label>
   );
 }
 
@@ -1541,14 +1687,34 @@ function QuestionDialog({ question, busy, onRespond, text }) {
   );
 }
 
-function SubagentTray({ agents, tasks = [], conversationId, onCancel, text }) {
+const AGENT_ACTIVE = new Set(["running", "queued"]);
+
+function agentStatusLabel(text) {
+  return {
+    queued: text("排队中", "Queued"), running: text("运行中", "Running"), done: text("已完成", "Done"),
+    failed: text("失败", "Failed"), cancelled: text("已取消", "Cancelled"), timeout: text("超时", "Timed out"),
+    interrupted: text("已中断", "Interrupted"),
+  };
+}
+
+// What the "N agents" pill shows: how many, and the colour that says how they are doing.
+function summarizeAgents(agents) {
+  const list = Object.values(agents);
+  const running = list.filter((agent) => AGENT_ACTIVE.has(agent.status)).length;
+  const bad = list.filter((agent) => ["failed", "timeout", "interrupted"].includes(agent.status)).length;
+  let tone = "";
+  if (running > 0) tone = "running";
+  else if (bad > 0) tone = "failed";
+  else if (list.length > 0) tone = "done";
+  return { total: list.length, running, tone };
+}
+
+function SubagentPanel({ agents, tasks = [], conversationId, onCancel, text }) {
   const list = Object.values(agents).sort((a, b) => (a.startedAt || 0) - (b.startedAt || 0));
-  const [open, setOpen] = useState(true);
   const [expanded, setExpanded] = useState("");
   const [detail, setDetail] = useState(null);
   const [now, setNow] = useState(Date.now());
-  const active = (agent) => agent.status === "running" || agent.status === "queued";
-  const runningCount = list.filter(active).length;
+  const runningCount = list.filter((agent) => AGENT_ACTIVE.has(agent.status)).length;
 
   useEffect(() => {
     if (runningCount === 0) return undefined;
@@ -1559,7 +1725,7 @@ function SubagentTray({ agents, tasks = [], conversationId, onCancel, text }) {
   useEffect(() => {
     if (!expanded) {
       setDetail(null);
-      return;
+      return undefined;
     }
     let stale = false;
     fetchJson(`/api/conversations/${encodeURIComponent(conversationId)}/subagents/${encodeURIComponent(expanded)}`)
@@ -1568,72 +1734,66 @@ function SubagentTray({ agents, tasks = [], conversationId, onCancel, text }) {
     return () => { stale = true; };
   }, [expanded, conversationId, list.find((agent) => agent.id === expanded)?.status]);
 
-  if (list.length === 0 && tasks.length === 0) return null;
+  if (list.length === 0 && tasks.length === 0) {
+    return <p className="popEmpty">{text("还没有后台任务。Agent 派发子代理后会显示在这里。", "No background agents yet. They appear here once the agent spawns some.")}</p>;
+  }
   const elapsed = (agent) => {
-    const seconds = active(agent) ? Math.max(0, now / 1000 - (agent.startedAt || now / 1000)) : agent.elapsedSeconds || 0;
+    const seconds = AGENT_ACTIVE.has(agent.status) ? Math.max(0, now / 1000 - (agent.startedAt || now / 1000)) : agent.elapsedSeconds || 0;
     return seconds >= 60 ? `${Math.floor(seconds / 60)}m${String(Math.floor(seconds % 60)).padStart(2, "0")}s` : `${Math.floor(seconds)}s`;
   };
-  const statusLabel = {
-    queued: text("排队中", "Queued"), running: text("运行中", "Running"), done: text("已完成", "Done"),
-    failed: text("失败", "Failed"), cancelled: text("已取消", "Cancelled"), timeout: text("超时", "Timed out"),
-    interrupted: text("已中断", "Interrupted"),
-  };
+  const statusLabel = agentStatusLabel(text);
+  const taskLabel = { done: text("完成", "done"), failed: text("失败", "failed"), cancelled: text("已取消", "cancelled"), running: text("进行中", "running"), pending: text("待办", "pending") };
 
   return (
-    <section className="subagentTray" aria-label={text("后台任务", "Background agents")}>
-      <button className="subagentBar" type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
-        <Bot size={15} />
-        <strong>{text("后台任务", "Background agents")}</strong>
-        <span>{runningCount > 0 ? text(`${runningCount} 个运行中`, `${runningCount} running`) : text("全部完成", "All finished")} · {list.length}</span>
-        <ChevronRight size={14} className={open ? "subagentChevron open" : "subagentChevron"} />
-      </button>
-      {open && (
-        <div className="subagentList">
-          {tasks.length > 0 && (
-            <ol className="taskList" aria-label={text("任务列表", "Task list")}>
-              {tasks.map((task) => (
-                <li className={`taskItem task-${task.status}`} key={task.id}>
-                  <span className="taskMark" aria-hidden="true">{{ done: "✓", failed: "✗", cancelled: "–", running: "…", pending: "○" }[task.status] || "○"}</span>
-                  <span className="taskTitle">{task.title}</span>
-                  <small>{{ done: text("完成", "done"), failed: text("失败", "failed"), cancelled: text("已取消", "cancelled"), running: text("进行中", "running"), pending: text("待办", "pending") }[task.status]}</small>
-                </li>
-              ))}
-            </ol>
-          )}
-          {list.map((agent) => (
-            <article className={`subagentCard status-${agent.status}`} key={agent.id}>
-              <div className="subagentHead">
-                <button className="subagentTitle" type="button" onClick={() => setExpanded(expanded === agent.id ? "" : agent.id)}>
-                  {active(agent) ? <span className="runningDot" /> : <span className="subagentStatusDot" />}
-                  <b>{agent.name}</b>
-                  {agent.background && <em className="bgBadge" title={text("有意后台运行：不会随对话结束被终止", "Deliberately in the background: not killed when the turn ends")}>{text("后台", "BG")}</em>}
-                  <small>{statusLabel[agent.status] || agent.status} · {elapsed(agent)}{agent.rounds ? ` · ${agent.rounds} ${text("步", "steps")}` : ""}</small>
-                </button>
-                {active(agent) && (
-                  <button className="miniButton dangerMini" type="button" onClick={() => onCancel(agent.id)} title={text("取消这个任务", "Cancel this agent")} aria-label={text("取消", "Cancel")}>
-                    <X size={14} />
-                  </button>
-                )}
-              </div>
-              {active(agent) && agent.activity && <p className="subagentLine">{agent.activity}</p>}
-              {!active(agent) && agent.error && <p className="subagentLine error">{agent.killReason ? `${text("已终止：", "Killed: ")}${agent.killReason}` : agent.error}</p>}
-              {!active(agent) && !agent.error && agent.result && expanded !== agent.id && <p className="subagentLine">{agent.result}</p>}
-              {expanded === agent.id && (
-                <div className="subagentDetail">
-                  {detail?.prompt && <details><summary>{text("任务", "Task")}</summary><MarkdownText text={detail.prompt} /></details>}
-                  {detail?.events?.length > 0 && (
-                    <ul className="subagentSteps">
-                      {detail.events.filter((item) => item.type === "tool_call").slice(-12).map((item, index) => <li key={index}>{item.text}</li>)}
-                    </ul>
-                  )}
-                  {detail?.fullResult ? <MarkdownText text={detail.fullResult} /> : <p className="subagentLine">{text("尚无结果。", "No result yet.")}</p>}
-                </div>
-              )}
-            </article>
+    <div className="subagentList">
+      {tasks.length > 0 && (
+        <ol className="taskList" aria-label={text("任务列表", "Task list")}>
+          {tasks.map((task) => (
+            <li className={`taskItem task-${task.status}`} key={task.id}>
+              <span className="taskMark" aria-hidden="true">{{ done: "✓", failed: "✗", cancelled: "–", running: "…", pending: "○" }[task.status] || "○"}</span>
+              <span className="taskTitle">{task.title}</span>
+              <small>{taskLabel[task.status]}</small>
+            </li>
           ))}
-        </div>
+        </ol>
       )}
-    </section>
+      {list.map((agent) => {
+        const active = AGENT_ACTIVE.has(agent.status);
+        return (
+          <article className={`subagentCard status-${agent.status}`} key={agent.id}>
+            <div className="subagentHead">
+              <button className="subagentTitle" type="button" onClick={() => setExpanded(expanded === agent.id ? "" : agent.id)}>
+                {active ? <span className="runningDot" /> : <span className="subagentStatusDot" />}
+                <b>{agent.name}</b>
+                {agent.model && <em className="bgBadge" title={text("这个代理使用的模型", "Model this agent uses")}>{String(agent.model).split(":").pop()}</em>}
+                {agent.background && <em className="bgBadge" title={text("有意后台运行：不会随对话结束被终止", "Deliberately in the background: not killed when the turn ends")}>{text("后台", "BG")}</em>}
+                <span className="statusTag">{statusLabel[agent.status] || agent.status}</span>
+                <small>{elapsed(agent)}{agent.rounds ? ` · ${agent.rounds} ${text("步", "steps")}` : ""}</small>
+              </button>
+              {active && (
+                <button className="miniButton dangerMini" type="button" onClick={() => onCancel(agent.id)} title={text("取消这个任务", "Cancel this agent")} aria-label={text("取消", "Cancel")}>
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+            {active && agent.activity && <p className="subagentLine">{agent.activity}</p>}
+            {!active && agent.error && <p className="subagentLine error">{agent.killReason ? `${text("已终止：", "Killed: ")}${agent.killReason}` : agent.error}</p>}
+            {!active && !agent.error && agent.result && expanded !== agent.id && <p className="subagentLine">{agent.result}</p>}
+            {expanded === agent.id && (
+              <div className="subagentDetail">
+                {detail?.prompt && <details><summary>{text("任务", "Task")}</summary><MarkdownText text={detail.prompt} /></details>}
+                {detail?.events?.length > 0 && (
+                  <ul className="subagentSteps">
+                    {detail.events.filter((item) => item.type === "tool_call").slice(-12).map((item, index) => <li key={index}>{item.text}</li>)}
+                  </ul>
+                )}
+                {detail?.fullResult ? <MarkdownText text={detail.fullResult} /> : <p className="subagentLine">{text("尚无结果。", "No result yet.")}</p>}
+              </div>
+            )}
+          </article>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1642,12 +1802,16 @@ function ApprovalDialog({ approval, busy, onRespond, text }) {
   const [minimized, setMinimized] = useState(false);
   if (!approval) return null;
   const risk = ["low", "medium", "high"].includes(approval.risk) ? approval.risk : "medium";
+  const edits = approval.source === "fileEditor" && Array.isArray(approval.pending_edits) ? approval.pending_edits : null;
+  const editPaths = edits ? [...new Set(edits.map((edit) => edit.path))].join(", ") : "";
+  const actionText = edits ? text(`应用 ${edits.length} 处文件修改：${editPaths}`, `Apply ${edits.length} file edit${edits.length === 1 ? "" : "s"}: ${editPaths}`) : approval.action;
+  const titleText = approval.title || (edits ? text("批准文件修改", "Approve file edits") : text("确认执行操作", "Confirm action"));
   const riskLabel = { low: text("低风险", "Low risk"), medium: text("中等风险", "Medium risk"), high: text("高风险", "High risk") }[risk];
 
   if (minimized) {
     return (
       <button className="questionMinimized" type="button" onClick={() => setMinimized(false)}>
-        <span><strong>{text("等待批准", "Approval needed")}</strong>{approval.action}</span>
+        <span><strong>{text("等待批准", "Approval needed")}</strong>{actionText}</span>
         <Maximize2 size={17} />
       </button>
     );
@@ -1659,7 +1823,7 @@ function ApprovalDialog({ approval, busy, onRespond, text }) {
         <header className="questionHeader">
           <div>
             <span><ShieldCheck size={12} /> {text("需要你的批准", "APPROVAL NEEDED")} · <b className={`riskBadge risk-${risk}`}>{riskLabel}</b></span>
-            <h2 id="approval-title">{approval.title || text("确认执行操作", "Confirm action")}</h2>
+            <h2 id="approval-title">{titleText}</h2>
           </div>
           <div className="questionHeaderActions">
             <button className="iconButton neutral" type="button" onClick={() => setMinimized(true)} title={text("缩小", "Minimize")}>
@@ -1667,7 +1831,7 @@ function ApprovalDialog({ approval, busy, onRespond, text }) {
             </button>
           </div>
         </header>
-        <p className="questionText">{approval.action}</p>
+        <p className="questionText">{actionText}</p>
         {approval.details && <div className="approvalDetails"><MarkdownText text={approval.details} /></div>}
         <label className="questionAnswer">
           <span>{text("补充说明（可选，会一并发给 AI）", "Note for the AI (optional)")}</span>
@@ -1936,6 +2100,8 @@ function ImagePreview({ image, onClose }) {
 }
 
 function DataView({ text, models }) {
+  const filesPane = usePane("data-files", { size: 290, min: 200, max: 480, side: "start" });
+  const importPane = usePane("data-import", { size: 320, min: 240, max: 520, side: "end" });
   const [kind, setKind] = useState("instruction");
   const [files, setFiles] = useState([]);
   const [selected, setSelected] = useState("");
@@ -1949,7 +2115,10 @@ function DataView({ text, models }) {
   const [chunkModel, setChunkModel] = useState("");
   const [ingesting, setIngesting] = useState(false);
   const [ragRefresh, setRagRefresh] = useState({ phase: "idle", message: "" });
+  const [prompts, setPrompts] = useState([]);
+  const [copied, setCopied] = useState(false);
   const knowledgeUploadRef = useRef(null);
+  const isPrompts = kind === "prompts";
 
   useEffect(() => {
     refreshResourceList();
@@ -1975,6 +2144,18 @@ function DataView({ text, models }) {
   async function refreshResourceList() {
     setStatus("");
     setPreview(false);
+    if (kind === "prompts") {
+      try {
+        const data = await fetchJson("/api/prompts");
+        const items = data.items || [];
+        setPrompts(items);
+        setFiles([]);
+        if (items.length) selectPrompt(items[0]);
+      } catch (error) {
+        setStatus(`${text("加载失败", "Load failed")}: ${String(error.message || error)}`);
+      }
+      return;
+    }
     if (kind === "instruction") {
       await openInstruction();
       setFiles([{ path: "data/instruction.md", name: "instruction.md", scope: "user", writable: true }]);
@@ -1985,6 +2166,23 @@ function DataView({ text, models }) {
     setSelected("");
     setContent("");
     setSelectedMeta({ writable: true, scope: "user" });
+  }
+
+  function selectPrompt(item) {
+    setSelected(item.id);
+    setContent(item.content || "");
+    setSelectedMeta({ writable: false, scope: "system" });
+    setCopied(false);
+  }
+
+  async function copyContent() {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setStatus(text("复制失败，请手动选择文本。", "Copy failed; select the text by hand."));
+    }
   }
 
   async function openInstruction() {
@@ -2134,17 +2332,33 @@ function DataView({ text, models }) {
     ["skills", text("技能", "SKILL")],
     ["knowledge", text("知识", "KNOWLEDGE")],
     ["plans", text("计划", "PLANS")],
+    ["prompts", text("提示词", "PROMPTS")],
   ];
   const isMarkdown = selected.toLowerCase().endsWith(".md");
+  const promptGroups = [
+    ["system", text("系统提示词", "System prompt")],
+    ["turn", text("每轮消息", "Per turn")],
+    ["other", text("其他模型调用", "Other model calls")],
+    ["tools", text("工具定义", "Tool schemas")],
+  ];
+  const selectedPrompt = isPrompts ? prompts.find((item) => item.id === selected) : null;
+  const headerTitle = selectedPrompt ? text(selectedPrompt.title_zh, selectedPrompt.title) : selected || text("资源文件", "Resource file");
+  const headerHint = isPrompts
+    ? `${text("只读：应用实际发送给模型的提示词，仅用于调试，不能在这里修改。", "Read-only: the prompts the application really sends to a model, for debugging. They cannot be changed here.")}${selectedPrompt ? ` ${text(selectedPrompt.note_zh, selectedPrompt.note)}` : ""}`
+    : text(
+        `${selectedMeta.writable ? "可编辑用户文件" : "系统级文件只读"}。指令是短规则，记忆是事实，技能是流程，知识是参考文档。`,
+        `${selectedMeta.writable ? "Editable user file" : "System file is read-only"}. Instructions are short rules, memory is facts, skills are workflows, and knowledge is reference material.`
+      );
 
   return (
-    <section className="dataLayout">
-      <aside className="fileListPane">
+    <section className="dataLayout" style={{ gridTemplateColumns: isPrompts ? splitColumns(filesPane, "r", null) : splitColumns(filesPane, "r", null, "r", importPane) }}>
+      <aside className="fileListPane" aria-hidden={filesPane.collapsed || undefined}>
         <div className="segmented vertical">
           {resourceTabs.map(([value, tabLabel]) => (
             <button key={value} className={kind === value ? "active" : ""} onClick={() => setKind(value)} type="button">{tabLabel}</button>
           ))}
         </div>
+        {!isPrompts && (
         <section className="dataSidebarSection" aria-label={text("RAG 索引设置", "RAG index settings")}>
           <div className="dataSidebarHeading">
             <Database size={15} />
@@ -2183,8 +2397,21 @@ function DataView({ text, models }) {
             </div>
           )}
         </section>
+        )}
         <input ref={knowledgeUploadRef} className="hiddenInput" type="file" onChange={ingestKnowledgeFile} />
         <div className="fileList">
+          {isPrompts && promptGroups.map(([group, groupLabel]) => (
+            <React.Fragment key={group}>
+              <div className="fileGroup">{groupLabel}</div>
+              {prompts.filter((item) => item.group === group).map((item) => (
+                <button key={item.id} className={selected === item.id ? "fileItem active" : "fileItem"} onClick={() => selectPrompt(item)} type="button">
+                  <FileText size={15} />
+                  <span>{text(item.title_zh, item.title)}</span>
+                  <small>{item.content.length.toLocaleString()}</small>
+                </button>
+              ))}
+            </React.Fragment>
+          ))}
           {files.map((file) => (
             <button key={file.path} className={selected === file.path ? "fileItem active" : "fileItem"} onClick={() => openFile(file)} type="button">
               <FileText size={15} />
@@ -2194,21 +2421,25 @@ function DataView({ text, models }) {
           ))}
         </div>
       </aside>
+      <Resizer pane={filesPane} label={text("调整文件栏宽度", "Resize file list")} />
       <div className="editorPane">
         <div className="editorHeader">
           <div>
-            <h2>{selected || "资源文件"}</h2>
-            <span>{text(
-              `${selectedMeta.writable ? "可编辑用户文件" : "系统级文件只读"}。指令是短规则，记忆是事实，技能是流程，知识是参考文档。`,
-              `${selectedMeta.writable ? "Editable user file" : "System file is read-only"}. Instructions are short rules, memory is facts, skills are workflows, and knowledge is reference material.`
-            )}</span>
+            <h2>{headerTitle}</h2>
+            <span>{headerHint}</span>
           </div>
-          <div className="rowActions">
-            <button className="secondaryButton" onClick={() => setPreview((value) => !value)} disabled={!isMarkdown} type="button"><FileText size={16} /><span>{preview ? text("编辑", "Edit") : text("显示 MD", "Show MD")}</span></button>
-            <button className="secondaryButton" onClick={renameSelected} disabled={!selectedMeta.writable || !isMarkdown} type="button"><AtSign size={16} /><span>{text("重命名", "Rename")}</span></button>
-            <button className="iconButton danger" onClick={deleteSelected} disabled={!selected || !selectedMeta.writable || kind === "instruction"} type="button" title={text("删除", "Delete")}><Trash2 size={16} /></button>
-            <button className="primaryButton" onClick={saveFile} disabled={!selected || !selectedMeta.writable} type="button"><Save size={16} /><span>{text("保存", "Save")}</span></button>
-          </div>
+          {isPrompts ? (
+            <div className="rowActions">
+              <button className="secondaryButton" onClick={copyContent} disabled={!selected} type="button">{copied ? <Check size={16} /> : <Copy size={16} />}<span>{copied ? text("已复制", "Copied") : text("复制", "Copy")}</span></button>
+            </div>
+          ) : (
+            <div className="rowActions">
+              <button className="secondaryButton" onClick={() => setPreview((value) => !value)} disabled={!isMarkdown} type="button"><FileText size={16} /><span>{preview ? text("编辑", "Edit") : text("显示 MD", "Show MD")}</span></button>
+              <button className="secondaryButton" onClick={renameSelected} disabled={!selectedMeta.writable || !isMarkdown} type="button"><AtSign size={16} /><span>{text("重命名", "Rename")}</span></button>
+              <button className="iconButton danger" onClick={deleteSelected} disabled={!selected || !selectedMeta.writable || kind === "instruction"} type="button" title={text("删除", "Delete")}><Trash2 size={16} /></button>
+              <button className="primaryButton" onClick={saveFile} disabled={!selected || !selectedMeta.writable} type="button"><Save size={16} /><span>{text("保存", "Save")}</span></button>
+            </div>
+          )}
         </div>
         {preview ? (
           <div className="markdownPreview"><MarkdownText text={content} /></div>
@@ -2217,12 +2448,15 @@ function DataView({ text, models }) {
         )}
         {status && <p className="statusLine"><Check size={15} />{status}</p>}
       </div>
-      <form className="importPane" onSubmit={importResource}>
-        <h2>{text("导入", "IMPORT")}</h2>
-        <label><span>{text("名称", "Name")}</span><input value={importName} onChange={(event) => setImportName(event.target.value)} placeholder={kind === "skills" ? "my-skill" : kind === "plans" ? "my-plan.md" : "notes.md"} /></label>
-        <label><span>{text("内容", "Content")}</span><textarea value={importContent} onChange={(event) => setImportContent(event.target.value)} /></label>
-        <button className="primaryButton" type="submit"><Plus size={16} /><span>{text("导入到当前分类", "Import to current category")}</span></button>
-      </form>
+      {!isPrompts && <Resizer pane={importPane} label={text("调整导入栏宽度", "Resize import panel")} />}
+      {!isPrompts && (
+        <form className="importPane" onSubmit={importResource} aria-hidden={importPane.collapsed || undefined}>
+          <h2>{text("导入", "IMPORT")}</h2>
+          <label><span>{text("名称", "Name")}</span><input value={importName} onChange={(event) => setImportName(event.target.value)} placeholder={kind === "skills" ? "my-skill" : kind === "plans" ? "my-plan.md" : "notes.md"} /></label>
+          <label><span>{text("内容", "Content")}</span><textarea value={importContent} onChange={(event) => setImportContent(event.target.value)} /></label>
+          <button className="primaryButton importSubmit" type="submit"><Plus size={16} /><span>{text("导入到当前分类", "Import to current category")}</span></button>
+        </form>
+      )}
     </section>
   );
 }
@@ -2331,6 +2565,7 @@ function NativeWebField({ provider, update, text }) {
 }
 
 function ConfigView({ onSaved, text }) {
+  const listPane = usePane("config-list", { size: 280, min: 200, max: 460, side: "start" });
   const [config, setConfig] = useState({ providers: {} });
   const [selectedProvider, setSelectedProvider] = useState("");
   const [status, setStatus] = useState("");
@@ -2505,8 +2740,8 @@ function ConfigView({ onSaved, text }) {
   const providerModels = Array.isArray(provider.models) ? provider.models : [];
 
   return (
-    <section className="configLayout">
-      <aside className="providerPane">
+    <section className="configLayout" style={{ gridTemplateColumns: splitColumns(listPane, "r", null) }}>
+      <aside className="providerPane" aria-hidden={listPane.collapsed || undefined}>
         <div className="editorHeader">
           <h2>{text("供应商", "PROVIDER")}</h2>
           <button className="iconButton neutral" onClick={addProvider} type="button" title={text("新增", "Add")}><Plus size={16} /></button>
@@ -2521,6 +2756,7 @@ function ConfigView({ onSaved, text }) {
           </button>
         ))}
       </aside>
+      <Resizer pane={listPane} label={text("调整列表宽度", "Resize list")} />
       {view === "priority" ? (
       <div className="modelEditor priorityEditor">
         <div className="editorHeader">
@@ -2631,6 +2867,18 @@ function ConfigView({ onSaved, text }) {
             <label><span>API Key</span><input type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={provider.has_api_key ? text("已保存，留空则保持不变", "Saved; leave blank to keep") : text("输入 API Key", "Enter API Key")} /></label>
             <label><span>API Key Env</span><input value={provider.api_key_env || ""} onChange={(event) => updateProvider("api_key_env", event.target.value)} placeholder="DEEPSEEK_API_KEY" /></label>
             <NativeWebField provider={provider} update={(value) => updateProvider("native_web", value)} text={text} />
+            <label className="fullWidth">
+              <span>{text("思考强度参数", "Reasoning parameter")}</span>
+              <select value={provider.reasoning || ""} onChange={(event) => updateProvider("reasoning", event.target.value)}>
+                <option value="">{text("自动识别（按 Base URL）", "Auto-detect (from Base URL)")}</option>
+                <option value="deepseek">DeepSeek: thinking + reasoning_effort</option>
+                <option value="openai">OpenAI: reasoning_effort</option>
+                <option value="openrouter">OpenRouter: reasoning.effort</option>
+                <option value="dashscope">{text("百炼: enable_thinking + thinking_budget", "DashScope: enable_thinking + thinking_budget")}</option>
+                <option value="none">{text("不发送思考参数", "Never send a reasoning parameter")}</option>
+              </select>
+              <small>{text("聊天输入栏里的“思考强度”滑条会按这里的格式发给该供应商；不认识的供应商选“不发送”。请求被拒时会自动去掉该参数重试。", "The thinking-effort slider in the composer is sent to this provider in this format. Use \"never send\" for providers that do not know it; a rejected request is retried without the parameter.")}</small>
+            </label>
             <label><span>{text("默认供应商", "Default Provider")}</span><input value={config.default_provider || ""} readOnly /></label>
             <div className="fullWidth modelCatalog">
               <div className="modelCatalogHeader">
@@ -2669,6 +2917,7 @@ function ConfigView({ onSaved, text }) {
 }
 
 function CustomToolsView({ text }) {
+  const listPane = usePane("tools-list", { size: 280, min: 200, max: 460, side: "start" });
   const emptyTool = {
     name: "",
     description: "",
@@ -2730,11 +2979,12 @@ function CustomToolsView({ text }) {
   }
 
   return (
-    <section className="configLayout">
-      <aside className="providerPane">
+    <section className="configLayout" style={{ gridTemplateColumns: splitColumns(listPane, "r", null) }}>
+      <aside className="providerPane" aria-hidden={listPane.collapsed || undefined}>
         <div className="editorHeader"><h2>{text("自建工具", "CUSTOM TOOLS")}</h2><button className="iconButton neutral" type="button" onClick={() => { setSelected(""); setForm(emptyTool); setStatus(""); }}><Plus size={16} /></button></div>
         {tools.map((item) => <button className={selected === item.name ? "providerItem active" : "providerItem"} key={item.name} type="button" onClick={() => openTool(item.name)}><span><Wrench size={15} />custom__{item.name}</span></button>)}
       </aside>
+      <Resizer pane={listPane} label={text("调整列表宽度", "Resize list")} />
       <div className="modelEditor">
         <div className="editorHeader"><div><h2>{text("工具代码", "TOOL CODE")}</h2><span>{text("用户级工具与 backend/tools 系统工具分开保存。代码必须定义 run(arguments)。", "User tools are separate from system tools and must define run(arguments).")}</span></div><div className="rowActions"><button className="dangerButton" type="button" onClick={deleteTool} disabled={!selected}><Trash2 size={16} /><span>{text("删除", "Delete")}</span></button><button className="primaryButton" type="button" onClick={saveTool}><Save size={16} /><span>{text("保存", "Save")}</span></button></div></div>
         <div className="customToolForm">
@@ -2750,18 +3000,51 @@ function CustomToolsView({ text }) {
 }
 
 function SystemView({ theme, setTheme, language, setLanguage, text }) {
+  const rows = [
+    {
+      icon: <Sun size={15} />,
+      title: text("主题", "Theme"),
+      hint: text("浅色、深色，或跟随操作系统。", "Light, dark, or follow the operating system."),
+      value: theme,
+      onChange: setTheme,
+      options: [
+        { value: "system", label: text("跟随系统", "System") },
+        { value: "light", label: text("浅色", "Light") },
+        { value: "dark", label: text("深色", "Dark") },
+      ],
+    },
+    {
+      icon: <Languages size={15} />,
+      title: text("界面语言", "Language"),
+      hint: text("“中英双语”会把每个文字显示成“中文 / English”。", "“Both” shows every label as “中文 / English”."),
+      value: language,
+      onChange: setLanguage,
+      options: [
+        { value: "zh", label: "中文" },
+        { value: "en", label: "English" },
+        { value: "both", label: text("中英双语", "Both") },
+      ],
+    },
+  ];
   return (
     <section className="systemLayout">
       <div className="systemPanel">
         <div className="editorHeader">
           <div>
-            <h2>{text("系统设置", "SYSTEM SETTINGS")}</h2>
+            <h2>{text("系统设置", "System settings")}</h2>
             <span>{text("这些设置只影响界面，不会混入当前对话提示词。", "These settings only affect the UI and are not injected into chat prompts.")}</span>
           </div>
         </div>
-        <div className="modelForm">
-          <SelectField label={text("主题", "Theme")} value={theme} onChange={setTheme} values={["system", "light", "dark"]} icon={<Sun size={14} />} />
-          <SelectField label={text("语言", "Language")} value={language} onChange={setLanguage} values={["zh", "en", "both"]} icon={<Languages size={14} />} />
+        <div className="settingRows">
+          {rows.map((row) => (
+            <div className="settingRow" key={row.title}>
+              <div className="settingText">
+                <strong>{row.icon}{row.title}</strong>
+                <span>{row.hint}</span>
+              </div>
+              <Segmented options={row.options} value={row.value} onChange={row.onChange} ariaLabel={row.title} />
+            </div>
+          ))}
         </div>
       </div>
     </section>
@@ -2769,6 +3052,7 @@ function SystemView({ theme, setTheme, language, setLanguage, text }) {
 }
 
 function AutomationView({ options, setOptions, text }) {
+  const listPane = usePane("automation-list", { size: 280, min: 200, max: 460, side: "start" });
   const emptyForm = {
     title: "",
     action: "reminder",
@@ -2866,8 +3150,8 @@ function AutomationView({ options, setOptions, text }) {
   }
 
   return (
-    <section className="configLayout">
-      <aside className="providerPane">
+    <section className="configLayout" style={{ gridTemplateColumns: splitColumns(listPane, "r", null) }}>
+      <aside className="providerPane" aria-hidden={listPane.collapsed || undefined}>
         <div className="editorHeader">
           <h2>{text("自动化", "AUTOMATION")}</h2>
           <button className="iconButton neutral" onClick={newAutomation} type="button" title={text("新增", "Add")}><Plus size={16} /></button>
@@ -2893,6 +3177,7 @@ function AutomationView({ options, setOptions, text }) {
           ))}
         </div>
       </aside>
+      <Resizer pane={listPane} label={text("调整列表宽度", "Resize list")} />
       <form className="modelEditor" onSubmit={saveAutomation}>
         <div className="editorHeader">
           <div>
@@ -2907,7 +3192,7 @@ function AutomationView({ options, setOptions, text }) {
         </div>
         <div className="modelForm">
           <label><span>{text("标题", "Title")}</span><input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder={text("检查报告", "Check report")} /></label>
-          <SelectField label={text("类型", "Action")} value={form.action} onChange={(value) => setForm({ ...form, action: value })} values={["reminder", "llm", "script", "mcp", "configureMcp"]} />
+          <SelectField label={text("类型", "Action")} value={form.action} onChange={(value) => setForm({ ...form, action: value })} values={choices("automation", text)} />
           <label className="checkLine"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} /><span>{text("启用", "Enabled")}</span></label>
           <div className="automationMeta fullWidth">
             <div><strong>{text("时间类型", "Schedule Type")}</strong><span>{safeScheduleValue(form.scheduleText, "kind") || "once"}</span></div>
@@ -2955,6 +3240,7 @@ function AutomationView({ options, setOptions, text }) {
 }
 
 function McpView({ text }) {
+  const formPane = usePane("mcp-form", { size: 420, min: 300, max: 640, side: "end" });
   const [config, setConfig] = useState({ servers: {} });
   const [form, setForm] = useState({
     name: "",
@@ -3076,7 +3362,7 @@ function McpView({ text }) {
 
   const servers = useMemo(() => Object.entries(config.servers || {}), [config]);
   return (
-    <section className="mcpLayout">
+    <section className="mcpLayout" style={{ gridTemplateColumns: splitColumns(null, "r", formPane) }}>
       <div className="serverListPane">
         <div className="editorHeader"><h2>{text("MCP 服务器", "MCP SERVERS")}</h2><button className="secondaryButton" onClick={refresh} type="button"><RefreshCw size={16} /><span>{text("刷新", "Refresh")}</span></button></div>
         {servers.map(([name, server]) => (
@@ -3091,10 +3377,11 @@ function McpView({ text }) {
           </article>
         ))}
       </div>
-      <form className="mcpForm" onSubmit={saveServer}>
+      <Resizer pane={formPane} label={text("调整表单宽度", "Resize form")} />
+      <form className="mcpForm" onSubmit={saveServer} aria-hidden={formPane.collapsed || undefined}>
         <h2>{text("新增或编辑服务器", "ADD OR EDIT SERVER")}</h2>
         <label><span>{text("名称", "Name")}</span><input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="rent" /></label>
-        <SelectField label={text("传输方式", "Transport")} value={form.transport} onChange={(value) => setForm({ ...form, transport: value })} values={["streamable_http", "stdio"]} />
+        <SelectField label={text("传输方式", "Transport")} value={form.transport} onChange={(value) => setForm({ ...form, transport: value })} values={choices("transport", text)} />
         {form.transport === "stdio" ? (
           <>
             <label><span>{text("命令", "Command")}</span><input value={form.command} onChange={(event) => setForm({ ...form, command: event.target.value })} placeholder="node" /></label>
@@ -3128,7 +3415,7 @@ function KeyValueEditor({ title, label = title, rows, setForm, field, text = (zh
         <div className="headerRow" key={index}>
           <input value={row.key} onChange={(event) => updateHeaderRow(index, "key", event.target.value, setForm, field)} placeholder={text("键", "Key")} />
           <input value={row.value} onChange={(event) => updateHeaderRow(index, "value", event.target.value, setForm, field)} placeholder={text("值", "Value")} />
-          <button className="iconButton" type="button" onClick={() => removeHeaderRow(index, setForm, field)} title={`${text("移除", "Remove")} ${label}`}>
+          <button className="iconButton danger" type="button" onClick={() => removeHeaderRow(index, setForm, field)} title={`${text("移除", "Remove")} ${label}`}>
             <Trash2 size={15} />
           </button>
         </div>
@@ -3154,6 +3441,21 @@ async function readSse(stream, onEvent) {
       onEvent(JSON.parse(line.slice(6)));
     }
   }
+}
+
+// The text of a FastAPI error ("HTTP 400: {"detail": "..."}") without the wrapping.
+function errorDetail(error) {
+  const raw = String(error?.message || error);
+  const start = raw.indexOf("{");
+  if (start >= 0) {
+    try {
+      const detail = JSON.parse(raw.slice(start)).detail;
+      if (detail) return typeof detail === "string" ? detail : JSON.stringify(detail);
+    } catch {
+      /* not JSON */
+    }
+  }
+  return raw;
 }
 
 async function fetchJson(path, options = {}) {

@@ -1,0 +1,104 @@
+/*
+ * Design tokens. Every colour in the app comes from here; components never hardcode one,
+ * so light and dark stay in step. "system" follows the OS, data-theme forces a side.
+ */
+:root {
+  color-scheme: light;
+  --bg: #faf9f5;
+  --surface: #ffffff;
+  --surface-2: #f5f3ec;
+  --surface-3: #ece9df;
+  --border: #e6e3d9;
+  --border-strong: #d2cec0;
+  --text: #1f1e1d;
+  --text-2: #5c5a54;
+  --text-3: #8c897f;
+
+  --accent: #c96442;
+  --accent-hover: #b5573a;
+  --accent-soft: color-mix(in srgb, var(--accent) 13%, transparent);
+  --on-accent: #ffffff;
+
+  --ok: #2d7d4d;
+  --info: #2b6cb0;
+  --warn: #a8670f;
+  --danger: #bf3b2c;
+  --muted: #8c897f;
+  --ok-soft: color-mix(in srgb, var(--ok) 13%, transparent);
+  --info-soft: color-mix(in srgb, var(--info) 13%, transparent);
+  --warn-soft: color-mix(in srgb, var(--warn) 14%, transparent);
+  --danger-soft: color-mix(in srgb, var(--danger) 11%, transparent);
+  --muted-soft: color-mix(in srgb, var(--muted) 16%, transparent);
+
+  --user-bubble: #f0eee6;
+  --code-bg: #2a2926;
+  --code-text: #ece9e1;
+  --overlay: rgba(31, 30, 29, 0.45);
+  --shadow: 0 10px 32px rgba(31, 30, 29, 0.14);
+  --shadow-sm: 0 1px 3px rgba(31, 30, 29, 0.08);
+  --focus: color-mix(in srgb, var(--accent) 38%, transparent);
+
+  --radius: 12px;
+  --radius-sm: 8px;
+  --resizer: 10px;
+  --gutter: 16px;
+  --chat-width: 820px;
+  --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: "Cascadia Code", "SFMono-Regular", Consolas, "Courier New", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #1a1918;
+    --surface: #262624;
+    --surface-2: #2e2d2a;
+    --surface-3: #393835;
+    --border: #3d3c38;
+    --border-strong: #55534d;
+    --text: #ece9e1;
+    --text-2: #b8b4a9;
+    --text-3: #8d8a80;
+    --accent: #d97757;
+    --accent-hover: #e48b6d;
+    --on-accent: #1a1918;
+    --ok: #6cc48d;
+    --info: #74aeea;
+    --warn: #e3b562;
+    --danger: #ee8174;
+    --muted: #8d8a80;
+    --user-bubble: #302f2c;
+    --code-bg: #161514;
+    --code-text: #ece9e1;
+    --overlay: rgba(0, 0, 0, 0.6);
+    --shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1a1918;
+  --surface: #262624;
+  --surface-2: #2e2d2a;
+  --surface-3: #393835;
+  --border: #3d3c38;
+  --border-strong: #55534d;
+  --text: #ece9e1;
+  --text-2: #b8b4a9;
+  --text-3: #8d8a80;
+  --accent: #d97757;
+  --accent-hover: #e48b6d;
+  --on-accent: #1a1918;
+  --ok: #6cc48d;
+  --info: #74aeea;
+  --warn: #e3b562;
+  --danger: #ee8174;
+  --muted: #8d8a80;
+  --user-bubble: #302f2c;
+  --code-bg: #161514;
+  --code-text: #ece9e1;
+  --overlay: rgba(0, 0, 0, 0.6);
+  --shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+}

@@ -1,0 +1,758 @@
+/* Data, Models, Automation, MCP, Tools and System pages. */
+
+/* ---------- lists on the left of a page ---------- */
+.fileList {
+  display: grid;
+  gap: 1px;
+  margin-top: 10px;
+}
+
+.fileItem,
+.providerItem {
+  width: 100%;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+  text-align: left;
+}
+
+.fileItem:hover,
+.providerItem:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.fileItem.active,
+.providerItem.active {
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.fileItem span {
+  min-width: 0;
+  display: grid;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileItem small {
+  margin-left: auto;
+  flex: none;
+}
+
+.inlineMeta {
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.providerItem {
+  justify-content: space-between;
+  margin-top: 2px;
+}
+
+.providerItem span {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowActions,
+.formActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.formActions {
+  margin-top: 12px;
+}
+
+/* ---------- Data ---------- */
+.editorPane {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.fileListPane .segmented.vertical {
+  width: 100%;
+  flex-direction: row;
+  flex-wrap: wrap;
+  border-radius: 14px;
+}
+
+.fileListPane .segmented.vertical button {
+  flex: 1 1 auto;
+}
+
+.dataSidebarSection {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.dataSidebarHeading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ragField {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.ragField > span {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ragModeToggle {
+  width: 100%;
+}
+
+.ragModeToggle button {
+  flex: 1;
+}
+
+.ragHint {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ragActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.ragActions .secondaryButton {
+  width: 100%;
+  min-width: 0;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.ragRefreshFeedback {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 8px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--info-soft);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.ragRefreshFeedback > svg,
+.ragRefreshFeedback > .spinner {
+  flex: none;
+  margin-top: 1px;
+}
+
+.ragRefreshFeedback.success {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.ragRefreshFeedback.error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.codeEditor {
+  min-height: 0;
+  height: 100%;
+  resize: none;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.instructionEditor {
+  min-height: 160px;
+  resize: vertical;
+}
+
+.importPane textarea,
+.mcpForm textarea {
+  min-height: 140px;
+}
+
+/* ---------- Models ---------- */
+.modelEditor {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  overflow: hidden;
+}
+
+.modelForm {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.modelForm .fullWidth {
+  grid-column: 1 / -1;
+}
+
+.modelCatalog {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  min-height: 0;
+}
+
+.modelCatalogHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modelCatalogHeader span {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.manualModelRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.modelList {
+  min-height: 80px;
+  max-height: 360px;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.modelRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  padding: 5px 6px;
+}
+
+.modelName {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  padding: 4px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.modelName.active {
+  color: var(--ok);
+  font-weight: 700;
+}
+
+.nativeWeb {
+  display: grid;
+  gap: 6px;
+}
+
+.priorityEntry {
+  margin-bottom: 8px;
+}
+
+/* default-model priority editor */
+.modelEditor.priorityEditor {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.prioBody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.prioCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.prioCard:first-child {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+
+.prioCard > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.prioCard h3 {
+  font-size: 14px;
+}
+
+.prioList {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.prioRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 46px;
+  padding: 6px 8px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  transition: border-color 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+}
+
+.prioRow:hover {
+  border-color: var(--border-strong);
+}
+
+.prioRow.dragging {
+  opacity: 0.35;
+}
+
+.prioRow.dropTarget {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--focus);
+}
+
+.prioGrip {
+  flex: none;
+  color: var(--text-3);
+  cursor: grab;
+}
+
+.prioRank {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--surface-3);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.prioRank.first {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.prioName {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.prioName b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.prioTag {
+  flex: none;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.prioRank.first + .prioName + .prioTag {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.prioButtons {
+  flex: none;
+  display: flex;
+  gap: 2px;
+}
+
+.prioButtons button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+}
+
+.prioButtons button:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.prioButtons button:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.prioButtons button.remove:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.prioNote {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 0;
+  color: var(--warn);
+  font-size: 12px;
+}
+
+.prioEmpty {
+  padding: 10px 2px;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.prioCard.muted .prioRow {
+  background: transparent;
+  border-style: dashed;
+  min-height: 42px;
+}
+
+.prioCard.muted .prioName b {
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.prioAdd {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.prioAdd:hover {
+  background: var(--accent-soft);
+}
+
+.prioSearch {
+  height: 32px;
+  padding: 0 10px;
+}
+
+/* ---------- Automation ---------- */
+.automationMeta {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.automationMeta div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 9px;
+}
+
+.automationMeta strong,
+.runItem strong {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.automationMeta span,
+.automationMeta code,
+.runItem code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runList {
+  max-height: 280px;
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.runItem {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  padding: 9px;
+}
+
+.runItem.error {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: var(--danger-soft);
+}
+
+.runItem div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.runItem span {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.runItem pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  border-radius: 6px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 9px;
+  font-size: 12px;
+}
+
+/* ---------- MCP ---------- */
+.serverItem {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.serverItem div:first-child {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.serverItem > div:first-child > span {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.serverItem code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+
+.headerEditor {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.headerRow {
+  display: grid;
+  grid-template-columns: minmax(0, 150px) minmax(0, 1fr) 32px;
+  gap: 8px;
+}
+
+/* ---------- Tools ---------- */
+.customToolForm {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.customToolForm textarea {
+  min-height: 160px;
+}
+
+.customToolForm .codeEditor {
+  min-height: 300px;
+  font-size: 12.5px;
+}
+
+@media (max-width: 760px) {
+  .headerRow,
+  .modelForm,
+  .automationMeta {
+    grid-template-columns: 1fr;
+  }
+}
+
+.webModeWarn {
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* ---------- System settings ---------- */
+.settingRows {
+  display: grid;
+}
+
+.settingRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  padding: 14px 0;
+  border-top: 1px solid var(--border);
+}
+
+.settingText {
+  min-width: 200px;
+  flex: 1 1 260px;
+  display: grid;
+  gap: 3px;
+}
+
+.settingText strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settingText span {
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* ---------- Data page details ---------- */
+.fileGroup {
+  margin: 12px 9px 4px;
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.fileGroup:first-child {
+  margin-top: 2px;
+}
+
+.fileItem small {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The editor title is a file name or a prompt name: keep its own case instead of the page-title style. */
+.editorPane .editorHeader h2 {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+}
+
+.editorPane .editorHeader {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.editorPane .editorHeader > div:first-child {
+  flex: 1 1 260px;
+}
+
+.editorPane .rowActions {
+  flex: none;
+  flex-wrap: nowrap;
+}
+
+.importPane {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.importPane h2 {
+  margin-bottom: 2px;
+}
+
+.importPane .importSubmit {
+  align-self: flex-start;
+  margin-top: 16px;
+}
+
+.fileListPane .segmented.vertical {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
