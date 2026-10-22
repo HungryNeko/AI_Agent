@@ -27,6 +27,7 @@ from tools import (
     subagent,
 )
 from tools import python as python_tool
+from tools import security
 from tools.bridge import ToolBridge
 from tools.request import ToolRequest, parse_one_tool_call
 from tools.settings import ToolSettings
@@ -42,6 +43,9 @@ def execute_tool(request: ToolRequest, settings: ToolSettings) -> str:
     """Run one tool call and return content for a `role=tool` message."""
 
     log_event("tool.request", tool=request.name, request=request)
+    blocked = security_block(request)
+    if blocked:
+        return blocked
     try:
         with parameterSave.conversation_scope(settings.conversation_id):
             result_text = execute_tool_uncaught(request, settings)
@@ -60,6 +64,18 @@ def execute_tool(request: ToolRequest, settings: ToolSettings) -> str:
         result=result_text,
     )
     return result_text
+
+
+def security_block(request: ToolRequest) -> str:
+    """Refuse at run time what the current security level does not allow (it may have been lowered mid-turn)."""
+
+    level = security.current_level()
+    base = "custom__*" if request.name.startswith("custom__") else request.name
+    if not security.tool_allowed(base, level):
+        return f'toolError: "{request.name} is not available at security level {level} (read-only). Raise the level in the UI to use it."'
+    if level == "L1" and request.name == "rag" and request.rag_request and request.rag_request.action != "search":
+        return f'toolError: "rag {request.rag_request.action} is not available at security level L1."'
+    return ""
 
 
 def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:

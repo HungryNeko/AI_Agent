@@ -10,6 +10,8 @@ from typing import Any
 from agent.config import PROJECT_ROOT
 
 SETTINGS_PATH = PROJECT_ROOT / "data" / "settings.json"
+# How hard the model should think. "default" sends nothing, so the provider's own default applies.
+REASONING_EFFORTS = {"default", "off", "low", "medium", "high", "max"}
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "ui": {
@@ -38,11 +40,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "developer_mode": False,
         "conversation_mode": "agent",
         "max_tool_rounds": 20,
+        "subagent_model": "",
+        "reasoning_effort": "default",
+        "subagent_reasoning_effort": "default",
     },
     "rag_ingestion": {
         "split_mode": "simple",
         "model": "",
     },
+    # Changed only through set_security_level (the UI slider); never by the settings tool or API.
+    "security": {"level": "L3"},
 }
 
 
@@ -63,8 +70,14 @@ def load_app_settings() -> dict[str, Any]:
     return normalize_app_settings(raw)
 
 
-def save_app_settings(settings: dict[str, Any], path: Path | None = None) -> dict[str, Any]:
+def save_app_settings(settings: dict[str, Any], path: Path | None = None, *, allow_security: bool = False) -> dict[str, Any]:
     normalized = normalize_app_settings(settings)
+    if not allow_security:
+        # Whatever was submitted, the stored security level stays as it is.
+        try:
+            normalized["security"] = load_app_settings()["security"]
+        except (OSError, ValueError):
+            normalized["security"] = copy.deepcopy(DEFAULT_SETTINGS["security"])
     target = path or local_settings_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -74,9 +87,20 @@ def save_app_settings(settings: dict[str, Any], path: Path | None = None) -> dic
 def patch_app_settings(patch: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(patch, dict):
         raise ValueError("settings patch must be an object.")
+    if "security" in patch:
+        raise ValueError("the security level cannot be changed through settings; use the security slider.")
     current = load_app_settings()
     merged = deep_merge(current, patch)
     return save_app_settings(merged)
+
+
+def set_security_level(level: str) -> dict[str, Any]:
+    clean = str(level or "").strip().upper()
+    if clean not in {"L1", "L2", "L3"}:
+        raise ValueError("security level must be L1, L2 or L3.")
+    current = load_app_settings()
+    current["security"] = {"level": clean}
+    return save_app_settings(current, allow_security=True)
 
 
 def local_settings_path() -> Path:
@@ -98,6 +122,7 @@ def normalize_app_settings(raw: dict[str, Any]) -> dict[str, Any]:
     for key in [
         "model",
         "system_prompt",
+        "subagent_model",
     ]:
         chat[key] = str(chat.get(key, DEFAULT_SETTINGS["chat"][key]) or "")
     for key, allowed in {
@@ -114,6 +139,8 @@ def normalize_app_settings(raw: dict[str, Any]) -> dict[str, Any]:
         "automation_mode": {"off", "auto"},
         "question_mode": {"off", "light", "heavy"},
         "conversation_mode": {"ask", "plan", "agent"},
+        "reasoning_effort": REASONING_EFFORTS,
+        "subagent_reasoning_effort": REASONING_EFFORTS,
     }.items():
         value = str(chat.get(key, DEFAULT_SETTINGS["chat"][key]) or "")
         if key == "conversation_mode" and value == "chat":
@@ -135,6 +162,10 @@ def normalize_app_settings(raw: dict[str, Any]) -> dict[str, Any]:
         chat["max_tool_rounds"] = DEFAULT_SETTINGS["chat"]["max_tool_rounds"]
     if chat["max_tool_rounds"] < -1:
         chat["max_tool_rounds"] = -1
+
+    security = settings.get("security")
+    level = str((security or {}).get("level") if isinstance(security, dict) else "").strip().upper()
+    settings["security"] = {"level": level if level in {"L1", "L2", "L3"} else DEFAULT_SETTINGS["security"]["level"]}
 
     if rag_ingestion.get("split_mode") not in {"simple", "llm"}:
         rag_ingestion["split_mode"] = DEFAULT_SETTINGS["rag_ingestion"]["split_mode"]

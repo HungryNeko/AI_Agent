@@ -185,18 +185,21 @@ def make_llm_units(text: str) -> list[list[str]]:
     return units
 
 
+CHUNK_PLAN_PROMPT = (
+    "You plan semantic RAG chunk boundaries. Call submit_chunk_plan exactly once. "
+    "Never repeat or rewrite source text. Group every block exactly once, in order, "
+    "using contiguous inclusive 0-based ranges. Prefer topic-complete chunks and keep "
+    "each group near 600-{max_chars} source characters. Titles must be under 60 characters."
+)
+
+
 def request_chunk_plan(blocks: list[str], *, model: str, max_chars: int) -> list[PreparedChunk]:
     numbered = "\n\n".join(f"<BLOCK {index}>\n{block}" for index, block in enumerate(blocks))
     message = complete_chat_once(
         [
             {
                 "role": "system",
-                "content": (
-                    "You plan semantic RAG chunk boundaries. Call submit_chunk_plan exactly once. "
-                    "Never repeat or rewrite source text. Group every block exactly once, in order, "
-                    "using contiguous inclusive 0-based ranges. Prefer topic-complete chunks and keep "
-                    f"each group near 600-{max_chars} source characters. Titles must be under 60 characters."
-                ),
+                "content": CHUNK_PLAN_PROMPT.format(max_chars=max_chars),
             },
             {"role": "user", "content": numbered},
         ],

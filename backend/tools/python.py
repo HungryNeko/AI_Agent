@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from tools import parameterSave, procs
+from tools import parameterSave, procs, security
 from tools.bridge import BRIDGE_HELPER_SOURCE
 from tools.settings import PythonSettings
 
@@ -39,6 +39,7 @@ def run(
     if not clean_code:
         raise ValueError("python code must not be empty.")
     check_code_safety(clean_code)
+    launch = security.code_launch_options()  # L1: refuses; L2: the unprivileged user; L3: the backend itself
 
     run_dir = make_run_dir(settings)
     workspace = make_workspace(settings, workspace_key) if workspace_key else None
@@ -50,11 +51,16 @@ def run(
     # Tracked so that cancelling the owning sub-agent also kills this process tree. When a bridge serves
     # MCP/model calls for the code, the time spent waiting on them does not count against the timeout.
     bridge_dir = run_dir / "_bridge" if bridge is not None else None
+    if launch:
+        if bridge_dir is not None:
+            bridge_dir.mkdir(parents=True, exist_ok=True)
+        security.hand_over(run_dir, *([workspace] if workspace is not None else []))
     with bridge.serve(bridge_dir) if bridge is not None else contextlib.nullcontext():
         completed = procs.run_tracked(
             [sys.executable, "-I", str(script_path)],
             cwd=run_dir,
-            env=build_child_env(run_dir, workspace, bridge_dir),
+            env=build_child_env(run_dir, workspace, bridge_dir, unprivileged=bool(launch)),
+            **launch,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -157,7 +163,9 @@ def list_workspace(workspace: Path, limit: int = 30) -> list[str]:
     return files
 
 
-def build_child_env(run_dir: Path, workspace: Path | None = None, bridge_dir: Path | None = None) -> dict[str, str]:
+def build_child_env(
+    run_dir: Path, workspace: Path | None = None, bridge_dir: Path | None = None, *, unprivileged: bool = False
+) -> dict[str, str]:
     env: dict[str, str] = {}
     for key in ("SYSTEMROOT", "WINDIR", "PATH"):
         value = __import__("os").environ.get(key)
@@ -167,6 +175,8 @@ def build_child_env(run_dir: Path, workspace: Path | None = None, bridge_dir: Pa
     env["TMP"] = str(run_dir)
     env["MPLCONFIGDIR"] = str(run_dir / "matplotlib")
     env["PYTHONUTF8"] = "1"
+    if unprivileged:
+        env["HOME"] = str(run_dir)
     env["PYTHONIOENCODING"] = "utf-8"
     env["MPLBACKEND"] = "Agg"
     env["AI_AGENT_PYTHON_ARTIFACT_DIR"] = str(run_dir)

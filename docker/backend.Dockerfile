@@ -14,6 +14,9 @@ RUN apt-get update \
         libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Unprivileged user that agent-run code uses at security level L2 (see backend/tools/security.py).
+RUN useradd --system --no-create-home --uid 10001 --shell /usr/sbin/nologin agentcode
+
 RUN mkdir -p /app/backend
 COPY backend/pyproject.toml ./backend/pyproject.toml
 RUN python -c "import pathlib, subprocess, sys, tomllib; deps = tomllib.loads(pathlib.Path('/app/backend/pyproject.toml').read_text(encoding='utf-8'))['project']['dependencies']; subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', *deps])"

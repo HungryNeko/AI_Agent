@@ -19,6 +19,7 @@ from urllib.parse import unquote, urlparse
 import httpx
 
 from agent.debug_log import log_event, log_exception
+from tools import security
 from tools.settings import McpSettings
 
 McpAction = Literal["listServers", "listTools", "callTool"]
@@ -254,6 +255,7 @@ def require_server(name: str, settings: McpSettings) -> dict[str, Any]:
 
 
 def run_session(server: dict[str, Any], settings: McpSettings, *, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    security.require_tool("mcp")  # also covers the bridge and automations, which do not go through the tool executor
     if str(server.get("transport") or "stdio") == "streamable_http":
         return run_streamable_http_session(server, settings, method=method, params=params)
     return run_stdio_session(server, settings, method=method, params=params)
@@ -280,6 +282,7 @@ def run_stdio_session(
     method: str,
     params: dict[str, Any],
 ) -> dict[str, Any]:
+    launch = security.code_launch_options()  # a stdio server is code: L1 refuses, L2 runs it unprivileged
     process = subprocess.Popen(
         build_command(server),
         stdin=subprocess.PIPE,
@@ -289,7 +292,8 @@ def run_stdio_session(
         encoding="utf-8",
         errors="replace",
         shell=False,
-        env=build_env(server),
+        env=build_env(server, scrub=bool(launch)),
+        **launch,
     )
     try:
         send_message(
@@ -472,8 +476,14 @@ def build_command(server: dict[str, Any]) -> list[str]:
     return [command, *args]
 
 
-def build_env(server: dict[str, Any]) -> dict[str, str]:
-    env = dict(os.environ)
+def build_env(server: dict[str, Any], *, scrub: bool = False) -> dict[str, str]:
+    """Environment for a stdio server. Unprivileged servers get no copy of the backend's secrets."""
+
+    if scrub:
+        env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "TZ") if key in os.environ}
+        env["HOME"] = "/tmp"
+    else:
+        env = dict(os.environ)
     configured = server.get("env", {})
     if configured is None:
         return env

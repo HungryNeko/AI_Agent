@@ -98,6 +98,7 @@ def complete_chat_once(
     tool_choice: str | dict[str, Any] | None = None,
     max_tokens: int | None = None,
     native_web: bool = False,
+    reasoning_effort: str = "default",
 ) -> dict[str, Any]:
     """Send one request and return the assistant message.
 
@@ -110,6 +111,8 @@ def complete_chat_once(
     for index, candidate in enumerate(candidates):
         try:
             extra: dict[str, Any] = {"native_web": True} if native_web else {}
+            if reasoning_effort and reasoning_effort != "default":
+                extra["reasoning_effort"] = reasoning_effort
             return complete_chat_with_model(
                 messages,
                 model=candidate,
@@ -134,6 +137,7 @@ def complete_chat_with_model(
     tool_choice: str | dict[str, Any] | None = None,
     max_tokens: int | None = None,
     native_web: bool = False,
+    reasoning_effort: str = "default",
 ) -> dict[str, Any]:
     """Send one request to exactly one model."""
 
@@ -163,8 +167,20 @@ def complete_chat_with_model(
         tool_count=len(tools or []),
         payload=payload,
     )
+    reasoning_keys = apply_reasoning(payload, getattr(config, "reasoning", ""), reasoning_effort)
+    if getattr(config, "reasoning", "") == "deepseek":
+        payload["messages"] = with_reasoning_content(payload["messages"])
     try:
-        data = post_chat_completion(config.base_url, api_key, payload)
+        try:
+            data = post_chat_completion(config.base_url, api_key, payload)
+        except RuntimeError as exc:
+            # A model that does not take the thinking setting answers 400: try again without it.
+            if not reasoning_keys or "error 400" not in str(exc):
+                raise
+            log_event("llm.reasoning_rejected", provider=config.provider, model=config.model_id, error=str(exc)[:300])
+            for key in reasoning_keys:
+                payload.pop(key, None)
+            data = post_chat_completion(config.base_url, api_key, payload)
     except Exception as exc:
         log_exception(
             "llm.error",
@@ -254,6 +270,52 @@ def add_usage(total: dict[str, int] | None, usage: dict[str, int] | None) -> dic
     if "cached" in usage:
         merged["cached"] = merged.get("cached", 0) + usage["cached"]
     return merged
+
+
+REASONING_LEVELS = {"low", "medium", "high", "max"}
+DASHSCOPE_BUDGETS = {"low": 1024, "medium": 4096, "high": 16384, "max": 32768}
+
+
+def apply_reasoning(payload: dict[str, Any], kind: str, effort: str) -> list[str]:
+    """Put the thinking effort into the request the way this provider expects; returns the keys it added."""
+
+    if not effort or effort == "default" or kind in {"", "none"}:
+        return []
+    if effort != "off" and effort not in REASONING_LEVELS:
+        return []
+    before = set(payload)
+    if kind == "deepseek":
+        if effort == "off":
+            payload["thinking"] = {"type": "disabled"}
+        else:
+            payload["thinking"] = {"type": "enabled"}
+            payload["reasoning_effort"] = {"low": "low", "medium": "high", "high": "high", "max": "max"}[effort]
+    elif kind == "openai":
+        if effort == "off":
+            return []  # always-reasoning models cannot be switched off; leave the provider default
+        payload["reasoning_effort"] = "high" if effort == "max" else effort
+    elif kind == "openrouter":
+        payload["reasoning"] = {"effort": "none" if effort == "off" else effort}
+    elif kind == "dashscope":
+        payload["enable_thinking"] = effort != "off"
+        if effort != "off":
+            payload["thinking_budget"] = DASHSCOPE_BUDGETS[effort]
+    return [key for key in payload if key not in before]
+
+
+def with_reasoning_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """DeepSeek thinking mode rejects assistant tool-call messages that carry no `reasoning_content`.
+
+    Such messages exist whenever the conversation switched model or thinking effort mid-turn (the earlier
+    calls were made without thinking), so give them an empty one. Stored history is left untouched.
+    """
+
+    fixed = []
+    for message in messages:
+        if message.get("role") == "assistant" and message.get("tool_calls") and "reasoning_content" not in message:
+            message = {**message, "reasoning_content": ""}
+        fixed.append(message)
+    return fixed
 
 
 PROTECTED_PAYLOAD_KEYS = {"model", "messages", "stream"}

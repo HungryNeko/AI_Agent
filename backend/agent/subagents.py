@@ -48,7 +48,8 @@ _SLOTS = threading.BoundedSemaphore(MAX_RUNNING_TOTAL)
 TASK_WRAPPER = (
     "You are a sub-agent working for a main agent, not talking to the user. Start by writing a short task list "
     "(the steps you will take), then complete the task on your own with your tools, and finish with a concise "
-    "final report: what you did, the key results or numbers, relevant file paths, and any caveats. Do not ask "
+    "final report: what you did, the key results or numbers, relevant file paths, and any caveats. Your final "
+    "message is the only thing the main agent sees, so make the report complete on its own. Do not ask "
     "questions; make reasonable assumptions and state them. Other sub-agents may be running in parallel; files "
     "are protected by read/write locks, so if a file is reported as locked, work on something else first and "
     "retry. Only touch files the task needs.\n\n"
@@ -359,7 +360,7 @@ class SubagentManager:
                     prompt=task.prompt,
                     task_id=task.task_id,
                     tools=task.tools,
-                    model=task.model or str(getattr(settings, "model", "") or ""),
+                    model=task.model or str(getattr(settings, "subagent_model", "") or "") or str(getattr(settings, "model", "") or ""),
                     max_rounds=task.max_rounds,
                     python_timeout=task.python_timeout,
                     background=not watch,
@@ -649,6 +650,9 @@ def build_state(
         "max_tool_rounds": max_rounds,
         "blocked_tools": list(BLOCKED_TOOLS),
         "bridge_depth": int(getattr(settings, "bridge_depth", 0) or 0) + 1,
+        "reasoning_effort": str(getattr(settings, "subagent_reasoning", "") or "default"),
+        "subagent_model": str(getattr(settings, "subagent_model", "") or ""),
+        "subagent_reasoning_effort": str(getattr(settings, "subagent_reasoning", "") or "default"),
     }
     if model:
         state["model"] = model
@@ -671,7 +675,7 @@ def run_inline_agent(
         settings,
         conversation_id=f"{getattr(settings, 'conversation_id', '') or 'inline'}-inline-{uuid.uuid4().hex[:6]}",
         tools=tools,
-        model=model or str(getattr(settings, "model", "") or ""),
+        model=model or str(getattr(settings, "subagent_model", "") or "") or str(getattr(settings, "model", "") or ""),
         max_rounds=max_rounds,
         python_timeout=python_timeout,
     )

@@ -25,6 +25,7 @@ class ModelConfig:
     api_key_env: str | None = None
     api_key: str | None = None
     native_web: dict[str, Any] | None = None  # how to switch on the provider's own web search
+    reasoning: str = ""  # how this provider takes a thinking-effort setting (see REASONING_KINDS)
 
     @property
     def api_key_value(self) -> str | None:
@@ -63,6 +64,9 @@ def save_config(data: dict[str, Any], path: Path | None = None) -> dict[str, Any
     if target.resolve() == local_config_path().resolve():
         saved["_replace_base"] = True
     target.write_text(json.dumps(saved, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    from tools import security
+
+    security.protect_file(target)
     return load_config()
 
 
@@ -243,6 +247,7 @@ def get_model_config(model: str | None = None) -> ModelConfig:
         api_key_env=optional_string(provider.get("api_key_env")),
         api_key=optional_string(provider.get("api_key")),
         native_web=resolve_native_web(provider),
+        reasoning=resolve_reasoning_kind(provider),
     )
 
 
@@ -289,6 +294,27 @@ def native_web_providers(data: dict[str, Any] | None = None) -> list[str]:
     if not isinstance(providers, dict):
         return []
     return [name for name, provider in providers.items() if isinstance(provider, dict) and resolve_native_web(provider)]
+
+
+# Providers take the thinking effort in different request fields; `reasoning` on a provider picks one
+# (or "none" to never send it). Without it the kind is guessed from the base URL.
+REASONING_KINDS = ("deepseek", "openai", "openrouter", "dashscope", "none")
+
+
+def resolve_reasoning_kind(provider: dict[str, Any]) -> str:
+    explicit = str(provider.get("reasoning") or "").strip().lower()
+    if explicit in REASONING_KINDS:
+        return explicit
+    base = str(provider.get("base_url") or provider.get("url") or "").lower()
+    for marker, kind in (
+        ("api.deepseek.com", "deepseek"),
+        ("api.openai.com", "openai"),
+        ("openrouter.ai", "openrouter"),
+        ("dashscope", "dashscope"),
+    ):
+        if marker in base:
+            return kind
+    return "none"
 
 
 def native_endpoint_kinds(model: str | None = None) -> tuple[str, ...]:

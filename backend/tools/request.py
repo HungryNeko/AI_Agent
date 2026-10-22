@@ -115,7 +115,8 @@ def build_openai_tools(settings: ToolSettings) -> list[dict[str, Any]]:
         tools.append(automation_tool())
         tools.append(settings_tool())
     tools.append(model_tool())
-    tools.append(parameter_tool(read_only=settings.conversation_mode != "agent"))
+    if settings.allows("parameterSave"):
+        tools.append(parameter_tool(read_only=settings.conversation_mode != "agent"))
     if settings.allows("plan"):
         tools.append(plan_tool())
     if settings.allows("createTool"):
@@ -664,7 +665,7 @@ def native_web_tool(name: Literal["nativeWebSearch", "webFetch"]) -> dict[str, A
         )
     return function_tool(
         name=name,
-        description="Fetch one public web page through the provider's fetch service and return its text as Markdown.",
+        description="Fetch one public web page through the provider's fetch service and return its text as Markdown. Prefer it over curl for reading web pages.",
         properties={"url": {"type": "string", "description": "An http(s) URL without credentials."}},
         required=["url"],
     )
@@ -684,14 +685,20 @@ def query_tool(*, name: Literal["webSearch", "rag"], description: str) -> dict[s
     )
 
 
+RAG_SEARCH_TEXT = (
+    "Search local knowledge, memory (data/memory), and skills (data/skills/<name>/SKILL.md). "
+    "Results include sourceType and path."
+)
+
+
 def rag_tool(*, read_only: bool = False) -> dict[str, Any]:
     return function_tool(
         name="rag",
-        description="Search local knowledge, memory, and skills. This mode is read-only." if read_only else (
-            "Search local RAG data, or ingest an uploaded document into user knowledge as Markdown. "
-            "For ingest, first inspect the upload with fileReader, then pass its path here; never copy "
-            "the full extracted content into tool arguments. simple splitting is free and deterministic; "
-            "llm splitting uses a dedicated model with strict token limits and incremental caching."
+        description=f"{RAG_SEARCH_TEXT} This mode is read-only." if read_only else (
+            f"{RAG_SEARCH_TEXT} Ingest adds an uploaded document to user knowledge as Markdown: first inspect "
+            "the upload with fileReader, then pass the same path here; never copy the extracted content into "
+            "tool arguments. Use simple splitting (free and deterministic) unless the user asks for llm splitting "
+            "(a dedicated model with strict token limits and incremental caching)."
         ),
         properties={
             "action": {"type": "string", "enum": ["search"] if read_only else ["search", "ingest"]},
@@ -709,7 +716,7 @@ def rag_tool(*, read_only: bool = False) -> dict[str, Any]:
 def curl_tool() -> dict[str, Any]:
     return function_tool(
         name="curl",
-        description="Fetch one public http(s) API URL with GET when direct JSON/text/image data is needed. If the endpoint or parameters are uncertain, search the official API documentation first. If curlResult contains image URLs or image content, include useful images in the final answer as Markdown images using the exact URL.",
+        description="Fetch one public http(s) API URL with GET when direct JSON/text/image data is needed. If the endpoint or parameters are uncertain, search the official API documentation first; after a failed request, do not retry the same URL blindly, change the endpoint or parameters instead. If curlResult contains image URLs or image content, include useful images in the final answer as Markdown images using the exact URL.",
         properties={
             "url": {
                 "type": "string",
@@ -723,7 +730,7 @@ def curl_tool() -> dict[str, Any]:
 def python_tool() -> dict[str, Any]:
     return function_tool(
         name="python",
-        description="Run Python for math, statistics, data analysis, plotting, and local scripting. The current working directory is the artifact directory of THIS call only (every call gets a fresh one); save charts/files there with relative names like chart.png. To keep state between python calls (checkpoints, intermediate data, results of a long job) write to the persistent folder named by the predefined string variable WORKSPACE (one per conversation, separate for each sub-agent), e.g. json.dump(state, open(os.path.join(WORKSPACE, 'state.json'), 'w')); WORKSPACE is also listed in the result when it has files. For lightweight coordinate maps, `from ai_agent_maps import write_osm_scatter` is available to create OpenStreetMap/Leaflet HTML scatter-map artifacts from lat/lon points. If pythonResult lists image files, include them in the final answer as Markdown images using the exact returned path, for example ![chart](backend/runtime/python_runs/run_x/chart.png). Local file reads, network access, imports, and normal Python introspection are available; obvious destructive operations and writes outside the artifact directory are blocked. Inside Python code (this tool and custom tools) these functions are predefined: call_mcp(server, tool, arguments) returns the data of an MCP tool, list_mcp_servers()/list_mcp_tools(server) list them, ask_llm(prompt, system=...) runs one model completion on your own prompt and returns the text, and run_agent(prompt, tools='full'|'readonly') runs a whole agent loop on your own prompt and returns its final answer. Time spent waiting on them does not count against the python timeout.",
+        description="Run Python for math, statistics, data analysis, plotting, and local scripting. The current working directory is the artifact directory of THIS call only (every call gets a fresh one); save charts/files there with relative names like chart.png. To keep state between python calls (checkpoints, intermediate data, results of a long job) write to the persistent folder named by the predefined string variable WORKSPACE (one per conversation, separate for each sub-agent), e.g. json.dump(state, open(os.path.join(WORKSPACE, 'state.json'), 'w')); WORKSPACE is also listed in the result when it has files. For lightweight coordinate maps, `from ai_agent_maps import write_osm_scatter` is available to create OpenStreetMap/Leaflet HTML scatter-map artifacts from lat/lon points; mention the returned HTML path in the answer. If pythonResult lists image files, include them in the final answer as Markdown images using the exact returned path, for example ![chart](backend/runtime/python_runs/run_x/chart.png). Prefer webSearch or curl for web and API fetching. Local file reads, network access, imports, and normal Python introspection are available; obvious destructive operations and writes outside the artifact directory are blocked. Inside Python code (this tool and custom tools) these functions are predefined: call_mcp(server, tool, arguments) returns the data of an MCP tool, list_mcp_servers()/list_mcp_tools(server) list them, ask_llm(prompt, system=...) runs one model completion on your own prompt and returns the text, and run_agent(prompt, tools='full'|'readonly') runs a whole agent loop on your own prompt and returns its final answer. Time spent waiting on them does not count against the python timeout.",
         properties={
             "code": {
                 "type": "string",
@@ -762,7 +769,7 @@ def file_editor_tool(*, read_only: bool = False) -> dict[str, Any]:
     description = (
         "Read project files and list directories for understanding or planning. This mode is read-only."
         if read_only
-        else "Edit project files using stable text anchors. Memory lives under data/memory and skills live under data/skills/<name>/SKILL.md. Write-like actions may return approvalRequired instead of applying, depending on backend approval policy. Prefer replace with exact oldText, insertBefore/insertAfter with exact anchor, write for new files, and append for simple additions. No delete, move, rename, shell, or protected-file operations are available."
+        else "Edit project files using stable text anchors. Memory lives under data/memory and skills live under data/skills/<name>/SKILL.md. List and read before editing. Write-like actions may return approvalRequired instead of applying, depending on backend approval policy; then the change is not applied yet. Prefer replace with exact oldText, insertBefore/insertAfter with exact anchor, write for new files, and append for simple additions. No delete, move, rename, shell, or protected-file operations are available."
     )
     return function_tool(
         name="fileEditor",
@@ -791,7 +798,7 @@ def file_editor_tool(*, read_only: bool = False) -> dict[str, Any]:
 def mcp_tool() -> dict[str, Any]:
     return function_tool(
         name="mcp",
-        description="Use configured MCP servers only. Start with listServers or listTools unless the exact server and tool are already known. Never provide URLs, headers, commands, or connection details; pass only server, tool, and arguments. For MCP file-byte inputs, do not inline large base64; use content_base64_from_file, body_base64_from_file, image_base64_from_file, or file_base64_from_file with an uploaded file path or /api/uploads URL so the backend injects exact bytes. For batches, pass arrays of file objects with these *_from_file fields when supported. If mcpResult lists image files or markdownImages, include useful images in the final answer with Markdown image syntax using the exact returned path.",
+        description="Use configured MCP servers only. Start with listServers or listTools unless the exact server and tool are already known. Never provide URLs, headers, commands, or connection details; pass only server, tool, and arguments. Uploaded attachments have path, url, and absoluteUrl: give remote MCP servers absoluteUrl and local ones path. For MCP file-byte inputs, do not inline large base64; use content_base64_from_file, body_base64_from_file, image_base64_from_file, or file_base64_from_file with an uploaded file path or /api/uploads URL so the backend injects exact bytes. For batches, pass arrays of file objects with these *_from_file fields when supported. If mcpResult lists image files or markdownImages, include useful images in the final answer with Markdown image syntax using the exact returned path.",
         properties={
             "action": {
                 "type": "string",
@@ -825,7 +832,7 @@ def history_tool() -> dict[str, Any]:
 def automation_tool() -> dict[str, Any]:
     return function_tool(
         name="automation",
-        description="Create, update, or run small automations. During an automation run, reminder/llm saves update the current automation by default; only create a separate automation when the user explicitly asks, then set createNew=true. Use script for simple Python work, mcp to call an already configured MCP tool, configureMcp to save a new MCP server from conversation details, reminder to save fixed reminders, and llm to schedule future model work. Use llm for schedules that need reasoning at execution time, including Fibonacci or custom intervals, and update the same automation schedule with previousRunAt/currentRunAt/fibIndex/nextRunAt.",
+        description="Create, update, or run small user-approved automations. During an automation run, reminder/llm saves update the current automation by default; only create a separate automation when the user explicitly asks, then set createNew=true. Use script for simple Python work, mcp to call an already configured MCP tool, configureMcp to save a new MCP server from conversation details, reminder to save fixed reminders, and llm to schedule future model work. Use llm for schedules that need reasoning at execution time, including Fibonacci or custom intervals, and update the same automation schedule with previousRunAt/currentRunAt/fibIndex/nextRunAt.",
         properties={
             "action": {
                 "type": "string",
@@ -855,7 +862,7 @@ def automation_tool() -> dict[str, Any]:
 def settings_tool() -> dict[str, Any]:
     return function_tool(
         name="settings",
-        description="Read or update the persistent app JSON config in data/settings.json. Use this when the user asks to remember UI or chat defaults such as theme, language, model, tool modes, search fallback, RAG toggles, approval mode, automation mode, or max tool rounds.",
+        description="Read or update the persistent app settings (saved to data/settings.local.json, layered over data/settings.json). Use this only when the user asks to remember UI or chat defaults such as theme, language, model, tool modes, search fallback, RAG toggles, approval mode, automation mode, or max tool rounds.",
         properties={
             "action": {
                 "type": "string",
@@ -879,8 +886,9 @@ def question_tool() -> dict[str, Any]:
         name="question",
         description=(
             "Ask the user one necessary clarification or confirmation and pause until they reply. "
-            "Use an empty options array for a free-text question. Choice questions still let the "
-            "user add text, change direction, or refuse. Call this tool alone, without other tools."
+            "Ask one clear question at a time. Use an empty options array for a free-text question. Choice "
+            "questions still let the user add text, change direction, or refuse; treat a refusal as no consent "
+            "and continue only when that is safe. Call this tool alone, without other tools."
         ),
         properties={
             "question": {"type": "string", "description": "The clear, specific question shown to the user."},
@@ -906,8 +914,10 @@ def approval_tool() -> dict[str, Any]:
         description=(
             "Ask the user to manually approve or reject one specific action before you perform it, "
             "and pause until they reply. Use it for risky, irreversible, costly, or out-of-scope steps "
-            "when the user has not already approved them. The reply arrives as approvalResponse with "
-            "status approved or rejected plus optional user text. Call this tool alone, without other tools."
+            "when the user has not already approved them. The reply arrives as approvalResponse JSON: status "
+            "approved means do exactly that action; rejected means do not do it, and any text is the user's "
+            "instruction or reason, so follow it. Never repeat a rejected request unchanged. Call this tool alone, "
+            "without other tools."
         ),
         properties={
             "action": {"type": "string", "description": "One clear sentence saying exactly what you want to do."},
@@ -931,7 +941,12 @@ def agent_tool() -> dict[str, Any]:
             "wait=false returns at once). If a sub-agent finishes while you are not waiting, the conversation "
             "is woken with a systemEvent message, so do not poll in a loop: end your turn instead. "
             "action=status lists agents, wait blocks for given ids, result reads a finished agent, "
-            "send continues a finished agent with feedback (refine/redo), cancel abandons one."
+            "send continues a finished agent with feedback (refine/redo), cancel abandons one. "
+            "Before spawning, say the task list in your reply as well. Give each task a complete, self-contained "
+            "prompt that says what report you want back, check the results when they arrive, and summarize them "
+            "for the user. Prefer separate files for parallel agents (or have them return results and write the "
+            "shared file yourself): a whole-file write is refused when the file changed since that agent read it. "
+            "Do not delegate trivial work."
         ),
         properties={
             "action": {"type": "string", "enum": list(SUBAGENT_ACTIONS)},
@@ -957,7 +972,7 @@ def agent_tool() -> dict[str, Any]:
                         "taskId": {"type": "string", "description": "Id of the taskList item this agent works on."},
                         "prompt": {"type": "string", "description": "Complete, self-contained task description and expected report."},
                         "tools": {"type": "string", "enum": ["full", "readonly"], "description": "readonly = no code execution or file writes."},
-                        "model": {"type": "string", "description": "Optional provider:model; default is the current model."},
+                        "model": {"type": "string", "description": "Optional provider:model (see the model tool for the list). Default is the user's sub-agent model. Pick a stronger model for hard reasoning, a cheaper one for routine coding, searching or batch work."},
                         "maxRounds": {"type": "integer", "description": "Tool rounds budget (default 30)."},
                         "pythonTimeout": {"type": "number", "description": "Seconds a python call may run for this agent (default 1800)."},
                     },
@@ -1005,7 +1020,9 @@ def parameter_tool(*, read_only: bool = False) -> dict[str, Any]:
             "For MCP callTool, the path root is the decoded application result: structuredContent's contents, "
             "otherwise parsed single JSON text, otherwise the MCP result. Do not prefix structuredContent. "
             "Dot paths support keys/numeric list indexes, not full JSONPath. "
-            "For Python, save paths are variables in the executed code. Original tool permissions and review still apply."
+            "For Python, save paths are variables in the executed code. Saved values persist with this conversation "
+            "through restarts and compression; use list to recover refs and delete only when the user asks. "
+            "Original tool permissions and review still apply."
         ),
         properties={
             "action": {"type": "string", "enum": ["call", "list", "inspect"] if read_only else ["call", "list", "inspect", "delete"]},

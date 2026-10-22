@@ -195,18 +195,23 @@ def run_llm_automation_conversation(path: Path, item: dict[str, Any]) -> dict[st
     }
 
 
+AUTOMATION_RULES = (
+    "Rules: to schedule the next run, update the current automationId with the automation tool. Do not create "
+    "a new automation unless the user explicitly asked for one. Fibonacci, custom-interval and similar schedules "
+    "update previousRunAt/currentRunAt/fibIndex/nextRunAt in the same schedule."
+)
+
+
 def build_automation_user_message(path: Path, item: dict[str, Any], prompt: str) -> str:
     schedule = json.dumps(item.get("schedule") or {}, ensure_ascii=False, indent=2)
     return (
-        f"自动化任务执行。\n"
+        "Automation run.\n"
         f"automationId: {path.name}\n"
         f"automationPath: {relative_to_project(path)}\n"
         f"title: {item.get('title') or path.stem}\n"
-        f"当前 schedule:\n{schedule}\n\n"
-        "规则：如果需要设置下一次运行，默认必须用 automation tool 更新当前 automationId；"
-        "除非用户明确要求创建新的自动化，否则不要新建。"
-        "斐波那契、自定义间隔等计划要更新同一个 schedule 的 previousRunAt/currentRunAt/fibIndex/nextRunAt。\n\n"
-        f"任务内容：\n{prompt}"
+        f"Current schedule:\n{schedule}\n\n"
+        f"{AUTOMATION_RULES}\n\n"
+        f"Task:\n{prompt}"
     )
 
 

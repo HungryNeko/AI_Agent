@@ -14,16 +14,17 @@ from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
 
+from agent import edit_approval
 from agent.config import PROJECT_ROOT, load_system_prompt
 from agent.debug_log import log_event, log_exception
 from agent.instructions import load_instruction
 from agent.config import native_endpoint_kinds, native_web_supported
 from agent.llm import add_usage, complete_chat_once, consume_usage
 from agent.references import resolve_reference_context
-from agent.reviewer import ReviewDecision, review_tool_request
-from prompts.context import build_context_prompt, format_current_time
+from agent.reviewer import ReviewDecision, earlier_user_messages, review_tool_request
+from prompts.context import TOOL_BUDGET_NOTICE, build_context_prompt, format_current_time
 from prompts.tools import build_tools_prompt_from_settings, format_available
-from tools import parameterSave, rag
+from tools import parameterSave, rag, security
 from tools import models as model_tool
 from tools.executor import execute_tool
 from tools.request import ToolRequest, build_openai_tools, parse_openai_tool_calls
@@ -110,6 +111,9 @@ class ChatState(TypedDict):
     run_id: NotRequired[str]
     python_timeout_seconds: NotRequired[float]
     bridge_depth: NotRequired[int]
+    subagent_model: NotRequired[str]
+    reasoning_effort: NotRequired[str]
+    subagent_reasoning_effort: NotRequired[str]
     turn_usage: NotRequired[dict[str, int] | None]
     injected_results: NotRequired[list[int]]
     plan_sent: NotRequired[str]
@@ -156,6 +160,10 @@ def first_state(state: ChatState) -> dict[str, Any]:
         run_id=str(state.get("run_id") or ""),
         model=str(state.get("model") or ""),
         bridge_depth=int(state.get("bridge_depth") or 0),
+        security_level=security.current_level(),  # server-side only: the client's state cannot raise it
+        subagent_model=str(state.get("subagent_model") or ""),
+        reasoning_effort=str(state.get("reasoning_effort") or "default"),
+        subagent_reasoning=str(state.get("subagent_reasoning_effort") or "default"),
         native_tools=native_endpoint_kinds(state.get("model") or None) if settings.web_search.native else (),
     )
     if state.get("initialized") and state.get("messages"):
@@ -376,17 +384,7 @@ def assistant_step(state: ChatState) -> dict[str, Any]:
             tool_rounds=state.get("tool_rounds", 0),
             max_tool_rounds=state.get("max_tool_rounds", 20),
         )
-        messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "toolBudgetExceeded: max_tool_rounds reached for this user turn. "
-                    "No more tool calls are available now. Give the best final answer "
-                    "from the tool results and raw tool errors above. If live data is "
-                    "unavailable, say that clearly."
-                ),
-            }
-        )
+        messages.append({"role": "user", "content": TOOL_BUDGET_NOTICE})
         # Keep the same tools array and forbid calling them: dropping `tools` would change the very
         # start of the prompt and miss the provider's prompt cache for the whole conversation.
 
@@ -394,6 +392,8 @@ def assistant_step(state: ChatState) -> dict[str, Any]:
     extra_options: dict[str, Any] = {"native_web": True} if settings.web_search.native else {}
     if budget_spent:
         extra_options["tool_choice"] = "none"
+    if settings.reasoning_effort != "default":
+        extra_options["reasoning_effort"] = settings.reasoning_effort
     assistant_message = complete_chat_once(
         request_messages,
         model=state.get("model"),
@@ -444,6 +444,9 @@ def tool_call(state: ChatState) -> dict[str, Any]:
     question_pending: dict[str, Any] | None = None
     active_model = state.get("model")
     active_plan = dict(state.get("plan") or {})
+    # Manual approval pauses the turn for the user, which only the main agent can do (sub-agents cannot ask).
+    pause_for_edits = settings.file_editor.approval == "manual" and settings.allows("approval")
+    pending_edits: list[dict[str, Any]] = []
 
     for request in tool_requests:
         previous_parameters = parameterSave.list_parameters(settings.conversation_id) if settings.conversation_id else []
@@ -455,6 +458,9 @@ def tool_call(state: ChatState) -> dict[str, Any]:
             if review_decision:
                 tool_events.append({"type": "ai_review", "tool": request.name, "text": f"approved: {review_decision.reason}"})
             result = execute_tool(request, reviewed_tool_settings(request, settings))
+        if pause_for_edits and request.name == "fileEditor" and request.file_edit and file_editor_approval_required(result):
+            pending_edits.append(edit_approval.pending_edit(request.file_edit, result))
+            result += edit_approval.PAUSE_NOTE
         current_parameters = parameterSave.list_parameters(settings.conversation_id) if settings.conversation_id else []
         if current_parameters != previous_parameters:
             tool_events.append({"type": "parameters_changed", "tool": "parameterSave",
@@ -511,8 +517,12 @@ def tool_call(state: ChatState) -> dict[str, Any]:
             }
             event_type = "plan_ready" if item.action == "finalize" else "plan_updated"
             tool_events.append({"type": event_type, "tool": "plan", **active_plan})
-        elif request.name == "fileEditor" and file_editor_approval_required(result):
+        elif request.name == "fileEditor" and file_editor_approval_required(result) and not pause_for_edits:
             tool_events.append({"type": "approval_required", "tool": "fileEditor", "text": result})
+
+    if pending_edits and question_pending is None:
+        question_pending = edit_approval.approval_request(pending_edits)
+        tool_events.append({"type": "approval_request", "tool": "fileEditor", **question_pending})
 
     update: dict[str, Any] = {
         "messages": messages,
@@ -947,6 +957,7 @@ def maybe_review_tool_request(request: ToolRequest, state: ChatState) -> ReviewD
             user_message=state.get("message", ""),
             assistant_message=last_assistant_message(state),
             model=state.get("model"),
+            earlier_user_messages=earlier_user_messages(list(state.get("messages") or []), state.get("message", "")),
         )
     except Exception as exc:  # noqa: BLE001
         log_exception("ai_review.error", exc, tool=request.name, target=describe_tool_call_target(request))

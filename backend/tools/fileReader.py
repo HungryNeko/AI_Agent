@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from tools import filelock
+from tools import filelock, security
 from tools.settings import FileReaderSettings
 
 TEXT_SUFFIXES = {
@@ -389,6 +389,8 @@ def resolve_path(path_text: str, settings: FileReaderSettings) -> Path:
     if not resolved.is_file():
         raise ValueError(f"path is not a file: {path_text}")
     ensure_not_protected(resolved, root)
+    if security.current_level() == "L1" and not security.read_allowed_at_l1(relative_path(resolved, root)):
+        raise ValueError("at security level L1 only the agent's own data and uploaded files can be read.")
     return resolved
 
 

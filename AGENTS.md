@@ -67,7 +67,11 @@ the server separately saves full conversation JSON.
 - `frontend/src/main.jsx`: the small React application bootstrap.
 - `frontend/src/App.jsx`: the React UI, API calls, SSE parsing, conversation state,
   uploads, mentions, settings, automation, and MCP configuration.
-- `frontend/src/styles.css`: all UI styling.
+- `frontend/src/ui.jsx`: shared UI primitives: `PopPill` (pill button + popover), `Pill`, `MenuItem`, `StepSlider`,
+  `Segmented`, and the resizable panes (`usePane`, `Resizer`, `splitColumns`; widths and collapsed state are kept in
+  localStorage).
+- `frontend/src/styles.css` imports `styles/tokens.css` (every colour; light/dark/system), `base.css`, `chat.css` and
+  `pages.css`. Components never hardcode a colour: use the tokens so both themes stay in step.
 - `frontend/vite.config.js`: Vite runs on `127.0.0.1:5173`; `/api` proxies to
   `http://127.0.0.1:8012` unless `VITE_BACKEND_PROXY` overrides it.
 
@@ -161,11 +165,46 @@ Tool availability is controlled by `ToolSettings`, not only prompts. A per-turn
 unlimited. When a finite budget is exhausted, the backend makes a final no-tools model
 request instead of ending with a graph recursion error.
 
-File editor approval modes are `readOnly`, `manual`, `auto`, and `aiReview`. In
-`manual`, a mutating edit returns a diff preview with `approvalRequired` and does not
-write. `aiReview` sends high-risk requests to `agent/reviewer.py`; high-risk requests
-include Python, mutating file edits, MCP `callTool`, mutating automation actions, and
-settings updates.
+File editor approval modes are `readOnly`, `manual`, `auto`, and `aiReview` (the composer's approval pill). `auto`
+involves no model: everything runs directly. In `manual`, a mutating edit is not written: the turn pauses with an
+`approval_request` (`source: "fileEditor"`, the exact edits in `pending_edits`, their diffs in `details`). The
+pending edits are saved with the conversation state, and when the user approves, `agent/edit_approval.py` applies
+the saved edits on the server (never the client's copy) and appends the results to the `approvalResponse` the model
+reads, so the model does not redo them. Sub-agents cannot ask and keep the plain `approvalRequired` result.
+`aiReview` sends high-risk requests to `agent/reviewer.py` (Python and custom tools, mutating file edits, MCP
+`callTool`, mutating automation actions, settings updates, RAG ingest); the reviewer sees the current request, the
+conversation's first and most recent earlier requests, the model's step and the call, and a failure denies.
+
+## Security levels
+
+The UI has a three-step slider (`PUT /api/security/level`, stored as `security.level` in the app settings, default L3):
+
+- **L1**: read-only and harmless. Only the tools in `security.L1_TOOLS` exist (file reader limited to the agent's own data and
+  uploads, RAG search, history, web search/fetch, model, plan, question, approval). No code runs, so no python, custom tools,
+  MCP, automation, settings tool, file editor or sub-agents.
+- **L2**: every tool, but anything that runs code (python, custom tools, stdio MCP servers, automation scripts) runs as the
+  unprivileged OS user `agentcode` with a scrubbed environment. Needs Linux and a backend started as root (the Docker setup);
+  elsewhere it refuses to run code instead of running it unrestricted. Secrets files are owner-only (`security.harden_permissions`),
+  and the in-process file editor cannot write code, configuration or deployment files below L3.
+- **L3**: everything runs as the backend itself; in Docker the container is the outer boundary.
+
+The level is read when a tool runs (`executor.security_block`, `python.run`, `mcp.run_session`), so lowering it works mid-turn,
+and for sub-agents, wake turns, automations and the bridge. Only `app_settings.set_security_level` changes it: the settings tool,
+`PUT/PATCH /api/settings` and the client's chat state cannot. `agent/netguard.py` refuses every API request whose TCP connection
+belongs to `agentcode`, so agent code cannot call the unauthenticated API (provider config, MCP servers, the level) through the
+backend's privileges. Do not promise more than this: without an OS-level sandbox, free-form code is only as contained as its
+user's file permissions.
+
+## Models: sub-agents and thinking effort
+
+- `settings.subagent_model` (chat option, UI: agents pill) is the default model of spawned sub-agents, `run_agent` and `ask_llm`;
+  a task may name its own `model` in `agent spawn`. There is no automatic escalation: a failing agent can switch by itself.
+- `reasoning_effort` / `subagent_reasoning_effort` (`default`, `off`, `low`, `medium`, `high`, `max`) is sent in the provider's own
+  format (`llm.apply_reasoning`, picked by the provider's `reasoning` field or its base URL; `default` sends nothing) and is
+  retried without the parameter when the provider answers 400.
+- DeepSeek thinking mode answers 400 ("reasoning_content must be passed back") when an assistant tool-call message has none, which
+  happens after switching model or effort in the middle of a turn. `llm.with_reasoning_content` gives those messages an empty one
+  in the outgoing request only (stored history is untouched).
 
 ## Configuration and secrets
 
@@ -228,6 +267,9 @@ It prefers `.venv/bin/python` and supports an explicit `AI_AGENT_PYTHON` overrid
 - instruction and saved conversations (list/read/rename/delete/compress/branch/plan);
 - uploads and allowed artifact serving;
 - system/user data listing, import, edit, and rename;
+- `GET /api/prompts` (read-only catalog of every prompt and tool schema sent to a model, built by
+  `agent/prompt_catalog.py`; shown under Data > Prompts). A new prompt string belongs in a named constant that the
+  catalog imports, so the page always shows the text the code really uses;
 - RAG reindex;
 - automation definitions and run history;
 - MCP list/test/upsert/import/delete.
@@ -244,6 +286,9 @@ the matching frontend call. Preserve SSE event types already consumed by the UI:
 - Read `data/skills/agent-backend/SKILL.md` before substantial graph/backend changes.
 - Read `data/skills/agent-tools/SKILL.md` before changing tools, RAG, MCP, attachments,
   history, or user-managed data.
+- Prompts are English only. How to use one tool belongs in that tool's description (`tools/request.py`); the tool
+  rules in `prompts/tools.py` only cover choosing and combining tools, so nothing is written twice. The system prompt
+  is fixed text first and the user's instruction last.
 - Keep the fixed first system prompt stable for prompt-cache reuse. Put time, current
   tool availability, references, RAG hits, attachments, and the user message in the
   per-turn user content.

@@ -5,6 +5,7 @@ The model should not see most of these values. They are backend controls.
 
 from __future__ import annotations
 
+from tools import security
 from dataclasses import dataclass
 from typing import Literal
 
@@ -191,10 +192,16 @@ class ToolSettings:
     run_id: str = ""
     model: str = ""
     native_tools: tuple[str, ...] = ()  # hosted endpoints of the model's provider: "search" and/or "fetch"
+    security_level: str = "L3"  # read from the app settings by the graph each turn; see tools/security.py
+    subagent_model: str = ""  # model sub-agents use unless a task names one
+    reasoning_effort: str = "default"
+    subagent_reasoning: str = "default"
     bridge_depth: int = 0  # how many agents deep this is when started from python code or as a sub-agent
 
     def allows(self, tool: str) -> bool:
         if tool in self.blocked_tools:
+            return False
+        if not security.tool_allowed(tool, self.security_level):
             return False
         if tool in {"nativeWebSearch", "webFetch"}:
             return ("search" if tool == "nativeWebSearch" else "fetch") in self.native_tools
@@ -242,7 +249,8 @@ class ToolSettings:
             available.append("createTool")
             available.append("custom__*")
         available.append("model")
-        available.append("parameterSave")
+        if self.allows("parameterSave"):
+            available.append("parameterSave")
         if self.question.can_model_call:
             available.append("question")
         if self.allows("approval"):

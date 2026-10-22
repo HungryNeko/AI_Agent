@@ -10,6 +10,16 @@ from agent.llm import complete_chat_once
 from tools.request import ToolRequest
 
 
+REVIEWER_PROMPT = (
+    "You are a strict approval reviewer for an AI agent. "
+    "Review only whether this high-risk tool call is justified by the user request. "
+    "Approve only when intent is clear, scope is narrow, and no secret/destructive action is hidden. "
+    "userMessage is the current turn; earlierUserMessages (oldest first) are the first and the most recent earlier "
+    "requests of the conversation, so a short reply such as 'continue' can refer to them. "
+    'Return only JSON: {"approved": true|false, "reason": "short reason"}.'
+)
+
+
 @dataclass(frozen=True)
 class ReviewDecision:
     approved: bool
@@ -22,8 +32,10 @@ def review_tool_request(
     user_message: str,
     assistant_message: dict[str, Any],
     model: str | None = None,
+    earlier_user_messages: list[str] | None = None,
 ) -> ReviewDecision:
     payload = {
+        "earlierUserMessages": list(earlier_user_messages or []),
         "userMessage": user_message,
         "assistantMessage": str(assistant_message.get("content") or ""),
         "tool": request.name,
@@ -33,12 +45,7 @@ def review_tool_request(
         [
             {
                 "role": "system",
-                "content": (
-                    "You are a strict approval reviewer for an AI agent. "
-                    "Review only whether this high-risk tool call is justified by the user request. "
-                    "Approve only when intent is clear, scope is narrow, and no secret/destructive action is hidden. "
-                    "Return only JSON: {\"approved\": true|false, \"reason\": \"short reason\"}."
-                ),
+                "content": REVIEWER_PROMPT,
             },
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ],
@@ -49,8 +56,10 @@ def review_tool_request(
 
 
 def parse_review_decision(text: str) -> ReviewDecision:
+    # Models often wrap the object in a code fence or a sentence: read the outermost {...}.
+    start, end = text.find("{"), text.rfind("}")
     try:
-        parsed = json.loads(text.strip())
+        parsed = json.loads(text[start : end + 1] if 0 <= start < end else text.strip())
     except json.JSONDecodeError:
         return ReviewDecision(False, "reviewer returned invalid JSON")
     if not isinstance(parsed, dict):
@@ -108,3 +117,30 @@ def describe_request(request: ToolRequest) -> dict[str, Any]:
     if request.name == "python":
         return {"code": request.code[:1000]}
     return {"query": request.query, "url": request.url}
+
+
+USER_MESSAGE_MARK = 'userMessage: "'
+EARLIER_LIMIT = 600
+
+
+def earlier_user_messages(messages: list[dict[str, Any]], current: str, recent: int = 3) -> list[str]:
+    """The conversation's first request and the last few before the current one, as the user typed them."""
+
+    texts = []
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            content = " ".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
+        content = str(content or "")
+        marker = content.rfind(USER_MESSAGE_MARK)
+        if marker < 0:
+            continue  # tool budget notices and other system-made user messages
+        text = content[marker + len(USER_MESSAGE_MARK) :].removesuffix('"')
+        texts.append(text[:EARLIER_LIMIT])
+    if texts and texts[-1] == current[:EARLIER_LIMIT]:
+        texts.pop()  # the current turn is sent separately
+    if len(texts) <= recent + 1:
+        return texts
+    return [texts[0], *texts[-recent:]]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import mimetypes
 import re
 import subprocess
@@ -16,13 +17,13 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent import session_store
 from agent.app_settings import load_app_settings, patch_app_settings, save_app_settings
 from agent.automation_runner import list_run_records, start_runner, stop_runner
-from agent import subagents, titles, wakeups
+from agent import app_settings, edit_approval, netguard, subagents, titles, wakeups
 from agent.runs import clear_cancelled_run, is_cancelled_run, is_paused_run, mark_cancelled_run, set_run_paused
 from agent.config import (
     list_model_items,
@@ -41,6 +42,7 @@ from tools import models as model_tool
 from tools import createTool as custom_tool
 from tools import plan as plan_tool
 from tools import python as python_tool
+from tools import security
 from tools import rag
 from tools import parameterSave
 from tools.mcp import McpRequest
@@ -73,6 +75,8 @@ ARTIFACT_ROOTS = [
 ]
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    status = security.startup(PROJECT_ROOT)
+    log_event("security.startup", **status)
     start_runner()
     try:
         yield
@@ -82,6 +86,15 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="AI Agent Backend", version="0.1.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def refuse_agent_code(request: Request, call_next):
+    """Code the agent runs (as the unprivileged user) may not call the backend's own API."""
+
+    if netguard.refusal(request.scope):
+        return JSONResponse({"detail": "agent code may not call the backend API"}, status_code=403)
+    return await call_next(request)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -125,6 +138,9 @@ class ChatOptions(BaseModel):
     web_search_mode: Literal["off", "tool", "native", "both", "auto"] = "auto"
     web_search_provider: Literal["duckduckgo", "searxng", "tavily"] = "duckduckgo"
     web_search_auto_switch: bool = False
+    subagent_model: str | None = None
+    reasoning_effort: Literal["default", "off", "low", "medium", "high", "max"] = "default"
+    subagent_reasoning_effort: Literal["default", "off", "low", "medium", "high", "max"] = "default"
     rag_mode: Literal["off", "on", "auto"] = "auto"
     rag_include_knowledge: bool = True
     rag_include_memory: bool = True
@@ -340,6 +356,33 @@ def refresh_provider_models(provider: str) -> dict[str, Any]:
     return {"status": "refreshed", **result, "config": public_config()}
 
 
+class SecurityLevelPayload(BaseModel):
+    level: Literal["L1", "L2", "L3"]
+
+
+@app.get("/api/security")
+def get_security() -> dict[str, Any]:
+    return {
+        "level": security.current_level(),
+        "levels": list(security.LEVELS),
+        "l2": security.l2_status(),
+        "platform": os.name,
+    }
+
+
+@app.put("/api/security/level")
+def put_security_level(payload: SecurityLevelPayload) -> dict[str, Any]:
+    """The security slider. Not reachable by agent code (see netguard) and not a tool."""
+
+    if payload.level == "L2":
+        status = security.l2_status()
+        if not status["available"]:
+            raise HTTPException(status_code=400, detail=status["reason"])
+    app_settings.set_security_level(payload.level)
+    log_event("security.level_changed", level=payload.level)
+    return get_security()
+
+
 @app.get("/api/settings")
 def get_settings() -> dict[str, Any]:
     try:
@@ -449,7 +492,9 @@ def chat_stream(payload: ChatRequest) -> StreamingResponse:
         try:
             adopt_saved_history(state, conversation_id, client_rev)
             base_rev = session_store.current_rev(conversation_id)
-            for event in stream_turn(state, payload.message):
+            # Edits waiting for manual approval are stored server-side and applied here, never taken from the client.
+            message = edit_approval.resolve_response(payload.message, saved_conversation_state(conversation_id), conversation_id)
+            for event in stream_turn(state, message):
                 gate.touch(owner)
                 while is_paused_run(run_id) and not is_cancelled_run(run_id):
                     time.sleep(0.1)
@@ -938,6 +983,15 @@ def delete_data_file(
     return {"path": relative_to_project(resolved), "status": "deleted", "rag": status}
 
 
+@app.get("/api/prompts")
+def list_prompts() -> dict[str, Any]:
+    """Every prompt and tool schema the application sends to a model (read-only, for debugging)."""
+
+    from agent.prompt_catalog import build_prompt_catalog
+
+    return build_prompt_catalog()
+
+
 @app.get("/api/automations")
 def list_automations() -> dict[str, Any]:
     root = automation_root()
@@ -1081,6 +1135,9 @@ def build_chat_state(payload: ChatRequest) -> ChatState:
         "developer_mode": options["developer_mode"],
         "conversation_mode": options["conversation_mode"],
         "max_tool_rounds": options["max_tool_rounds"],
+        "subagent_model": options.get("subagent_model") or "",
+        "reasoning_effort": options.get("reasoning_effort") or "default",
+        "subagent_reasoning_effort": options.get("subagent_reasoning_effort") or "default",
         "attachments": [model_to_dict(item) for item in payload.attachments],
     }
     for key in HISTORY_STATE_KEYS:
@@ -1129,6 +1186,13 @@ HISTORY_STATE_KEYS = [
     "plan_sent",
     "plan",
 ]
+
+
+def saved_conversation_state(conversation_id: str) -> dict[str, Any]:
+    try:
+        return session_store.read_conversation(conversation_id).get("state") or {}
+    except ValueError:
+        return {}
 
 
 def adopt_saved_history(state: dict[str, Any], conversation_id: str, client_rev: int) -> None:

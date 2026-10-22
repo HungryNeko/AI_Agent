@@ -25,7 +25,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from tools import procs
+from tools import procs, security
 
 MAX_BRIDGE_DEPTH = 2  # an agent started from python may itself start one more through python, not further
 POLL_SECONDS = 0.05
@@ -122,6 +122,7 @@ class ToolBridge:
         from tools.mcp import McpRequest
         from tools.request import ToolRequest
 
+        security.require_tool("mcp")
         if not self.settings.mcp.can_model_call:
             raise ValueError("MCP is switched off in this conversation.")
         arguments = params.get("arguments")
@@ -145,10 +146,18 @@ class ToolBridge:
             messages.append({"role": "system", "content": str(params["system"])})
         messages.append({"role": "user", "content": prompt})
         max_tokens = int(params.get("max_tokens") or 0)
+        extra: dict[str, Any] = {}
+        effort = str(getattr(self.settings, "subagent_reasoning", "") or "default")
+        if effort != "default":
+            extra["reasoning_effort"] = effort
         reply = complete_chat_once(
             messages,
-            model=str(params.get("model") or "") or str(getattr(self.settings, "model", "") or "") or None,
+            model=str(params.get("model") or "")
+            or str(getattr(self.settings, "subagent_model", "") or "")
+            or str(getattr(self.settings, "model", "") or "")
+            or None,
             max_tokens=max_tokens or None,
+            **extra,
         )
         return str(reply.get("content") or "")
 

@@ -14,6 +14,14 @@ Context rules:
 """.strip()
 
 
+TOOL_BUDGET_NOTICE = (
+    "toolBudgetExceeded: max_tool_rounds reached for this user turn. "
+    "No more tool calls are available now. Give the best final answer "
+    "from the tool results and raw tool errors above. If live data is "
+    "unavailable, say that clearly."
+)
+
+
 def build_context_prompt(
     *,
     conversation_summary: str | None = None,

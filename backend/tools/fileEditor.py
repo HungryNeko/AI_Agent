@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from tools import filelock, procs
+from tools import filelock, procs, security
 from tools.settings import FileEditorSettings
 
 
@@ -47,6 +47,9 @@ def execute(request: FileEditRequest, settings: FileEditorSettings) -> dict[str,
         path = resolve_path(request.path, settings, allow_missing=True)
     except ValueError:
         return execute_unlocked(request, settings)  # let the action report its own path error
+    if request.action in WRITE_ACTIONS and security.current_level() != "L3":
+        if security.editor_blocked(relative_path(path, resolve_root(settings)).replace("\\", "/")):
+            raise ValueError("this file (code, configuration or deployment) cannot be edited below security level L3.")
     owner = procs.current_owner() or "main"
     label = procs.current_label()
     with filelock.locked(path, write=request.action != "read"):
