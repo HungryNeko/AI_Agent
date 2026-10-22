@@ -192,7 +192,7 @@ class ToolSettings:
     run_id: str = ""
     model: str = ""
     native_tools: tuple[str, ...] = ()  # hosted endpoints of the model's provider: "search" and/or "fetch"
-    security_level: str = "L3"  # read from the app settings by the graph each turn; see tools/security.py
+    security_level: str = security.DEFAULT_LEVEL  # read from the app settings by the graph each turn; see tools/security.py
     subagent_model: str = ""  # model sub-agents use unless a task names one
     reasoning_effort: str = "default"
     subagent_reasoning: str = "default"

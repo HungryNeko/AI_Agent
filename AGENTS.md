@@ -177,14 +177,15 @@ conversation's first and most recent earlier requests, the model's step and the 
 
 ## Security levels
 
-The UI has a three-step slider (`PUT /api/security/level`, stored as `security.level` in the app settings, default L3):
+The UI has a three-step slider (`PUT /api/security/level`, stored as `security.level` in the app settings, default L2):
 
 - **L1**: read-only and harmless. Only the tools in `security.L1_TOOLS` exist (file reader limited to the agent's own data and
   uploads, RAG search, history, web search/fetch, model, plan, question, approval). No code runs, so no python, custom tools,
   MCP, automation, settings tool, file editor or sub-agents.
 - **L2**: every tool, but anything that runs code (python, custom tools, stdio MCP servers, automation scripts) runs as the
   unprivileged OS user `agentcode` with a scrubbed environment. Needs Linux and a backend started as root (the Docker setup);
-  elsewhere it refuses to run code instead of running it unrestricted. Secrets files are owner-only (`security.harden_permissions`),
+  elsewhere it refuses to run code instead of running it unrestricted, so native development on Windows or macOS
+  needs the slider moved to L3. Secrets files are owner-only (`security.harden_permissions`),
   and the in-process file editor cannot write code, configuration or deployment files below L3.
 - **L3**: everything runs as the backend itself; in Docker the container is the outer boundary.
 

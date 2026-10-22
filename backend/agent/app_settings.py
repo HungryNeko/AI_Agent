@@ -9,6 +9,8 @@ from typing import Any
 
 from agent.config import PROJECT_ROOT
 
+DEFAULT_LEVEL = "L2"  # same as tools.security.DEFAULT_LEVEL (importing tools here would be circular; a test checks it)
+
 SETTINGS_PATH = PROJECT_ROOT / "data" / "settings.json"
 # How hard the model should think. "default" sends nothing, so the provider's own default applies.
 REASONING_EFFORTS = {"default", "off", "low", "medium", "high", "max"}
@@ -49,7 +51,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "model": "",
     },
     # Changed only through set_security_level (the UI slider); never by the settings tool or API.
-    "security": {"level": "L3"},
+    "security": {"level": DEFAULT_LEVEL},
 }
 
 

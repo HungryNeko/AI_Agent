@@ -37,9 +37,9 @@ def settings_files(tmp_path, monkeypatch):
 # ------------------------------------------------------------------ the level itself
 
 
-def test_levels_normalise_and_default_to_the_previous_behaviour():
-    assert [security.normalize_level(v) for v in ("l1", " L2 ", "L3", "x", None)] == ["L1", "L2", "L3", "L3", "L3"]
-    assert security.DEFAULT_LEVEL == "L3"
+def test_levels_normalise_and_default_to_l2():
+    assert [security.normalize_level(v) for v in ("l1", " L2 ", "L3", "x", None)] == ["L1", "L2", "L3", "L2", "L2"]
+    assert security.DEFAULT_LEVEL == "L2" == app_settings.DEFAULT_SETTINGS["security"]["level"]
 
 
 def test_unreadable_settings_fail_closed(monkeypatch):

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 LEVELS = ("L1", "L2", "L3")
-DEFAULT_LEVEL = "L3"  # keeps the behaviour that existed before levels; the UI slider lowers it
+DEFAULT_LEVEL = "L2"  # agent code runs as the unprivileged user; where L2 is unavailable it refuses code (see l2_status)
 LOW_USER = "agentcode"
 LOW_UID = 10001
 

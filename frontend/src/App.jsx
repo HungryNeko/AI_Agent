@@ -972,7 +972,7 @@ function ChatView({ models, nativeWebProviders = [], options, setOptions, label,
   const modelName = modelEntry?.label || modelNow.split(":").pop() || text("默认模型", "Default model");
   const effort = options.reasoning_effort || "default";
   const agentSummary = summarizeAgents(subagents);
-  const securityLevel = security?.level || "L3";
+  const securityLevel = security?.level || "L2";
   const modeNow = normalizeConversationMode(options.conversation_mode);
   const modeInfo = {
     ask: { icon: <MessageSquare size={14} />, label: text("问答", "Ask"), hint: text("只读理解与查询", "Read-only answers") },
@@ -1373,7 +1373,7 @@ function WebAccessControl({ options, update, nativeReady, text }) {
 
 function SecurityControl({ security, error, onChange, text }) {
   const steps = securitySteps(text);
-  const level = security?.level || "L3";
+  const level = security?.level || "L2";
   const l2 = security?.l2;
   return (
     <div className="popBody">
