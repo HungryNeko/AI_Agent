@@ -86,6 +86,24 @@ Run the checks separately:
 npm --prefix frontend run build
 ```
 
+## Local Docker
+
+```bash
+docker compose -f docker-compose.local.yml up -d --build --wait
+```
+
+Open http://localhost:8080/ai-agent/. This stack has its own Docker network and
+proxies the API through the frontend, including streaming responses. It binds only
+to localhost; set `AI_AGENT_LOCAL_PORT` to change the default port `8080`.
+Provider environment variables are loaded from `backend/.env` and `.env` when present.
+Configure models in the UI; persistent configuration and runtime data live under
+`docker-data/local/`, separately from the native development runtime.
+
+```bash
+docker compose -f docker-compose.local.yml logs -f
+docker compose -f docker-compose.local.yml down
+```
+
 ## Server deployment (Docker)
 
 On push to `main`, `.github/workflows/deploy.yml` checks the code, SSHes to the server and

@@ -58,7 +58,6 @@ jobs:
 
     env:
       SERVER_HOST: ${{ secrets.SERVER_HOST }}
-      SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
       SERVER_USER: ${{ secrets.SERVER_USER || 'root' }}
       SERVER_PORT: ${{ secrets.SERVER_PORT || '22' }}
       SERVER_APP_DIR: ${{ secrets.SERVER_APP_DIR || '/root/github/AI_Agent' }}
@@ -72,16 +71,18 @@ jobs:
             echo "SERVER_HOST secret is required." >&2
             exit 1
           fi
-          if [ -z "$SERVER_PASSWORD" ]; then
-            echo "SERVER_PASSWORD secret is required." >&2
-            exit 1
-          fi
 
-      - name: Install SSH password helper
+      - name: Configure SSH private key
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
         run: |
           set -eu
-          sudo apt-get update
-          sudo apt-get install -y sshpass
+          if [ -z "$SSH_KEY" ]; then
+            echo "SSH_KEY secret is required." >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > "$RUNNER_TEMP/deploy_ssh_key"
 
       - name: Trust server host key
         run: |
@@ -92,15 +93,15 @@ jobs:
           chmod 600 "$HOME/.ssh/known_hosts"
 
       - name: Run server update script
-        env:
-          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
           set -euo pipefail
           echo "### Deploy output" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          sshpass -e ssh \
+          ssh \
+            -i "$RUNNER_TEMP/deploy_ssh_key" \
             -p "$SERVER_PORT" \
-            -o BatchMode=no \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=20 \
@@ -119,8 +120,6 @@ jobs:
           fi
 
       - name: Verify containers and health check
-        env:
-          SSHPASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
           set -euo pipefail
           echo "### Verification output" >> "$GITHUB_STEP_SUMMARY"
@@ -172,9 +171,11 @@ jobs:
           REMOTE_VERIFY
           )"
           payload="$(printf '%s\n' "$REMOTE_SCRIPT" | base64 -w0)"
-          sshpass -e ssh \
+          ssh \
+            -i "$RUNNER_TEMP/deploy_ssh_key" \
             -p "$SERVER_PORT" \
-            -o BatchMode=no \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=20 \
@@ -193,3 +194,7 @@ jobs:
             echo "❌ Deployment verification failed." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
+
+      - name: Remove SSH private key
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/deploy_ssh_key"
