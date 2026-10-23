@@ -106,7 +106,8 @@ docker compose -f docker-compose.local.yml down
 
 ## Server deployment (Docker)
 
-On push to `main`, `.github/workflows/deploy.yml` checks the code, SSHes to the server and
+On push to `main`, `.github/workflows/deploy.yml` checks the code and sends a Git bundle
+of that commit over SSH. The server imports it without connecting to GitHub, then
 runs `scripts/update_server.sh`, which builds and restarts `ai-agent-backend` and
 `ai-agent-frontend` via `docker-compose.yml`. This is independent of the
 Lease-Management-System deployment:
@@ -124,9 +125,10 @@ Lease-Management-System deployment:
   `*.local.json`, runtime data and AI keys from `LEGACY_LEASE_DIR`
   (default `/root/github/Lease-Management-System`), then writes a marker and never runs again.
 
-Repository secrets: `SERVER_HOST`, `SERVER_PASSWORD` (required); `SERVER_USER` (default
+Repository secrets: `SERVER_HOST`, `SSH_KEY` (required; the full SSH private key whose
+public key is in the server user's `authorized_keys`); `SERVER_USER` (default
 `root`), `SERVER_PORT` (default `22`), `SERVER_APP_DIR` (default `/root/github/AI_Agent`),
-`REPO_CLONE_URL` (only if the server needs an authenticated URL to clone this repo).
+`REPO_CLONE_URL` (optional origin URL for manual server-side Git updates).
 Optional variable `GATEWAY_URL` (default `http://127.0.0.1:5050`) is used for the
 post-deploy check through the lease gateway.
 

@@ -64,6 +64,15 @@ jobs:
       REPO_URL: ${{ secrets.REPO_CLONE_URL || format('https://github.com/{0}.git', github.repository) }}
 
     steps:
+      - name: Check out deployment commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create deployment bundle
+        run: git bundle create "$RUNNER_TEMP/deploy.bundle" HEAD
+
       - name: Validate secrets
         run: |
           set -eu
@@ -97,22 +106,39 @@ jobs:
           set -euo pipefail
           echo "### Deploy output" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          # Encode settings and the receiver script as an argument; stdin carries only the bundle.
+          # Base64 keeps configured paths and URLs out of remote shell syntax.
+          app_dir="$(printf '%s' "$SERVER_APP_DIR" | base64 -w0)"
+          repo_url="$(printf '%s' "$REPO_URL" | base64 -w0)"
+          branch="$(printf '%s' "$GITHUB_REF_NAME" | base64 -w0)"
+          remote_script="$(
+            printf 'export APP_DIR="$(echo %s | base64 -d)"\n' "$app_dir"
+            printf 'export REPO_URL="$(echo %s | base64 -d)"\n' "$repo_url"
+            printf 'export DEPLOY_BRANCH="$(echo %s | base64 -d)"\n' "$branch"
+            printf 'export DEPLOY_SHA="%s"\n' "$GITHUB_SHA"
+            cat scripts/deploy_bundle.sh
+          )"
+          payload="$(printf '%s\n' "$remote_script" | base64 -w0)"
+          set +e
           ssh \
             -i "$RUNNER_TEMP/deploy_ssh_key" \
             -p "$SERVER_PORT" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
+            -o ConnectTimeout=15 \
             -o StrictHostKeyChecking=yes \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=20 \
             -o TCPKeepAlive=yes \
             "$SERVER_USER@$SERVER_HOST" \
-            "if [ ! -d '$SERVER_APP_DIR/.git' ]; then git clone '$REPO_URL' '$SERVER_APP_DIR'; fi && cd '$SERVER_APP_DIR' && { n=0; until git -c http.version=HTTP/1.1 fetch --prune origin; do n=\$((n + 1)); [ \$n -ge 6 ] && exit 1; echo \"git fetch failed (attempt \$n/6), retrying...\"; sleep \$((n * 5)); done; } && git reset --hard origin/\$(git rev-parse --abbrev-ref HEAD) && exec sh scripts/update_server.sh" \
-            2>&1 | tee deploy.log
+            "sh -c \"\$(echo $payload | base64 -d)\"" \
+            < "$RUNNER_TEMP/deploy.bundle" 2>&1 | tee deploy.log
+          deploy_status="${PIPESTATUS[0]}"
+          set -e
           cat deploy.log >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-          if grep -q "Deploy update complete." deploy.log; then
+          if [ "$deploy_status" -eq 0 ] && grep -q "Deploy update complete." deploy.log; then
             echo "✅ Update script completed." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "❌ Update script did not print success marker: Deploy update complete." >> "$GITHUB_STEP_SUMMARY"
@@ -176,6 +202,7 @@ jobs:
             -p "$SERVER_PORT" \
             -o BatchMode=yes \
             -o IdentitiesOnly=yes \
+            -o ConnectTimeout=15 \
             -o StrictHostKeyChecking=yes \
             -o ServerAliveInterval=30 \
             -o ServerAliveCountMax=20 \
@@ -195,6 +222,6 @@ jobs:
             exit 1
           fi
 
-      - name: Remove SSH private key
+      - name: Remove deployment files
         if: ${{ always() }}
-        run: rm -f "$RUNNER_TEMP/deploy_ssh_key"
+        run: rm -f "$RUNNER_TEMP/deploy_ssh_key" "$RUNNER_TEMP/deploy.bundle"

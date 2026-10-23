@@ -61,12 +61,15 @@ def test_deploy_creates_shared_network_and_checks_gateway():
     assert "Deploy update complete." in update_script
     # the server must match origin even after a history rewrite, so no fast-forward-only pull
     assert "git pull --ff-only" not in deploy_workflow + update_script
-    assert "git reset --hard origin/" in deploy_workflow
     assert 'git reset --hard "origin/$current_branch"' in update_script
-    assert "&& exec sh scripts/update_server.sh" in deploy_workflow
-    # GitHub is reached over a flaky link from the server: fetch must be retried
-    assert "until git -c http.version=HTTP/1.1 fetch --prune origin" in deploy_workflow
-    assert "until git -c http.version=HTTP/1.1 fetch --prune origin" in update_script
+    # Actions supplies code over SSH, so the server never needs GitHub during deployment.
+    assert 'git bundle create "$RUNNER_TEMP/deploy.bundle" HEAD' in deploy_workflow
+    assert "fetch-depth: 0" in deploy_workflow
+    assert "git clone" not in deploy_workflow
+    assert "fetch --prune origin" not in deploy_workflow
+    assert "SKIP_GIT_UPDATE" in update_script
+    # Manual server updates still retry, with a low-speed timeout.
+    assert "http.lowSpeedTime=30 fetch --prune origin" in update_script
     # the verification script must not be fed through ssh stdin (commands inside would eat it)
     assert "base64 -d" in deploy_workflow
     assert "ai via gateway ready" in deploy_workflow

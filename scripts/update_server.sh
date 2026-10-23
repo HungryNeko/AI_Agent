@@ -13,11 +13,13 @@ cd "$APP_DIR"
 echo "App dir: $APP_DIR"
 echo "Compose file: $COMPOSE_FILE"
 
-if [ -d .git ]; then
+if [ "${SKIP_GIT_UPDATE:-0}" = "1" ]; then
+  echo "Code already supplied by deployment bundle; skipping GitHub fetch."
+elif [ -d .git ]; then
   echo "Fetching latest code..."
   # The server reaches GitHub over a flaky link (TLS drops, timeouts), so retry.
   attempt=1
-  until git -c http.version=HTTP/1.1 fetch --prune origin; do
+  until git -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 fetch --prune origin; do
     if [ "$attempt" -ge 6 ]; then
       echo "git fetch failed after $attempt attempts." >&2
       exit 1
