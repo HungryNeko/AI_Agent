@@ -1449,3 +1449,19 @@
 .approvalDialog .questionAnswer textarea {
   min-height: 44px;
 }
+
+/* A checked rag citation inside an answer: [path#chunk] */
+.citeTag {
+  display: inline-block;
+  padding: 0 6px;
+  margin: 0 1px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+  vertical-align: baseline;
+  overflow-wrap: anywhere;
+}

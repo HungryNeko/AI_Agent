@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import rehypeKatex from "rehype-katex";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import {
@@ -52,6 +52,7 @@ import "katex/dist/katex.min.css";
 import "./styles.css";
 import { currentOperation, toolPreviewText } from "./operationPreview.js";
 import { MenuItem, Pill, PopPill, Resizer, Segmented, StepSlider, splitColumns, usePane } from "./ui.jsx";
+import RagPanel, { formatRagRefreshStatus } from "./RagPanel.jsx";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 // Events fetched per page; long conversations load newest-first and fetch older pages on scroll-up.
@@ -2022,18 +2023,29 @@ function ReferenceList({ refs }) {
   );
 }
 
+// A rag citation, [path#chunk] with a file-like path, is shown as a small tag. The backend has already checked it.
+const CITATION_PATTERN = /\[([^[\]#\n]{3,300}?\/[^[\]#\n]*|[^[\]#\n]+?\.(?:md|txt|json|ya?ml))#(\d{1,5})\](?!\()/g;
+
+function citationMarkdown(text) {
+  // Odd parts of the split are code (fenced or inline): a tag there is text, not a citation.
+  return (text || "").split(/(```[\s\S]*?```|`[^`\n]*`)/).map((part, index) => (index % 2 ? part : part.replace(CITATION_PATTERN, (_all, path, chunk) => `[${path}#${chunk}](cite:${encodeURIComponent(`${path}#${chunk}`)})`))).join("");
+}
+
 function MarkdownText({ text, onPreviewImage }) {
   return (
     <div className="markdownBody">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
+        urlTransform={(url) => (url.startsWith("cite:") ? url : defaultUrlTransform(url))}
         components={{
-          a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a>,
+          a: ({ href, children }) => (href || "").startsWith("cite:")
+            ? <span className="citeTag" title={decodeURIComponent(href.slice(5))}>{children}</span>
+            : <a href={href} target="_blank" rel="noreferrer">{children}</a>,
           img: ({ src, alt }) => <ImageCard src={src || ""} alt={alt || "image"} onPreviewImage={onPreviewImage} />,
         }}
       >
-        {text || ""}
+        {citationMarkdown(text)}
       </ReactMarkdown>
     </div>
   );
@@ -2111,10 +2123,7 @@ function DataView({ text, models }) {
   const [status, setStatus] = useState("");
   const [importName, setImportName] = useState("");
   const [importContent, setImportContent] = useState("# New Document\n\n");
-  const [splitMode, setSplitMode] = useState("simple");
-  const [chunkModel, setChunkModel] = useState("");
   const [ingesting, setIngesting] = useState(false);
-  const [ragRefresh, setRagRefresh] = useState({ phase: "idle", message: "" });
   const [prompts, setPrompts] = useState([]);
   const [copied, setCopied] = useState(false);
   const knowledgeUploadRef = useRef(null);
@@ -2123,23 +2132,6 @@ function DataView({ text, models }) {
   useEffect(() => {
     refreshResourceList();
   }, [kind]);
-
-  useEffect(() => {
-    fetchJson("/api/settings").then((data) => {
-      const ingestion = data.settings?.rag_ingestion || {};
-      setSplitMode(ingestion.split_mode || "simple");
-      setChunkModel(ingestion.model || "");
-    }).catch(() => {});
-  }, []);
-
-  async function updateIngestionSettings(nextMode, nextModel = chunkModel) {
-    setSplitMode(nextMode);
-    setChunkModel(nextModel);
-    await fetchJson("/api/settings", {
-      method: "PATCH",
-      body: { patch: { rag_ingestion: { split_mode: nextMode, model: nextModel } } },
-    });
-  }
 
   async function refreshResourceList() {
     setStatus("");
@@ -2213,7 +2205,7 @@ function DataView({ text, models }) {
     } else {
       const data = await fetchJson("/api/data/file", {
         method: "PUT",
-        body: { path: selected, content, split_mode: splitMode, chunk_model: chunkModel },
+        body: { path: selected, content },
       });
       setStatus(formatRagRefreshStatus("已保存", data.rag));
     }
@@ -2226,7 +2218,7 @@ function DataView({ text, models }) {
     if (!nextName) return;
     const data = await fetchJson("/api/data/file/rename", {
       method: "POST",
-      body: { path: selected, new_name: nextName, split_mode: splitMode, chunk_model: chunkModel },
+      body: { path: selected, new_name: nextName },
     });
     await refreshListOnly();
     await openFile(data.path);
@@ -2236,8 +2228,7 @@ function DataView({ text, models }) {
   async function deleteSelected() {
     if (!selected || !selectedMeta.writable || kind === "instruction") return;
     if (!window.confirm(text("确认删除这个用户文件？", "Delete this user file?"))) return;
-    const query = new URLSearchParams({ path: selected, split_mode: splitMode, chunk_model: chunkModel });
-    const data = await fetchJson(`/api/data/file?${query.toString()}`, { method: "DELETE" });
+    const data = await fetchJson(`/api/data/file?path=${encodeURIComponent(selected)}`, { method: "DELETE" });
     setSelected("");
     setContent("");
     await refreshListOnly();
@@ -2261,35 +2252,12 @@ function DataView({ text, models }) {
     }
     const data = await fetchJson("/api/data/import", {
       method: "POST",
-      body: { kind, name: importName, content: importContent, split_mode: splitMode, chunk_model: chunkModel },
+      body: { kind, name: importName, content: importContent },
     });
     await refreshListOnly();
     await openFile(data.path);
     setImportName("");
     setStatus(formatRagRefreshStatus(`已导入：${data.path}`, data.rag));
-  }
-
-  async function reindexRag() {
-    if (ragRefresh.phase === "loading") return;
-    setRagRefresh({
-      phase: "loading",
-      message: text("正在刷新 RAG 索引…", "Refreshing RAG index…"),
-    });
-    try {
-      const data = await fetchJson("/api/rag/reindex", {
-        method: "POST",
-        body: { split_mode: splitMode, chunk_model: chunkModel },
-      });
-      setRagRefresh({
-        phase: "success",
-        message: formatRagRefreshStatus(text("RAG 刷新成功", "RAG refresh succeeded"), data),
-      });
-    } catch (error) {
-      setRagRefresh({
-        phase: "error",
-        message: `${text("RAG 刷新失败", "RAG refresh failed")}: ${String(error.message || error)}`,
-      });
-    }
   }
 
   async function ingestKnowledgeFile(event) {
@@ -2309,7 +2277,7 @@ function DataView({ text, models }) {
       const name = `${file.name.replace(/\.[^.]+$/, "") || "document"}.md`;
       const data = await fetchJson("/api/rag/ingest", {
         method: "POST",
-        body: { path: uploaded.path, name, split_mode: splitMode, chunk_model: chunkModel },
+        body: { path: uploaded.path, name },
       });
       setKind("knowledge");
       const listed = await fetchJson("/api/data/files?kind=knowledge");
@@ -2358,46 +2326,7 @@ function DataView({ text, models }) {
             <button key={value} className={kind === value ? "active" : ""} onClick={() => setKind(value)} type="button">{tabLabel}</button>
           ))}
         </div>
-        {!isPrompts && (
-        <section className="dataSidebarSection" aria-label={text("RAG 索引设置", "RAG index settings")}>
-          <div className="dataSidebarHeading">
-            <Database size={15} />
-            <span>{text("RAG 索引", "RAG INDEX")}</span>
-          </div>
-          <label className="ragField">
-            <span>{text("切分方式", "Chunking mode")}</span>
-            <div className="segmented ragModeToggle">
-              <button className={splitMode === "simple" ? "active" : ""} disabled={ragRefresh.phase === "loading"} onClick={() => updateIngestionSettings("simple")} type="button">{text("简单切分", "Simple")}</button>
-              <button className={splitMode === "llm" ? "active" : ""} disabled={ragRefresh.phase === "loading"} onClick={() => updateIngestionSettings("llm")} type="button">{text("LLM 切分", "LLM")}</button>
-            </div>
-          </label>
-          {splitMode === "llm" && (
-            <label className="ragField">
-              <span>{text("切分模型", "Chunking model")}</span>
-              <select value={chunkModel} disabled={ragRefresh.phase === "loading"} onChange={(event) => updateIngestionSettings("llm", event.target.value)}>
-                <option value="">{text("默认模型", "Default model")}</option>
-                {(models || []).map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </label>
-          )}
-          <p className="ragHint">{splitMode === "llm" ? text("短文件免调用；超大文件自动回退，未变化内容复用缓存。", "Short files skip LLM; oversized files fall back; unchanged content is cached.") : text("本地段落切分，不消耗 LLM token。", "Local paragraph splitting uses no LLM tokens.")}</p>
-          <div className="ragActions">
-            <button className="secondaryButton" onClick={reindexRag} disabled={ragRefresh.phase === "loading"} type="button">
-              {ragRefresh.phase === "loading" ? <span className="spinner" /> : <RefreshCw size={16} />}
-              <span>{ragRefresh.phase === "loading" ? text("正在刷新…", "Refreshing…") : text("刷新 RAG", "Refresh RAG")}</span>
-            </button>
-            <button className="secondaryButton" onClick={() => knowledgeUploadRef.current?.click()} disabled={ingesting || ragRefresh.phase === "loading"} type="button"><Paperclip size={16} /><span>{ingesting ? text("正在录入…", "Ingesting…") : text("上传文档", "Upload document")}</span></button>
-          </div>
-          {ragRefresh.phase !== "idle" && (
-            <div className={`ragRefreshFeedback ${ragRefresh.phase}`} role={ragRefresh.phase === "error" ? "alert" : "status"}>
-              {ragRefresh.phase === "loading" && <span className="spinner" />}
-              {ragRefresh.phase === "success" && <Check size={15} />}
-              {ragRefresh.phase === "error" && <X size={15} />}
-              <span>{ragRefresh.message}</span>
-            </div>
-          )}
-        </section>
-        )}
+        {!isPrompts && <RagPanel text={text} models={models} request={fetchJson} onUpload={() => knowledgeUploadRef.current?.click()} uploading={ingesting} />}
         <input ref={knowledgeUploadRef} className="hiddenInput" type="file" onChange={ingestKnowledgeFile} />
         <div className="fileList">
           {isPrompts && promptGroups.map(([group, groupLabel]) => (
@@ -2459,15 +2388,6 @@ function DataView({ text, models }) {
       )}
     </section>
   );
-}
-
-function formatRagRefreshStatus(prefix, ragStatus) {
-  if (!ragStatus) return prefix;
-  const details = [`${ragStatus.chunk_count || 0} 个片段`];
-  if (ragStatus.documents_reused) details.push(`复用 ${ragStatus.documents_reused} 个文件`);
-  if (ragStatus.llm_calls) details.push(`LLM ${ragStatus.llm_calls} 次 / 约 ${ragStatus.estimated_input_tokens || 0} 输入 token`);
-  if (ragStatus.llm_fallbacks) details.push(`回退 ${ragStatus.llm_fallbacks} 次`);
-  return `${prefix}：${details.join("，")}`;
 }
 
 const PRIORITY_CUT = "__cut__";
@@ -3482,7 +3402,7 @@ function modelValue(item) {
 }
 
 function stringifyEventText(event, fallback) {
-  if (["tool_call", "assistant_progress", "question_required", "approval_required", "ai_review", "plan_updated", "plan_ready", "plan_decision", "approval_request", "parameters_changed", "error", "stopped", "user", "assistant"].includes(event.type)) {
+  if (["tool_call", "assistant_progress", "question_required", "approval_required", "ai_review", "plan_updated", "plan_ready", "plan_decision", "approval_request", "citation_check", "parameters_changed", "error", "stopped", "user", "assistant"].includes(event.type)) {
     return fallback;
   }
   return JSON.stringify(event, null, 2);
@@ -3507,6 +3427,7 @@ function eventLabel(type) {
     approval_required: "APPROVAL",
     approval_request: "APPROVAL",
     ai_review: "AI REVIEW",
+    citation_check: "CITATION",
     error: "ERROR",
     stopped: "STOPPED",
     python: "PYTHON",
