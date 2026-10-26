@@ -96,8 +96,7 @@ def execute_tool_uncaught(request: ToolRequest, settings: ToolSettings) -> str:
         if request.rag_request.action == "ingest":
             result = rag.ingest_uploaded_file(request.rag_request, settings.rag)
             return "ragIngestResult:\n" + json.dumps(result, ensure_ascii=False, indent=2)
-        results = rag.search(request.rag_request.query, settings.rag)
-        return format_rag_results(results)
+        return rag.run_search(request.rag_request, settings.rag)
     if request.name == "curl":
         result = curl.get(request.url, settings.curl)
         return format_curl_result(result)
@@ -234,7 +233,9 @@ def execute_raw_data_tool(request: ToolRequest, settings: ToolSettings) -> tuple
     if request.name == "webSearch":
         return WebSearch.search(request.query, settings.web_search), []
     if request.name == "rag" and request.rag_request and request.rag_request.action == "search":
-        return rag.search(request.rag_request.query, settings.rag), []
+        item = request.rag_request
+        results = rag.search(item.query, settings.rag, method=item.method, rerank_results=item.rerank, limit=item.limit, sources=item.sources)
+        return results, []
     if request.name == "curl":
         result = curl.get(request.url, settings.curl)
         if format_curl_result(result).startswith("toolError:"):
@@ -270,15 +271,6 @@ def format_web_search_results(results: list[dict[str, Any]]) -> str:
     if markdown_images:
         lines.append("markdownImages:")
         lines.extend(markdown_images)
-    return "\n".join(lines)
-
-
-def format_rag_results(results: list[str]) -> str:
-    if not results:
-        return 'ragResult: "no results"'
-    lines = ["ragResult:"]
-    for index, item in enumerate(results, start=1):
-        lines.append(f"{index}. {item}")
     return "\n".join(lines)
 
 

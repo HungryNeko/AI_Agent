@@ -46,9 +46,21 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "reasoning_effort": "default",
         "subagent_reasoning_effort": "default",
     },
+    # How the RAG index is built: how documents are split, whether an LLM writes a context for each chunk, and which
+    # embedding model makes the vectors ("" = the local character n-gram vectors).
     "rag_ingestion": {
         "split_mode": "simple",
         "model": "",
+        "contextual": "off",
+        "context_model": "",
+        "embedding_model": "",
+    },
+    # How RAG searches rank: the reranker applied to searches and the retriever used when none is named.
+    "rag_search": {
+        "rerank": "off",
+        "rerank_model": "",
+        "default_method": "hybrid",
+        "require_citations": True,
     },
     # Changed only through set_security_level (the UI slider); never by the settings tool or API.
     "security": {"level": DEFAULT_LEVEL},
@@ -172,6 +184,17 @@ def normalize_app_settings(raw: dict[str, Any]) -> dict[str, Any]:
     if rag_ingestion.get("split_mode") not in {"simple", "llm"}:
         rag_ingestion["split_mode"] = DEFAULT_SETTINGS["rag_ingestion"]["split_mode"]
     rag_ingestion["model"] = str(rag_ingestion.get("model") or "")
+    if rag_ingestion.get("contextual") not in {"off", "llm"}:
+        rag_ingestion["contextual"] = DEFAULT_SETTINGS["rag_ingestion"]["contextual"]
+    for key in ("context_model", "embedding_model"):
+        rag_ingestion[key] = str(rag_ingestion.get(key) or "").strip()
+    rag_search = settings["rag_search"]
+    if rag_search.get("rerank") not in {"off", "llm", "api"}:
+        rag_search["rerank"] = DEFAULT_SETTINGS["rag_search"]["rerank"]
+    if rag_search.get("default_method") not in {"hybrid", "vector", "bm25"}:
+        rag_search["default_method"] = DEFAULT_SETTINGS["rag_search"]["default_method"]
+    rag_search["rerank_model"] = str(rag_search.get("rerank_model") or "").strip()
+    rag_search["require_citations"] = bool(rag_search.get("require_citations", True))
 
     return settings
 

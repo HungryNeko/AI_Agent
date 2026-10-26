@@ -61,6 +61,7 @@ the server separately saves full conversation JSON.
 - `backend/tools/request.py`: tool schemas and parsed request types.
 - `backend/tools/settings.py`: backend-only tool modes, limits, and paths.
 - `backend/tools/executor.py`: central dispatcher and tool-result formatting.
+- `backend/tools/rag/`: the RAG package (chunking, contextual retrieval, BM25, vectors, fusion, reranking, index, search).
 
 ### Frontend
 
@@ -104,10 +105,16 @@ rebuild the RAG index so the new content is searchable.
   merged into the request, or `endpoints` for providers that host search/fetch as separate authenticated endpoints:
   DeepSeek's `POST /v1/tools/search` and `/v1/tools/fetch` are used automatically for api.deepseek.com and become the
   `nativeWebSearch` and `webFetch` tools, see `tools/nativeWeb.py`) and `both`.
-- `rag`: local TF-IDF character n-gram index with cosine-similarity
-  search across system and user knowledge, memory, and skills. Its upload-to-Markdown,
-  simple/LLM chunking, token limits, and incremental cache route are documented in
-  `docs/rag-ingestion.md`.
+- `rag`: hybrid search over system and user knowledge, memory, and skills; the code is the package
+  `backend/tools/rag/` (one job per module, listed in `docs/rag-ingestion.md`). Chunks are indexed twice, for BM25 and as
+  vectors (local character n-grams by default, or a provider's embedding model), after an optional LLM-written context
+  for each chunk is added to the indexed text (contextual retrieval). A search runs `hybrid` (default), `bm25` or `vector`
+  as the model chooses, fuses ranks with reciprocal rank fusion and can rerank the top candidates with an LLM or a
+  provider `/rerank` endpoint. Settings: `rag_ingestion` (chunking, context, embedding model) and `rag_search` (default
+  method, reranker, citation check). Search never calls an LLM for contexts; refreshes do and are incremental. Citations are
+  enforced in code: after a search the model chose, the graph step `agent/citation_check.py` rejects answers that cite a tag no
+  search returned, quote text that is not in the chunk, or cite nothing (it retries twice, then delivers with a notice). Upload-to-Markdown,
+  chunking, the caches and the limits are in `docs/rag-ingestion.md`.
 - `curl`: bounded public HTTP(S) GET only; credentials in URLs, localhost, and private
   IP targets are blocked.
 - `python`: calculations, analysis, local reads/network use, plots, and artifacts under
@@ -299,6 +306,8 @@ the matching frontend call. Preserve SSE event types already consumed by the UI:
   injected once and then live in the history (`injected_results`, `plan_sent`). `backend/tests/test_prompt_cache.py`
   replays turns and checks the prefix. The final `assistant` event carries `usage` (prompt, cached, completion) which the
   UI shows as the cache-hit line.
+- Keep files small and single-purpose. When a feature grows (RAG is the example), make it a package of modules that
+  each do one job instead of one long file.
 - Preserve bounded outputs, project-root checks, secret redaction, SSRF protection, and
   file approval semantics when changing tools.
 - Treat `backend/runtime` and ignored local config as user-owned local state. Do not

@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 RagMode = Literal["off", "on", "auto"]
+RagRerank = Literal["off", "llm", "api"]
+RagMethod = Literal["hybrid", "vector", "bm25"]
 WebSearchMode = Literal["off", "auto"]
 CurlMode = Literal["off", "auto"]
 PythonMode = Literal["off", "auto"]
@@ -54,9 +56,13 @@ class WebSearchSettings:
 @dataclass(frozen=True)
 class RagSettings:
     mode: RagMode = "auto"
-    embedding_model: str = "tfidf-char-ngram"
-    min_similarity: float = 0.05
+    min_similarity: float = 0.05  # the vector retriever drops chunks below this cosine similarity
     max_results: int = 5
+    candidates: int = 30  # most chunks each retriever hands to fusion
+    default_method: RagMethod = "hybrid"  # what a search uses when the model names no method
+    rerank: RagRerank = "off"  # "llm" or "api" reranks every search; a search can still ask for it
+    rerank_model: str = ""  # "" = the default chat model for "llm"; a rerank model (provider:model) for "api"
+    require_citations: bool = True  # answers after a rag search are checked in code: real [path#chunk] sources, exact quotes
     auto_include: bool = False
     include_knowledge: bool = True
     include_memory: bool = True
@@ -265,7 +271,10 @@ def make_tool_settings(
     web_search: bool | None = None,
     web_search_mode: str = "auto",
     rag_mode: str = "auto",
-    rag_embedding_model: str = "tfidf-char-ngram",
+    rag_rerank: str = "off",
+    rag_rerank_model: str = "",
+    rag_default_method: str = "hybrid",
+    rag_require_citations: bool = True,
     curl: bool | None = None,
     curl_mode: str = "auto",
     python: bool | None = None,
@@ -359,7 +368,10 @@ def make_tool_settings(
         ),
         rag=RagSettings(
             mode=normalize_rag_mode(rag_mode),
-            embedding_model=rag_embedding_model,
+            default_method=normalize_rag_method(rag_default_method),
+            rerank=normalize_rag_rerank(rag_rerank),
+            rerank_model=rag_rerank_model.strip(),
+            require_citations=bool(rag_require_citations),
             min_similarity=rag_min_similarity,
             max_results=rag_max_results,
             include_knowledge=rag_include_knowledge,
@@ -546,6 +558,20 @@ def default_web_search_base_url(
     if provider == "tavily":
         return "https://api.tavily.com"
     return ""
+
+
+def normalize_rag_rerank(value: str) -> RagRerank:
+    mode = (value or "off").strip().lower()
+    if mode not in {"off", "llm", "api"}:
+        raise ValueError("rag rerank must be one of: off, llm, api.")
+    return mode  # type: ignore[return-value]
+
+
+def normalize_rag_method(value: str) -> RagMethod:
+    method = (value or "hybrid").strip().lower()
+    if method not in {"hybrid", "vector", "bm25"}:
+        raise ValueError("rag method must be one of: hybrid, vector, bm25.")
+    return method  # type: ignore[return-value]
 
 
 def normalize_rag_mode(rag_mode: str) -> RagMode:

@@ -6,11 +6,11 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from agent.llm import complete_chat_once
-
-SplitMode = Literal["simple", "llm"]
+from tools.rag.aux_llm import forced_tool_call
+from tools.rag.models import SplitMode
 
 CHUNK_PROMPT_VERSION = 1
 LLM_MIN_SOURCE_CHARS = 1_800
@@ -195,7 +195,8 @@ CHUNK_PLAN_PROMPT = (
 
 def request_chunk_plan(blocks: list[str], *, model: str, max_chars: int) -> list[PreparedChunk]:
     numbered = "\n\n".join(f"<BLOCK {index}>\n{block}" for index, block in enumerate(blocks))
-    message = complete_chat_once(
+    message = forced_tool_call(
+        complete_chat_once,
         [
             {
                 "role": "system",
@@ -204,8 +205,7 @@ def request_chunk_plan(blocks: list[str], *, model: str, max_chars: int) -> list
             {"role": "user", "content": numbered},
         ],
         model=model or None,
-        tools=[chunk_plan_tool()],
-        tool_choice={"type": "function", "function": {"name": "submit_chunk_plan"}},
+        tool=chunk_plan_tool(),
         max_tokens=LLM_MAX_OUTPUT_TOKENS,
     )
     arguments = find_plan_arguments(message)

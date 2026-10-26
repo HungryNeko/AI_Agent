@@ -15,6 +15,8 @@ from uuid import uuid4
 from langgraph.graph import END, START, StateGraph
 
 from agent import edit_approval
+from agent.citation_check import citation_check, route_after_citation_check
+from agent.app_settings import load_app_settings
 from agent.config import PROJECT_ROOT, load_system_prompt
 from agent.debug_log import log_event, log_exception
 from agent.instructions import load_instruction
@@ -115,8 +117,24 @@ class ChatState(TypedDict):
     reasoning_effort: NotRequired[str]
     subagent_reasoning_effort: NotRequired[str]
     turn_usage: NotRequired[dict[str, int] | None]
+    citation_retries: NotRequired[int]
     injected_results: NotRequired[list[int]]
     plan_sent: NotRequired[str]
+
+
+def saved_rag_search_options() -> dict[str, Any]:
+    """The user's saved RAG search settings (reranker and default method), read fresh for every turn."""
+
+    try:
+        saved = load_app_settings().get("rag_search") or {}
+    except Exception:  # noqa: BLE001 - unreadable settings fall back to the defaults
+        saved = {}
+    return {
+        "rag_rerank": str(saved.get("rerank") or "off"),
+        "rag_rerank_model": str(saved.get("rerank_model") or ""),
+        "rag_default_method": str(saved.get("default_method") or "hybrid"),
+        "rag_require_citations": bool(saved.get("require_citations", True)),
+    }
 
 
 def first_state(state: ChatState) -> dict[str, Any]:
@@ -132,6 +150,7 @@ def first_state(state: ChatState) -> dict[str, Any]:
         rag_include_knowledge=state.get("rag_include_knowledge", True),
         rag_include_memory=state.get("rag_include_memory", True),
         rag_include_skills=state.get("rag_include_skills", True),
+        **saved_rag_search_options(),
         curl=state.get("curl") if "curl_mode" not in state else None,
         curl_mode=state.get("curl_mode", "auto"),
         python=state.get("python") if "python_mode" not in state else None,
@@ -291,6 +310,7 @@ def conversation_begin(state: ChatState) -> dict[str, Any]:
         "tools_announced": True,
         "conversation_mode": settings.conversation_mode,
         "turn_usage": None,
+        "citation_retries": 0,
         "plan_sent": plan_sent,
     }
 
@@ -589,6 +609,7 @@ def build_graph():
     graph.add_node("assistant_step", assistant_step)
     graph.add_node("tool_call", tool_call)
     graph.add_node("tool_error", tool_error)
+    graph.add_node("citation_check", citation_check)
     graph.add_node("conversation_end", conversation_end)
 
     graph.add_edge(START, "first_state")
@@ -599,6 +620,14 @@ def build_graph():
         route_after_assistant_step,
         {
             "tool_call": "tool_call",
+            "conversation_end": "citation_check",  # a final answer is checked before the turn ends
+        },
+    )
+    graph.add_conditional_edges(
+        "citation_check",
+        route_after_citation_check,
+        {
+            "assistant_step": "assistant_step",
             "conversation_end": "conversation_end",
         },
     )
@@ -745,7 +774,7 @@ def stream_turn(state: ChatState, message: str) -> Iterator[AgentEvent]:
                         yield {**event, "step_id": step_id}
                     for event in describe_tool_call_events(current_state):
                         yield {**event, "step_id": step_id}
-                if node == "tool_call":
+                if node in {"tool_call", "citation_check"}:
                     yield from update.get("tool_events") or []
                 if update.get("tool_error"):
                     yield {"type": "error", "text": str(update["tool_error"])}
@@ -850,7 +879,10 @@ def tool_call_key(request: ToolRequest) -> str:
         return f"{request.name}:{item.query}:{item.url}:{item.count}"
     if request.name == "rag" and request.rag_request:
         item = request.rag_request
-        return f"rag:{item.action}:{item.query}:{item.path}:{item.name}:{item.split_mode}:{item.chunk_model}:{item.overwrite}"
+        return (
+            f"rag:{item.action}:{item.query}:{item.path}:{item.name}:{item.split_mode}:{item.chunk_model}:{item.overwrite}"
+            f":{item.method}:{item.rerank}:{item.limit}:{','.join(item.sources)}"
+        )
     if request.name == "curl":
         return f"{request.name}:{request.url}"
     if request.name == "python":

@@ -29,7 +29,7 @@ from tools.subagent import (
     SubagentTask,
     TaskItem,
 )
-from tools.rag import RagRequest
+from tools.rag import RagRequest, normalize_method, normalize_sources
 from tools.settings import ToolSettings
 
 ToolName = str
@@ -260,6 +260,13 @@ def parse_rag_request(arguments: dict[str, Any]) -> RagRequest:
     split_mode = optional_string(arguments.get("splitMode")) or "simple"
     if split_mode not in {"simple", "llm"}:
         raise ValueError("rag splitMode must be one of: simple, llm.")
+    sources = arguments.get("sources") or []
+    if not isinstance(sources, list):
+        raise ValueError("rag sources must be an array.")
+    rerank = arguments.get("rerank")
+    limit = optional_int(arguments.get("limit"))
+    searching = action == "search"
+    method_text = optional_string(arguments.get("method")).strip()  # empty: the user's default method applies
     return RagRequest(
         action=action,
         query=query,
@@ -268,6 +275,10 @@ def parse_rag_request(arguments: dict[str, Any]) -> RagRequest:
         split_mode=split_mode,
         chunk_model=optional_string(arguments.get("chunkModel")).strip(),
         overwrite=optional_bool(arguments.get("overwrite")),
+        method=normalize_method(method_text) if searching and method_text else "",
+        rerank=rerank if searching and isinstance(rerank, bool) else None,
+        limit=max(1, min(10, limit)) if searching and limit else None,
+        sources=normalize_sources([str(item) for item in sources]) if searching else (),
     )
 
 
@@ -686,9 +697,28 @@ def query_tool(*, name: Literal["webSearch", "rag"], description: str) -> dict[s
 
 
 RAG_SEARCH_TEXT = (
-    "Search local knowledge, memory (data/memory), and skills (data/skills/<name>/SKILL.md). "
-    "Results include sourceType and path."
+    "Search local knowledge, memory (data/memory), and skills (data/skills/<name>/SKILL.md). Two retrievers index the "
+    "same chunks: bm25 (keywords) and vector (similarity). Pick method per question: hybrid (default) fuses both and "
+    "suits most questions; bm25 for exact names, identifiers, error messages and rare terms; vector for paraphrases and "
+    "questions that describe an idea in other words. If results look off-topic, retry with the other method or set "
+    "rerank=true, which re-scores the best candidates with a model (slower, more precise). Results include sourceType, "
+    "path, section and the context that was indexed with the chunk. Citations are mandatory: every result has a `cite:` "
+    "tag, and an answer that uses a result must cite it with that tag copied exactly, for example [knowledge/api.md#3]. "
+    "Quote only text that really is in the cited chunk. The system checks every citation: a tag no search returned, or a "
+    "quote that is not in the chunk, sends your answer back for a rewrite. If no result was relevant, say so and end the "
+    'answer with the line "Sources: none used".'
 )
+RAG_SEARCH_PROPERTIES = {
+    "query": {"type": "string", "description": "Required for search."},
+    "method": {"type": "string", "enum": ["hybrid", "vector", "bm25"], "description": "Search only. Default hybrid."},
+    "rerank": {"type": "boolean", "description": "Search only. Re-score the best candidates with a reranker. Defaults to the user's setting."},
+    "limit": {"type": "integer", "description": "Search only. Results to return, 1-10 (default 5)."},
+    "sources": {
+        "type": "array",
+        "items": {"type": "string", "enum": ["knowledge", "memory", "skill"]},
+        "description": "Search only. Restrict the search to these sources.",
+    },
+}
 
 
 def rag_tool(*, read_only: bool = False) -> dict[str, Any]:
@@ -702,12 +732,14 @@ def rag_tool(*, read_only: bool = False) -> dict[str, Any]:
         ),
         properties={
             "action": {"type": "string", "enum": ["search"] if read_only else ["search", "ingest"]},
-            "query": {"type": "string", "description": "Required for search."},
-            "path": {"type": "string", "description": "Uploaded file path required for ingest."},
-            "name": {"type": "string", "description": "Optional destination Markdown filename."},
-            "splitMode": {"type": "string", "enum": ["simple", "llm"]},
-            "chunkModel": {"type": "string", "description": "Dedicated configured model for LLM splitting."},
-            "overwrite": {"type": "boolean"},
+            **RAG_SEARCH_PROPERTIES,
+            **({} if read_only else {
+                "path": {"type": "string", "description": "Uploaded file path required for ingest."},
+                "name": {"type": "string", "description": "Optional destination Markdown filename."},
+                "splitMode": {"type": "string", "enum": ["simple", "llm"]},
+                "chunkModel": {"type": "string", "description": "Dedicated configured model for LLM splitting."},
+                "overwrite": {"type": "boolean"},
+            }),
         },
         required=["action"],
     )

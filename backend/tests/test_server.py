@@ -275,7 +275,10 @@ def test_settings_endpoint_persists_json_config(tmp_path, monkeypatch):
                 "rag_ingestion": {
                     "split_mode": "llm",
                     "model": "deepseek:deepseek-chat",
+                    "contextual": "llm",
+                    "embedding_model": "openai:text-embedding-3-small",
                 },
+                "rag_search": {"rerank": "llm", "default_method": "bm25"},
             }
         },
     )
@@ -288,7 +291,11 @@ def test_settings_endpoint_persists_json_config(tmp_path, monkeypatch):
     assert data["settings"]["rag_ingestion"] == {
         "split_mode": "llm",
         "model": "deepseek:deepseek-chat",
+        "contextual": "llm",
+        "context_model": "",
+        "embedding_model": "openai:text-embedding-3-small",
     }
+    assert data["settings"]["rag_search"] == {"rerank": "llm", "rerank_model": "", "default_method": "bm25", "require_citations": True}
     assert local_settings_path.exists()
 
 
@@ -297,15 +304,16 @@ def test_rag_reindex_endpoint_reports_vector_status():
     response = client.post("/api/rag/reindex")
 
     assert response.status_code == 200
-    assert response.json()["index"] == "local-vector"
+    assert response.json()["index"] == "hybrid"
 
 
 def test_rag_reindex_endpoint_passes_llm_chunking_options(monkeypatch):
     seen = {}
 
-    def fake_index_status(settings, **kwargs):
+    def fake_index_status(settings, options=None, **kwargs):
         seen.update(kwargs)
-        return {"status": "ready", "index": "local-vector", "chunk_count": 3}
+        seen["options"] = options
+        return {"status": "ready", "index": "hybrid", "chunk_count": 3}
 
     monkeypatch.setattr(server.rag, "index_status", fake_index_status)
     client = TestClient(server.app)
@@ -316,18 +324,17 @@ def test_rag_reindex_endpoint_passes_llm_chunking_options(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert seen == {
-        "split_mode": "llm",
-        "chunk_model": "deepseek:deepseek-chat",
-        "force": True,
-    }
+    assert seen["force"] is True
+    assert (seen["options"].split_mode, seen["options"].chunk_model) == ("llm", "deepseek:deepseek-chat")
+    assert seen["options"].contextual == "off"  # everything else comes from the saved RAG settings
 
 
 def test_rag_ingest_endpoint_routes_upload_to_markdown_pipeline(monkeypatch):
     seen = {}
 
-    def fake_ingest(request, settings):
+    def fake_ingest(request, settings, options=None):
         seen["request"] = request
+        seen["options"] = options
         return {"status": "saved", "path": "backend/runtime/user_data/knowledge/report.md"}
 
     monkeypatch.setattr(server.rag, "ingest_uploaded_file", fake_ingest)
@@ -347,6 +354,7 @@ def test_rag_ingest_endpoint_routes_upload_to_markdown_pipeline(monkeypatch):
     assert seen["request"].action == "ingest"
     assert seen["request"].split_mode == "llm"
     assert seen["request"].chunk_model == "deepseek:deepseek-chat"
+    assert seen["options"].split_mode == "llm"
 
 
 def test_delete_user_data_file_refreshes_rag(tmp_path, monkeypatch):

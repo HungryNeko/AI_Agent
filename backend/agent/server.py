@@ -786,19 +786,6 @@ def delete_conversation(conversation_id: str) -> dict[str, str]:
     return {"status": "deleted"}
 
 
-def resolve_rag_ingestion_options(
-    split_mode: str | None,
-    chunk_model: str,
-) -> tuple[Literal["simple", "llm"], str]:
-    saved = load_app_settings().get("rag_ingestion", {})
-    saved_mode = saved.get("split_mode") if isinstance(saved, dict) else "simple"
-    saved_model = saved.get("model") if isinstance(saved, dict) else ""
-    mode = split_mode or str(saved_mode or "simple")
-    if mode not in {"simple", "llm"}:
-        mode = "simple"
-    return mode, chunk_model.strip() or str(saved_model or "").strip()
-
-
 def refresh_rag_for(path: Path, split_mode: str | None = None, chunk_model: str = "") -> dict[str, Any] | None:
     """Reindex only when ``path`` lives in a RAG source (not in e.g. saved plans)."""
 
@@ -810,33 +797,26 @@ def refresh_rag_for(path: Path, split_mode: str | None = None, chunk_model: str 
 
 
 def refresh_rag(split_mode: str | None = None, chunk_model: str = "") -> dict[str, Any]:
-    mode, model = resolve_rag_ingestion_options(split_mode, chunk_model)
+    """Bring the index up to date with the saved RAG settings (a split mode or model given here wins)."""
+
     settings = make_tool_settings(rag_mode="auto")
-    return rag.index_status(settings.rag, split_mode=mode, chunk_model=model)
+    return rag.index_status(settings.rag, rag.saved_build_options(split_mode, chunk_model))
 
 
 @app.post("/api/rag/reindex")
 def reindex_rag(payload: RagReindexPayload | None = None) -> dict[str, Any]:
     request = payload or RagReindexPayload()
-    split_mode, chunk_model = resolve_rag_ingestion_options(
-        request.split_mode,
-        request.chunk_model,
-    )
     settings = make_tool_settings(rag_mode="auto")
     return rag.index_status(
         settings.rag,
-        split_mode=split_mode,
-        chunk_model=chunk_model,
+        rag.saved_build_options(request.split_mode, request.chunk_model),
         force=request.force,
     )
 
 
 @app.post("/api/rag/ingest")
 def ingest_rag_document(payload: RagIngestPayload) -> dict[str, Any]:
-    split_mode, chunk_model = resolve_rag_ingestion_options(
-        payload.split_mode,
-        payload.chunk_model,
-    )
+    options = rag.saved_build_options(payload.split_mode, payload.chunk_model)
     settings = make_tool_settings(rag_mode="auto")
     try:
         return rag.ingest_uploaded_file(
@@ -844,11 +824,12 @@ def ingest_rag_document(payload: RagIngestPayload) -> dict[str, Any]:
                 action="ingest",
                 path=payload.path,
                 name=payload.name,
-                split_mode=split_mode,
-                chunk_model=chunk_model,
+                split_mode=options.split_mode,
+                chunk_model=options.chunk_model,
                 overwrite=payload.overwrite,
             ),
             settings.rag,
+            options,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

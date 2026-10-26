@@ -1,10 +1,10 @@
-from tools import rag_chunking
+from tools.rag import chunking as rag_chunking
 
 
 def test_llm_chunking_uses_forced_boundary_tool_and_reuses_unit_cache(monkeypatch):
     calls = []
 
-    def fake_complete(messages, *, model=None, tools=None, tool_choice=None, max_tokens=None):
+    def fake_complete(messages, *, model=None, tools=None, tool_choice=None, max_tokens=None, reasoning_effort=None):
         calls.append(
             {
                 "messages": messages,
@@ -12,6 +12,7 @@ def test_llm_chunking_uses_forced_boundary_tool_and_reuses_unit_cache(monkeypatc
                 "tools": tools,
                 "tool_choice": tool_choice,
                 "max_tokens": max_tokens,
+                "reasoning_effort": reasoning_effort,
             }
         )
         return {
@@ -64,6 +65,7 @@ def test_llm_chunking_uses_forced_boundary_tool_and_reuses_unit_cache(monkeypatc
     assert len(calls) == 1
     assert calls[0]["tool_choice"]["function"]["name"] == "submit_chunk_plan"
     assert calls[0]["max_tokens"] == rag_chunking.LLM_MAX_OUTPUT_TOKENS
+    assert calls[0]["reasoning_effort"] == "off"
     assert "Never repeat or rewrite source text" in calls[0]["messages"][0]["content"]
 
 

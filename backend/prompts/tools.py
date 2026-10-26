@@ -8,7 +8,7 @@ TOOL_REQUEST_FORMAT = """
 - Call only tools listed in available. If the conversation or injected results already answer the question, do not call a tool.
 - Each tool's description is the reference for how to use that tool; these rules cover choosing and combining tools.
 - User text may contain @ references such as @tool:python, @file:data/skills/name/SKILL.md, or @history:conversation-id. Treat them as explicit user intent for that tool or context.
-- Local data: rag searches knowledge, memory, and skills. Cite the returned source paths when they matter, and read the file when an excerpt is not enough. Use history for exact earlier messages or tool output after compression.
+- Local data: rag searches knowledge, memory, and skills; read the file when an excerpt is not enough. Citations from rag are checked by the system: cite what you use with the result's `cite:` tag, copied exactly, and never invent a tag or quote text that is not in the chunk. Use history for exact earlier messages or tool output after compression.
 - Web: prefer nativeWebSearch and webFetch when listed, otherwise webSearch; use curl only for a known public API URL. For date-sensitive searches, include the current date from currentTime.
 - Files: fileReader extracts text from documents and never changes them; fileEditor lists, reads, and edits project files. To add an uploaded document to the knowledge base, inspect it with fileReader, then call rag ingest with the same path.
 - Code: use python for calculations, data analysis, plots, and scripts. Save a repeated multi-step job (for example several MCP calls in a row) as a custom tool with createTool; custom tools are called as custom__name. MCP servers are reached only through the mcp tool.

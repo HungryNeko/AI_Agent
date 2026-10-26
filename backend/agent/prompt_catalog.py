@@ -19,7 +19,10 @@ from agent.titles import _PROMPT as TITLE_PROMPT
 from prompts.context import CONTEXT_RULES, TOOL_BUDGET_NOTICE, format_current_time
 from prompts.system import BASE_SYSTEM_PROMPT
 from prompts.tools import TOOL_REQUEST_FORMAT, format_available
-from tools.rag_chunking import CHUNK_PLAN_PROMPT
+from tools.rag.chunking import CHUNK_PLAN_PROMPT
+from tools.rag.citations import correction_message
+from tools.rag.contextualize import CONTEXT_PROMPT
+from tools.rag.rerank import RERANK_PROMPT
 from tools.request import build_openai_tools
 from tools.settings import make_tool_settings
 
@@ -160,6 +163,15 @@ def build_prompt_catalog() -> dict[str, Any]:
         ),
         item(
             "turn",
+            "turn.citation",
+            "Citation check",
+            "引文检查",
+            "agent/citation_check.py; when an answer after a rag search cites a source that was never returned, quotes text that is not in the chunk, or cites nothing, the answer is withheld and this goes back to the model (at most twice per turn).",
+            "agent/citation_check.py；检索后的答案引用了从未返回过的来源、引文不在原文里、或完全没有引用时，答案不会发出，而是把这条反馈给模型（每轮最多两次）。",
+            correction_message(["[knowledge/a.md#9] does not exist. Cite only the `cite:` tags that rag results show, copied exactly."], ["[knowledge/a.md#0]"]),
+        ),
+        item(
+            "turn",
             "turn.error",
             "Tool error reminder",
             "工具错误提示",
@@ -200,9 +212,27 @@ def build_prompt_catalog() -> dict[str, Any]:
             "other.chunking",
             "RAG chunk planner",
             "RAG 切分规划",
-            "backend/tools/rag_chunking.py; used when ingestion splits with an LLM.",
-            "backend/tools/rag_chunking.py；用 LLM 切分文档时使用。",
+            "backend/tools/rag/chunking.py; used when ingestion splits with an LLM.",
+            "backend/tools/rag/chunking.py；用 LLM 切分文档时使用。",
             CHUNK_PLAN_PROMPT,
+        ),
+        item(
+            "other",
+            "other.rag_context",
+            "RAG chunk context",
+            "RAG 分块上下文",
+            "backend/tools/rag/contextualize.py; with contextual retrieval on, each chunk is sent after its document and the answer is indexed with the chunk.",
+            "backend/tools/rag/contextualize.py；开启上下文检索后，每个分块连同整篇文档发给模型，生成的上下文会和分块一起被索引。",
+            CONTEXT_PROMPT,
+        ),
+        item(
+            "other",
+            "other.rag_rerank",
+            "RAG reranker",
+            "RAG 重排",
+            "backend/tools/rag/rerank.py; used when the LLM reranker is on (or a search asks for rerank).",
+            "backend/tools/rag/rerank.py；开启 LLM 重排（或某次检索要求重排）时使用。",
+            RERANK_PROMPT,
         ),
         *tool_items(),
     ]
